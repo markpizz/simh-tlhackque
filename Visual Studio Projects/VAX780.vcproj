@@ -412,6 +412,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\PDP11\pdp11_dup.h"
+				>
+			</File>
+			<File
 				RelativePath="..\PDP11\pdp11_io_lib.h"
 				>
 			</File>
