@@ -812,6 +812,19 @@ if (*tptr == '\0') {
 return tptr;
 }
 
+/*
+
+Set the connection polling interval
+
+*/
+t_stat tmxr_connection_poll_interval (TMXR *mp, uint32 seconds)
+{
+if (0 == seconds)
+    return SCPE_ARG;
+mp->poll_interval = seconds;
+return SCPE_OK;
+}
+
 /* Poll for new connection
 
    Called from unit service routine to test for new connection
@@ -850,6 +863,9 @@ if (mp->last_poll_time == 0) {                          /* first poll initializa
     if (!uptr)                                          /* Attached ? */
         return -1;                                      /* No connections are possinle! */
 
+    if (mp->poll_interval == 0)                         /* Assure reasonable polling interval */
+        mp->poll_interval = TMXR_DEFAULT_CONNECT_POLL_INTERVAL;
+
     if (!(uptr->dynflags & TMUF_NOASYNCH)) {            /* if asynch not disabled */
         uptr->dynflags |= UNIT_TM_POLL;                 /* tag as polling unit */
         sim_cancel (uptr);
@@ -864,7 +880,7 @@ if (mp->last_poll_time == 0) {                          /* first poll initializa
         }
     }
 
-if ((poll_time - mp->last_poll_time) < TMXR_CONNECT_POLL_INTERVAL)
+if ((poll_time - mp->last_poll_time) < mp->poll_interval*1000)
     return -1;                                          /* too soon to try */
 
 srand((unsigned int)poll_time);

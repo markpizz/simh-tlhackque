@@ -282,7 +282,6 @@ typedef struct dmc_controller {
     TransferState transfer_state; /* current transfer state (type of transfer) */
     int transfer_type;
     int transfer_in_io; // remembers IN I/O setting at start of input transfer as host changes it during transfer!
-    int connect_poll_interval;
     TMLN *line;
     BUFFER_QUEUE *receive_queue;
     BUFFER_QUEUE *transmit_queue;
@@ -412,6 +411,7 @@ uint8 dmp_modem[DMP_NUMDEVICE];
 
 TMLN dmc_ldsc[DMC_NUMDEVICE];               /* line descriptors */
 TMXR dmc_desc = { 1, NULL, 0, dmc_ldsc };   /* mux descriptor */
+uint32 dmc_connect_poll;                    /* seconds between polls when no connection */
 
 uint32 dmc_ini_summary = 0;         /* In Command Interrupt Summary for all controllers */
 uint32 dmc_outi_summary = 0;        /* Out Command Interrupt Summary for all controllers */
@@ -421,6 +421,7 @@ BUFFER_QUEUE dmc_transmit_queues[DMC_NUMDEVICE];
 
 TMLN dmp_ldsc[DMC_NUMDEVICE];               /* line descriptors */
 TMXR dmp_desc = { 1, NULL, 0, dmp_ldsc };   /* mux descriptor */
+uint32 dmp_connect_poll;                    /* seconds between polls when no connection */
 
 BUFFER_QUEUE dmp_receive_queues[DMP_NUMDEVICE];
 BUFFER_QUEUE dmp_transmit_queues[DMP_NUMDEVICE];
@@ -428,6 +429,7 @@ BUFFER_QUEUE dmp_transmit_queues[DMP_NUMDEVICE];
 REG dmc_reg[] = {
     { GRDATA (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0) },
     { GRDATA (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0) },
+    { GRDATA (POLL,      dmc_connect_poll, DEV_RDX, 32, 0) },
     { BRDATA (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE) },
     { BRDATA (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE) },
     { BRDATA (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE) },
@@ -441,6 +443,7 @@ REG dmc_reg[] = {
     { NULL }  };
 
 REG dmp_reg[] = {
+    { GRDATA (POLL,      dmp_connect_poll, DEV_RDX, 32, 0) },
     { BRDATA (SEL0,              dmp_sel0, DEV_RDX, 16, DMP_NUMDEVICE) },
     { BRDATA (SEL2,              dmp_sel2, DEV_RDX, 16, DMP_NUMDEVICE) },
     { BRDATA (SEL4,              dmp_sel4, DEV_RDX, 16, DMP_NUMDEVICE) },
@@ -467,8 +470,8 @@ MTAB dmc_mod[] = {
         &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
-    { MTAB_XTD|MTAB_VUN,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
-        &dmc_setconnectpoll, &dmc_showconnectpoll, NULL, "Display connection poll interval" },
+    { MTAB_XTD|MTAB_VDV,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
+        &dmc_setconnectpoll, &dmc_showconnectpoll, (void *) &dmc_connect_poll, "Display connection poll interval" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,        020, "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,          1, "VECTOR", "VECTOR",
@@ -489,8 +492,8 @@ MTAB dmp_mod[] = {
         &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
-    { MTAB_XTD|MTAB_VUN,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
-        &dmc_setconnectpoll, &dmc_showconnectpoll, NULL, "Display connection poll interval" },
+    { MTAB_XTD|MTAB_VDV,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
+        &dmc_setconnectpoll, &dmc_showconnectpoll, (void *) &dmp_connect_poll, "Display connection poll interval" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,        020, "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,          1, "VECTOR", "VECTOR",
@@ -511,8 +514,8 @@ MTAB dmv_mod[] = {
         &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
-    { MTAB_XTD|MTAB_VUN,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
-        &dmc_setconnectpoll, &dmc_showconnectpoll, NULL, "Display connection poll interval" },
+    { MTAB_XTD|MTAB_VDV,          0, "CONNECTPOLL", "CONNECTPOLL=seconds",
+        &dmc_setconnectpoll, &dmc_showconnectpoll, (void *) &dmp_connect_poll, "Display connection poll interval" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,        020, "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR,          1, "VECTOR", "VECTOR",
@@ -814,23 +817,24 @@ t_stat dmc_setstats (UNIT* uptr, int32 val, char* cptr, void* desc)
 
 t_stat dmc_showconnectpoll (FILE* st, UNIT* uptr, int32 val, void* desc)
 {
-    CTLR *controller = dmc_get_controller_from_unit(uptr);
-    fprintf(st, "connectpoll=%d", controller->connect_poll_interval);
+    uint32 poll_interval = *((uint32 *)desc);
+    fprintf(st, "connectpoll=%u", poll_interval);
     return SCPE_OK;
 }
 
 t_stat dmc_setconnectpoll (UNIT* uptr, int32 val, char* cptr, void* desc)
 {
     t_stat status = SCPE_OK;
-    CTLR *controller = dmc_get_controller_from_unit(uptr);
+    uint32 *poll_interval = ((uint32 *)desc);
+    uint32 newpoll;
 
-    if (!cptr) return SCPE_IERR;
-    if (sscanf(cptr, "%d", &controller->connect_poll_interval) != 1)
-    {
-        status = SCPE_ARG;
-    }
-
-    return status;
+    if (!cptr) 
+        return SCPE_IERR;
+    newpoll = (int32) get_uint (cptr, 10, 1800, &status);
+    if ((status != SCPE_OK) || (newpoll == (*poll_interval)))
+        return status;
+    *poll_interval = newpoll;
+    return tmxr_connection_poll_interval ((poll_interval == &dmc_connect_poll) ? &dmc_desc : &dmp_desc, newpoll);
 }
 
 /* SET LINES processor */
@@ -872,6 +876,7 @@ t_stat dmc_setnumdevices (UNIT *uptr, int32 val, char *cptr, void *desc)
     dibptr->lnt = newln * addrlnt;                      /* set length */
     dptr->numunits = newln + 1;
     dptr->units[newln] = dmc_poll_unit_template;
+    dptr->units[newln].ctlr = &dmc_ctrls[(dptr == &dmc_dev) ? 0 : DMC_NUMDEVICE];
     mp->lines = newln;
     return dmc_reset ((DEVICE *)desc);                  /* setup devices and auto config */
 }
@@ -909,14 +914,14 @@ t_stat dmc_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
     fprintf(st, "   sim> SET %s0 PEER=host:port\n", dptr->name);
     fprintf(st, "\n");
     fprintf(st, "The device must be attached to a receive port, use the ATTACH command\n");
-    fprintf(st, "specifying the receive port number, even if the line mode is primary.\n");
+    fprintf(st, "specifying the receive port number.\n");
     fprintf(st, "\n");
     fprintf(st, "The minimum interval between attempts to connect to the other side is set\n");
     fprintf(st, "using the following command:\n");
     fprintf(st, "\n");
-    fprintf(st, "   sim> SET %s0 CONNECTPOLL=n\n", dptr->name);
+    fprintf(st, "   sim> SET %s CONNECTPOLL=n\n", dptr->name);
     fprintf(st, "\n");
-    fprintf(st, "Where n is the number of seconds. The default is 30 seconds.\n");
+    fprintf(st, "Where n is the number of seconds. The default is 5 seconds.\n");
     fprintf(st, "\n");
     fprintf(st, "If you want to experience the actual data rates of the physical hardware you\n");
     fprintf(st, "can set the bit rate of the simulated line can be set using the following\n");
@@ -950,7 +955,7 @@ t_stat dmc_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
     fprintf(st, "        DATA     Shows the actual data sent and received.\n");
     fprintf(st, "        DATASUM  Brief summary of each received and transmitted buffer.\n");
     fprintf(st, "                 Ignored if DATA is set.\n");
-    fprintf(st, "        SOCKET   Shows socket opens and closes.\n");
+    fprintf(st, "        MODEM    Shows modem signal details.\n");
     fprintf(st, "        CONNECT  Shows sockets actually connecting.\n");
     fprintf(st, "\n");
     fprintf(st, "To get a full trace use\n");
@@ -2219,8 +2224,10 @@ t_stat dmc_reset (DEVICE *dptr)
         controller->basesize = &dmc_basesize[i];
         controller->modem = &dmc_modem[i];
         controller->unit = &controller->device->units[i];
+        controller->unit->ctlr = (void *)controller;
         controller->index = i;
     }
+    tmxr_connection_poll_interval (&dmc_desc, dmc_connect_poll);
     for (i=0; i < DMP_NUMDEVICE; i++)
     {
         dmp_csrs[i].sel0 = &dmp_sel0[i];
@@ -2242,6 +2249,7 @@ t_stat dmc_reset (DEVICE *dptr)
         controller->unit->ctlr = (void *)controller;
         controller->index = i + DMC_NUMDEVICE;
     }
+    tmxr_connection_poll_interval (&dmp_desc, dmp_connect_poll);
     if (0 == dmc_units[0].flags)         /* First Time Initializations */
     {
         for (i=0; i < DMC_NUMDEVICE; i++)

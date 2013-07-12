@@ -64,7 +64,7 @@ typedef int SERHANDLE;
 #define TMXR_GUARD      12                              /* buffer guard */
 
 #define TMXR_DTR_DROP_TIME 500                          /* milliseconds to drop DTR for 'pseudo' modem control */
-#define TMXR_CONNECT_POLL_INTERVAL 1000                 /* milliseconds between connection polls */
+#define TMXR_DEFAULT_CONNECT_POLL_INTERVAL 1            /* seconds between connection polls */
 
 #define TMXR_DBG_XMT    0x010000                         /* Debug Transmit Data */
 #define TMXR_DBG_RCV    0x020000                         /* Debug Received Data */
@@ -158,6 +158,7 @@ struct tmxr {
     int32               txcount;                        /* count of transmit bytes */
     int32               buffered;                       /* Buffered Line Behavior and Buffer Size Flag */
     int32               sessions;                       /* count of tcp connections received */
+    uint32              poll_interval;                  /* frequency of connection polls (seconds) */
     uint32              last_poll_time;                 /* time of last connection poll */
     t_bool              notelnet;                       /* default telnet capability for incoming connections */
     t_bool              modem_control;                  /* multiplexer supports modem control behaviors */
@@ -177,6 +178,7 @@ void tmxr_poll_tx (TMXR *mp);
 int32 tmxr_send_buffered_data (TMLN *lp);
 t_stat tmxr_open_master (TMXR *mp, char *cptr);
 t_stat tmxr_close_master (TMXR *mp);
+t_stat tmxr_connection_poll_interval (TMXR *mp, uint32 seconds);
 t_stat tmxr_attach_ex (TMXR *mp, UNIT *uptr, char *cptr, t_bool async);
 t_stat tmxr_detach (TMXR *mp, UNIT *uptr);
 t_stat tmxr_attach_help(FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
