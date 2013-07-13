@@ -72,7 +72,7 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
         int i, same, group, sidx, oidx;
         char outbuf[80], strbuf[18];
         static const char hex[] = "0123456789ABCDEF";
-        static const char *const flags [4] = { "  ", " Q", "S ", "SQ" };
+        static const char *const flags [4] = { "..", ".Q", "S.", "SQ" };
         static const char *const nak[18] = { "", " (HCRC)", " (DCRC)", " (REPREPLY)", /* 0-3 */
                                              "", "", "", "",                          /* 4-7 */
                                              " (NOBUF)", " (RXOVR)", "", "",          /* 8-11 */
