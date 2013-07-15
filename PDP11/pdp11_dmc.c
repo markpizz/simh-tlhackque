@@ -289,6 +289,7 @@ typedef struct dmc_controller {
     DEVTYPE dev_type;
     uint32 in_int;
     uint32 out_int;
+    uint32 dmc_wr_delay;
     uint32 *baseaddr;
     uint16 *basesize;
     uint8 *modem;
@@ -352,9 +353,10 @@ void dmc_queue_control_out(CTLR *controller, uint16 sel6);
 
 /* debugging bitmaps */
 #define DBG_TRC  0x0001                                 /* trace routine calls */
-#define DBG_REG  0x0002                                 /* trace read/write registers */
-#define DBG_WRN  0x0004                                 /* display warnings */
-#define DBG_INF  0x0008                                 /* display informational messages (high level trace) */
+#define DBG_REG  0x0002                                 /* trace programatic read/write registers */
+#define DBG_RGC  0x0004                                 /* internal read/write registers changes */
+#define DBG_WRN  0x0008                                 /* display warnings */
+#define DBG_INF  0x0010                                 /* display informational messages (high level trace) */
 #define DBG_DAT  (TMXR_DBG_PXMT|TMXR_DBG_PRCV)          /* display data buffer contents */
 #define DBG_DTS  0x0020                                 /* display data summary */
 #define DBG_MDM  TMXR_DBG_MDM                           /* modem related transitions */
@@ -366,12 +368,13 @@ DEBTAB dmc_debug[] = {
     {"TRACE",   DBG_TRC},
     {"WARN",    DBG_WRN},
     {"REG",     DBG_REG},
+    {"INTREG",  DBG_RGC},
     {"INFO",    DBG_INF},
     {"DATA",    DBG_DAT},
     {"DATASUM", DBG_DTS},
     {"MODEM",   DBG_MDM},
     {"CONNECT", DBG_CON},
-    {"INT", DBG_INT},
+    {"INT",     DBG_INT},
     {0}
 };
 
@@ -948,7 +951,9 @@ t_stat dmc_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
     fprintf(st, "Debugging\n");
     fprintf(st, "=========\n");
     fprintf(st, "The simulator has a number of debug options, these are:\n");
-    fprintf(st, "        REG      Shows whenever a CSR is read or written and the current value.\n");
+    fprintf(st, "        REG      Shows whenever a CSR is programatically read or written and\n");
+    fprintf(st, "                 the current value.\n");
+    fprintf(st, "        INFREG   Shows internal register value changes.\n");
     fprintf(st, "        INFO     Shows higher-level tracing only.\n");
     fprintf(st, "        WARN     Shows any warnings.\n");
     fprintf(st, "        TRACE    Shows more detailed trace information.\n");
@@ -1185,30 +1190,30 @@ void dmc_dumpregsel10(CTLR *controller, int trace_level, char *prefix, uint16 da
         dmc_bitfld(data, SEL6_LOST_DATA_BIT, 1) ? "LOST_DATA " : "");
 }
 
-uint16 dmc_getreg(CTLR *controller, int reg)
+uint16 dmc_getreg(CTLR *controller, int reg, int ctx)
 {
     uint16 ans = 0;
     switch (dmc_getsel(reg))
     {
     case 00:
         ans = *controller->csrs->sel0;
-        dmc_dumpregsel0(controller, DBG_REG, "Getting", ans);
+        dmc_dumpregsel0(controller, ctx, "Getting", ans);
         break;
     case 01:
         ans = *controller->csrs->sel2;
-        dmc_dumpregsel2(controller, DBG_REG, "Getting", ans);
+        dmc_dumpregsel2(controller, ctx, "Getting", ans);
         break;
     case 02:
         ans = *controller->csrs->sel4;
-        dmc_dumpregsel4(controller, DBG_REG, "Getting", ans);
+        dmc_dumpregsel4(controller, ctx, "Getting", ans);
         break;
     case 03:
         ans = *controller->csrs->sel6;
-        dmc_dumpregsel6(controller, DBG_REG, "Getting", ans);
+        dmc_dumpregsel6(controller, ctx, "Getting", ans);
         break;
     case 04:
         ans = *controller->csrs->sel10;
-        dmc_dumpregsel10(controller, DBG_REG, "Getting", ans);
+        dmc_dumpregsel10(controller, ctx, "Getting", ans);
         break;
     default:
         {
@@ -1219,29 +1224,29 @@ uint16 dmc_getreg(CTLR *controller, int reg)
     return ans;
 }
 
-void dmc_setreg(CTLR *controller, int reg, uint16 data)
+void dmc_setreg(CTLR *controller, int reg, uint16 data, int ctx)
 {
     char *trace = "Setting";
     switch (dmc_getsel(reg))
     {
     case 00:
-        dmc_dumpregsel0(controller, DBG_REG, trace, data);
+        dmc_dumpregsel0(controller, ctx, trace, data);
         *controller->csrs->sel0 = data;
         break;
     case 01:
-        dmc_dumpregsel2(controller, DBG_REG, trace, data);
+        dmc_dumpregsel2(controller, ctx, trace, data);
         *controller->csrs->sel2 = data;
         break;
     case 02:
-        dmc_dumpregsel4(controller, DBG_REG, trace, data);
+        dmc_dumpregsel4(controller, ctx, trace, data);
         *controller->csrs->sel4 = data;
         break;
     case 03:
-        dmc_dumpregsel6(controller, DBG_REG, trace, data);
+        dmc_dumpregsel6(controller, ctx, trace, data);
         *controller->csrs->sel6 = data;
         break;
     case 04:
-        dmc_dumpregsel10(controller, DBG_REG, trace, data);
+        dmc_dumpregsel10(controller, ctx, trace, data);
         *controller->csrs->sel10 = data;
         break;
     default:
@@ -1343,13 +1348,13 @@ void dmc_set_rdyi(CTLR *controller)
 {
     if (dmc_is_dmc(controller))
     {
-        dmc_setreg(controller, 0, *controller->csrs->sel0 | DMC_RDYI_MASK);
-        dmc_setreg(controller, 4, *controller->modem);
-        dmc_setreg(controller, 6, *controller->modem & SEL4_MDM_DTR);
+        dmc_setreg(controller, 0, *controller->csrs->sel0 | DMC_RDYI_MASK, DBG_RGC);
+        dmc_setreg(controller, 4, *controller->modem, DBG_RGC);
+        dmc_setreg(controller, 6, *controller->modem & SEL4_MDM_DTR, DBG_RGC);
     }
     else
     {
-        dmc_setreg(controller, 2, *controller->csrs->sel2 | DMP_RDYI_MASK);
+        dmc_setreg(controller, 2, *controller->csrs->sel2 | DMP_RDYI_MASK, DBG_RGC);
     }
 
     dmc_setinint(controller);
@@ -1359,17 +1364,17 @@ void dmc_clear_rdyi(CTLR *controller)
 {
     if (dmc_is_dmc(controller))
     {
-        dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMC_RDYI_MASK);
+        dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMC_RDYI_MASK, DBG_RGC);
     }
     else
     {
-        dmc_setreg(controller, 2, *controller->csrs->sel2 & ~DMP_RDYI_MASK);
+        dmc_setreg(controller, 2, *controller->csrs->sel2 & ~DMP_RDYI_MASK, DBG_RGC);
     }
 }
 
 void dmc_set_rdyo(CTLR *controller)
 {
-    dmc_setreg(controller, 2, *controller->csrs->sel2 | DMC_RDYO_MASK);
+    dmc_setreg(controller, 2, *controller->csrs->sel2 | DMC_RDYO_MASK, DBG_RGC);
 
     dmc_setoutint(controller);
 }
@@ -1406,17 +1411,17 @@ void dmc_clr_modem_dtr(CTLR *controller)
 
 void dmc_set_lost_data(CTLR *controller)
 {
-    dmc_setreg(controller, 6, *controller->csrs->sel6 | LOST_DATA_MASK);
+    dmc_setreg(controller, 6, *controller->csrs->sel6 | LOST_DATA_MASK, DBG_RGC);
 }
 
 void dmc_clear_master_clear(CTLR *controller)
 {
-    dmc_setreg(controller, 0, *controller->csrs->sel0 & ~MASTER_CLEAR_MASK);
+    dmc_setreg(controller, 0, *controller->csrs->sel0 & ~MASTER_CLEAR_MASK, DBG_RGC);
 }
 
 void dmc_set_run(CTLR *controller)
 {
-    dmc_setreg(controller, 0, *controller->csrs->sel0 | RUN_MASK);
+    dmc_setreg(controller, 0, *controller->csrs->sel0 | RUN_MASK, DBG_RGC);
 }
 
 int dmc_get_input_transfer_type(CTLR *controller)
@@ -1437,17 +1442,17 @@ int dmc_get_input_transfer_type(CTLR *controller)
 
 void dmc_set_type_output(CTLR *controller, int type)
 {
-    dmc_setreg(controller, 2, *controller->csrs->sel2 | (type & TYPE_OUTPUT_MASK));
+    dmc_setreg(controller, 2, *controller->csrs->sel2 | (type & TYPE_OUTPUT_MASK), DBG_RGC);
 }
 
 void dmc_set_out_io(CTLR *controller)
 {
-    dmc_setreg(controller, 2, *controller->csrs->sel2 | OUT_IO_MASK);
+    dmc_setreg(controller, 2, *controller->csrs->sel2 | OUT_IO_MASK, DBG_RGC);
 }
 
 void dmc_clear_out_io(CTLR *controller)
 {
-    dmc_setreg(controller, 2, *controller->csrs->sel2 & ~OUT_IO_MASK);
+    dmc_setreg(controller, 2, *controller->csrs->sel2 & ~OUT_IO_MASK, DBG_RGC);
 }
 
 void dmc_process_master_clear(CTLR *controller)
@@ -1464,33 +1469,33 @@ void dmc_process_master_clear(CTLR *controller)
         free (control);
     }
     controller->control_out = NULL;
-    dmc_setreg(controller, 0, 0);
+    dmc_setreg(controller, 0, 0, DBG_RGC);
     if (controller->dev_type == DMR)
     {
          /* DMR-11 indicates microdiagnostics complete when this is set */
-        dmc_setreg(controller, 2, 0x8000);
+        dmc_setreg(controller, 2, 0x8000, DBG_RGC);
     }
     else
     {
         /* preserve contents of BSEL3 if DMC-11 */
-        dmc_setreg(controller, 2, *controller->csrs->sel2 & 0xFF00);
+        dmc_setreg(controller, 2, *controller->csrs->sel2 & 0xFF00, DBG_RGC);
     }
     if (controller->dev_type == DMP)
     {
-        dmc_setreg(controller, 4, 077);
+        dmc_setreg(controller, 4, 077, DBG_RGC);
     }
     else
     {
-        dmc_setreg(controller, 4, 0);
+        dmc_setreg(controller, 4, 0, DBG_RGC);
     }
 
     if (controller->dev_type == DMP)
     {
-        dmc_setreg(controller, 6, 0305);
+        dmc_setreg(controller, 6, 0305, DBG_RGC);
     }
     else
     {
-        dmc_setreg(controller, 6, 0);
+        dmc_setreg(controller, 6, 0, DBG_RGC);
     }
     dmc_buffer_queue_init_all(controller);
 
@@ -1519,8 +1524,8 @@ void dmc_start_data_output_transfer(CTLR *controller, uint32 addr, int16 count, 
         dmc_clear_out_io(controller); 
     }
 
-    dmc_setreg(controller, 4, addr & 0xFFFF);
-    dmc_setreg(controller, 6, (((addr & 0x30000)) >> 2) | count);
+    dmc_setreg(controller, 4, addr & 0xFFFF, DBG_RGC);
+    dmc_setreg(controller, 6, (((addr & 0x30000)) >> 2) | count, DBG_RGC);
     controller->transfer_state = (is_receive) ? OutputTransferReceiveBuffer : OutputTransferTransmitBuffer;
     dmc_set_type_output(controller, TYPE_BACCO);
     dmc_set_rdyo(controller);
@@ -1536,7 +1541,7 @@ void dmc_start_control_output_transfer(CTLR *controller)
     controller->transfer_state = OutputControl;
     dmc_clear_out_io(controller);
     dmc_set_type_output(controller, TYPE_CNTLO);
-    dmc_setreg (controller, 6, controller->control_out->sel6);
+    dmc_setreg (controller, 6, controller->control_out->sel6, DBG_RGC);
     dmc_set_rdyo(controller);
 }
 
@@ -1546,6 +1551,12 @@ t_stat dmc_svc(UNIT* uptr)
 
     if (dmc_is_attached(controller->unit))
     {
+        if (controller->dmc_wr_delay)
+        {
+            controller->dmc_wr_delay = 0;
+            dmc_process_command(controller);
+        }
+
         dmc_start_control_output_transfer(controller);
 
         dmc_buffer_send_transmit_buffers(controller);
@@ -2093,7 +2104,7 @@ void dmc_process_command(CTLR *controller)
     /* DMC-11 or DMR-11, see if ROMI bit is set.  If so, if SEL6 is
         0x22b3 (read line status instruction), set the DTR bit in SEL2.  */
     {
-        dmc_setreg (controller, 2, 0x800);
+        dmc_setreg (controller, 2, 0x800, DBG_RGC);
     }
     else
     {
@@ -2106,8 +2117,17 @@ void dmc_process_command(CTLR *controller)
 t_stat dmc_rd(int32 *data, int32 PA, int32 access)
 {
     CTLR *controller = dmc_get_controller_from_address(PA);
-    sim_debug(DBG_TRC, controller->device, "dmc_rd(), addr=0x%x access=%d\n", PA, access);
-    *data = dmc_getreg(controller, PA);
+    int reg = PA & ((UNIBUS) ? 07 : 017);
+
+    *data = dmc_getreg(controller, PA, DBG_REG);
+    if (access == READ)
+    {
+        sim_debug(DBG_REG, controller->device, "dmc_rd(), addr=0x%08x, SEL%d, data=0x%04x\n", PA, reg, *data);
+    }
+    else
+    {
+        sim_debug(DBG_REG, controller->device, "dmc_rd(), addr=0x%08x, BSEL%d, data=%02x\n", PA, reg, *data & 0xFF);
+    }
 
     return SCPE_OK;
 }
@@ -2116,15 +2136,15 @@ t_stat dmc_wr(int32 data, int32 PA, int32 access)
 {
     CTLR *controller = dmc_get_controller_from_address(PA);
     int reg = PA & ((UNIBUS) ? 07 : 017);
-    uint16 oldValue = dmc_getreg(controller, PA);
+    uint16 oldValue = dmc_getreg(controller, PA, 0);
 
     if (access == WRITE)
     {
-        sim_debug(DBG_TRC, controller->device, "dmc_wr(), addr=0x%08x, SEL%d, data=0x%04x\n", PA, reg, data);
+        sim_debug(DBG_REG, controller->device, "dmc_wr(), addr=0x%08x, SEL%d, newdata=0x%04x, olddata=0x%04x\n", PA, reg, data, oldValue);
     }
     else
     {
-        sim_debug(DBG_TRC, controller->device, "dmc_wr(), addr=0x%08x, BSEL%d, data=%02x\n", PA, reg, data);
+        sim_debug(DBG_REG, controller->device, "dmc_wr(), addr=0x%08x, BSEL%d, newdata=%02x, olddata=0x%02x\n", PA, reg, data & 0xFF, ((PA&1) ? oldValue>>8 : oldValue) & 0xFF);
     }
 
     if (access == WRITE)
@@ -2133,7 +2153,7 @@ t_stat dmc_wr(int32 data, int32 PA, int32 access)
         {
             sim_debug(DBG_WRN, controller->device, "dmc_wr(), Unexpected non-16-bit write access to SEL%d\n", reg);
         }
-        dmc_setreg(controller, PA, data);
+        dmc_setreg(controller, PA, data, DBG_REG);
     }
     else
     {
@@ -2148,12 +2168,16 @@ t_stat dmc_wr(int32 data, int32 PA, int32 access)
             mask = 0x00FF;
         }
 
-        dmc_setreg(controller, PA, (oldValue & ~mask) | (data & mask));
+        dmc_setreg(controller, PA, (oldValue & ~mask) | (data & mask), DBG_REG);
     }
 
     if (dmc_is_attached(controller->unit) && (dmc_getsel(reg) == 0 || dmc_getsel(reg) == 1))
     {
-        dmc_process_command(controller);
+        if (0 == controller->dmc_wr_delay)      /* Not waiting? */
+        {
+            controller->dmc_wr_delay = 20;      /* Wait a bit before actding on the changed register */
+            sim_activate_abs (controller->unit, controller->dmc_wr_delay);
+        }
     }
 
     return SCPE_OK;
