@@ -41,6 +41,21 @@
 #define DDCMP_ENQ  0005u    /* Control Message Identifier */
 #define DDCMP_DLE  0220u    /* Maintenance Message Identifier */
 
+#define DDCMP_CTL_ACK    1  /* Control Message ACK Type */
+#define DDCMP_CTL_NAK    2  /* Control Message NAK Type */
+#define DDCMP_CTL_REP    3  /* Control Message REP Type */
+#define DDCMP_CTL_STRT   6  /* Control Message STRT Type */
+#define DDCMP_CTL_STACK  7  /* Control Message STACK Type */
+
+#define DDCMP_FLAG_SELECT 0x80  /* Link Select */
+#define DDCMP_FLAG_QSYNC  0x40  /* Quick Sync (next message won't abut this message) */
+
+#define DDCMP_CRC_SIZE    2 /* Bytes in DDCMP CRC fields */
+#define DDCMP_HEADER_SIZE 8 /* Bytes in DDCMP Control and Data Message headers (including header CRC) */
+
+#define DDCMP_RESP_OFFSET 3 /* Byte offset of response (ack) number field */
+#define DDCMP_NUM_OFFSET  4 /* Byte offset of packet number field */
+
 /* Support routines */
 
 /* crc16 polynomial x^16 + x^15 + x^2 + 1 (0xA001) CCITT LSB */
@@ -89,27 +104,27 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
             case DDCMP_ENQ:   /* Control Message */
                 sim_debug (reason, dptr, "Control: Type: %d ", msg[1]);
                 switch (msg[1]) {
-                    case 1: /* ACK */
+                    case DDCMP_CTL_ACK: /* ACK */
                         sim_debug (reason, dptr, "(ACK) ACKSUB: %d, Flags: %s, Resp: %d\n", msg2, flag, msg[3]);
                         break;
-                    case 2: /* NAK */
+                    case DDCMP_CTL_NAK: /* NAK */
                         sim_debug (reason, dptr, "(NAK) Reason: %d%s, Flags: %s, Resp: %d\n", msg2, ((msg2 > 17)? "": nak[msg2]), flag, msg[3]);
                         break;
-                    case 3: /* REP */
+                    case DDCMP_CTL_REP: /* REP */
                         sim_debug (reason, dptr, "(REP) REPSUB: %d, Flags: %s, Num: %d\n", msg2, flag, msg[4]);
                         break;
-                    case 6: /* STRT */
+                    case DDCMP_CTL_STRT: /* STRT */
                         sim_debug (reason, dptr, "(STRT) STRTSUB: %d, Flags: %s\n", msg2, flag);
                         break;
-                    case 7: /* STACK */
+                    case DDCMP_CTL_STACK: /* STACK */
                         sim_debug (reason, dptr, "(STACK) STCKSUB: %d, Flags: %s\n", msg2, flag);
                         break;
                     default: /* Unknown */
                         sim_debug (reason, dptr, "(Unknown=0%o)\n", msg[1]);
                         break;
                     }
-                if (len != 8) {
-                    sim_debug (reason, dptr, "Unexpected Control Message Length: %d expected 8\n", len);
+                if (len != DDCMP_HEADER_SIZE) {
+                    sim_debug (reason, dptr, "Unexpected Control Message Length: %d expected %d\n", len, DDCMP_HEADER_SIZE);
                     }
                 if (0 != ddcmp_crc16 (0, msg, len)) {
                     sim_debug (reason, dptr, "Unexpected Message CRC\n");
@@ -117,7 +132,7 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
                 break;
             case DDCMP_DLE:   /* Maintenance Message */
                 sim_debug (reason, dptr, "Maintenance Message, Flags: %s, Count: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)| msg[1], 
-                                            (0 == ddcmp_crc16 (0, msg, 8)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+8, 2+((msg2 << 8)| msg[1]))) ? "OK" : "BAD");
+                                            (0 == ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+DDCMP_HEADER_SIZE, 2+((msg2 << 8)| msg[1]))) ? "OK" : "BAD");
                 break;
             }
         for (i=same=0; i<len; i += 16) {
@@ -199,11 +214,11 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
                 continue;
             }
         }
-    if (lp->rxpboffset >= 8) {
+    if (lp->rxpboffset >= DDCMP_HEADER_SIZE) {
         if (lp->rxpb[0] == DDCMP_ENQ) { /* Control Message? */
             ++lp->rxpcnt;
             *pbuf = lp->rxpb;
-            *psize = 8;
+            *psize = DDCMP_HEADER_SIZE;
             lp->rxpboffset = 0;
             ddcmp_packet_trace (TMXR_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize, TRUE);
             return SCPE_OK;
@@ -226,7 +241,7 @@ if (lp->conn)
 return SCPE_LOST;
 }
 
-/* Store packet in line buffer
+/* Store packet in line buffer (or store packet in line buffer and add needed CRCs)
 
    Inputs:
         *lp     =       pointer to line descriptor
@@ -268,5 +283,103 @@ tmxr_send_buffered_data (lp);
 return lp->conn ? SCPE_OK : SCPE_LOST;
 }
 
+static t_stat ddcmp_tmxr_put_packet_crc_ln (TMLN *lp, uint8 *buf, size_t size)
+{
+uint16 hdr_crc16 = ddcmp_crc16(0, buf, DDCMP_HEADER_SIZE-DDCMP_CRC_SIZE);
+
+buf[DDCMP_HEADER_SIZE-DDCMP_CRC_SIZE] = hdr_crc16 & 0xFF;
+buf[DDCMP_HEADER_SIZE-DDCMP_CRC_SIZE+1] = (hdr_crc16>>8) & 0xFF;
+if (size > DDCMP_HEADER_SIZE) {
+    uint16 data_crc16 = ddcmp_crc16(0, buf+DDCMP_HEADER_SIZE, (size-DDCMP_HEADER_SIZE)-DDCMP_CRC_SIZE);;
+    buf[size-DDCMP_CRC_SIZE] = hdr_crc16 & 0xFF;
+    buf[size-DDCMP_CRC_SIZE+1] = (hdr_crc16>>8) & 0xFF;
+    }
+return ddcmp_tmxr_put_packet_ln (lp, buf, size);
+}
+
+static void ddcmp_build_data_packet (uint8 *buf, size_t size, uint8 flags, uint8 sequence, uint8 ack)
+{
+buf[0] = DDCMP_SOH;
+buf[1] = size & 0xFF;
+buf[2] = ((size >> 8) & 0x3F) | flags;
+buf[3] = ack;
+buf[4] = sequence;
+buf[5] = 1;
+}
+
+static t_stat ddcmp_tmxr_put_data_packet_ln (TMLN *lp, uint8 *buf, size_t size, uint8 flags, uint8 sequence, uint8 ack)
+{
+ddcmp_build_data_packet (buf, size, flags, sequence, ack);
+return ddcmp_tmxr_put_packet_crc_ln (lp, buf, size);
+}
+
+static void ddcmp_build_control_packet (uint8 *buf, uint8 type, uint8 subtype, uint8 flags, uint8 sndr, uint8 rcvr)
+{
+buf[0] = DDCMP_ENQ;                 /* Control Message */
+buf[1] = type;                      /* STACK type */
+buf[2] = (subtype & 0x3f) | flags;  /* STACKSUB type and flags */
+buf[3] = rcvr;                      /* RCVR */
+buf[4] = sndr;                      /* SNDR */
+buf[5] = 1;                         /* ADDR */
+}
+
+static t_stat ddcmp_tmxr_put_control_packet_ln (TMLN *lp, uint8 *buf, uint8 type, uint8 subtype, uint8 flags, uint8 sndr, uint8 rcvr)
+{
+ddcmp_build_control_packet (buf, type, subtype, flags, sndr, rcvr);
+return ddcmp_tmxr_put_packet_crc_ln (lp, buf, DDCMP_HEADER_SIZE);
+}
+
+static void ddcmp_build_ack_packet (uint8 *buf, uint8 ack, uint8 flags)
+{
+ddcmp_build_control_packet (buf, DDCMP_CTL_ACK, 0, flags, 0, ack);
+}
+
+static t_stat ddcmp_tmxr_put_ack_packet_ln (TMLN *lp, uint8 *buf, uint8 ack, uint8 flags)
+{
+ddcmp_build_ack_packet (buf, ack, flags);
+return ddcmp_tmxr_put_packet_crc_ln (lp, buf, DDCMP_HEADER_SIZE);
+}
+
+static void ddcmp_build_nak_packet (uint8 *buf, uint8 reason, uint8 nack, uint8 flags)
+{
+ddcmp_build_control_packet (buf, DDCMP_CTL_NAK, reason, 0, 0, nack);
+}
+
+static t_stat ddcmp_tmxr_put_nak_packet_ln (TMLN *lp, uint8 *buf, uint8 reason, uint8 nack, uint8 flags)
+{
+return ddcmp_tmxr_put_control_packet_ln (lp, buf, DDCMP_CTL_NAK, reason, flags, 0, nack);
+}
+
+static void ddcmp_build_rep_packet (uint8 *buf, uint8 ack, uint8 flags)
+{
+ddcmp_build_control_packet (buf, DDCMP_CTL_REP, 0, flags, ack, 0);
+}
+
+static t_stat ddcmp_tmxr_put_rep_packet_ln (TMLN *lp, uint8 *buf, uint8 ack, uint8 flags)
+{
+return ddcmp_tmxr_put_control_packet_ln (lp, buf, DDCMP_CTL_REP, 0, flags, ack, 0);
+}
+
+static void ddcmp_build_start_packet (uint8 *buf)
+{
+ddcmp_build_control_packet (buf, DDCMP_CTL_STRT, 0, DDCMP_FLAG_SELECT|DDCMP_FLAG_QSYNC, 0, 0);
+}
+
+static t_stat ddcmp_tmxr_put_start_packet_ln (TMLN *lp, uint8 *buf)
+{
+ddcmp_build_start_packet (buf);
+return ddcmp_tmxr_put_packet_crc_ln (lp, buf, DDCMP_HEADER_SIZE);
+}
+
+static void ddcmp_build_start_ack_packet (uint8 *buf)
+{
+ddcmp_build_control_packet (buf, DDCMP_CTL_STACK, 0, DDCMP_FLAG_SELECT|DDCMP_FLAG_QSYNC, 0, 0);
+}
+
+static t_stat ddcmp_tmxr_put_start_ack_packet_ln (TMLN *lp, uint8 *buf)
+{
+ddcmp_build_start_ack_packet (buf);
+return ddcmp_tmxr_put_packet_crc_ln (lp, buf, DDCMP_HEADER_SIZE);
+}
 
 #endif /* PDP11_DDCMP_H_ */
