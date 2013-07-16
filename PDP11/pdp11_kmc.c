@@ -2,12 +2,14 @@
   ------------------------------------------------------------------------------
 
 
-   Written 2002 by Johnny Eriksson <bygg@stacken.kth.se>
+   Initial implementation 2002 by Johnny Eriksson <bygg@stacken.kth.se>
 
    Adapted to SIMH 3.? by Robert M. A. Jarratt in 2013
 
-   Enhanced, and largely rewritten by Timothe Litt <litt@acm.org> in 2013,
-   building on previous work.
+   Completely rewritten by Timothe Litt <litt@acm.org> for SimH 4.0 in 2013.
+   Implements all DDCMP functions except half-duplex.
+
+   DUP separated into separate devices, the DUPs were created by Mark Pizzolato.
 
    This code is Copyright 2002, 2013 by the authors,all rights reserved.
    It is licensed under the standard SimH license.
@@ -16,7 +18,8 @@
   Modification history:
 
   05-Jun-13  TL   Massive rewrite to split KMC/DUP, add missing functions, and
-                  restructure so TOPS-10/20 are happy.
+                  restructure so TOPS-10/20 & RSX are happy.  Support multiple
+                  KMCs.
   14-Apr-13  RJ   Took original sources into latest source code.
   15-Feb-02  JE   Massive changes/cleanups.
   23-Jan-02  JE   Modify for version 2.9.
@@ -25,14 +28,17 @@
 /*
  * Loose ends, known problems etc:
  *
- *   We don't do anything but full-duplex DDCMP.
- *   TODO marks implementation issues.
+ *   This implementation  doen't do anything but full-duplex DDCMP.
  *
- *   The DUP packet API complicates things, making completions and buffer flush
- *   occurr at inopportune times.
- * Move descriptor walks to service routine.
- *
-*/
+ *  DUP: needs set RTS, RCVEN; set DTR broken -- see ifdef DUPMODEM
+ *       desirable: rx wake callback (no data) -- see ifdef DUPALERT
+ *       Unexplained code to generate SYNC and RCVEN based on RTS transitions
+ *       prevents RTS from working; using hacked version.
+ *       Working-around W3 jumper choice (prevents RTS/DTR/SexTxD from clearing
+ *       on device reset.)
+ * Select final speed limit.
+ * Remove toy help & replace with real info.
+ */
 
 /* The KMC11-A is a general purpose microprocessor that is used in several
  * DEC products.  It came in versions that had ROM microcode, which were
@@ -49,6 +55,7 @@
  *  * Provide DMA for DZ11 asynchronous lines (COMM IOP-DZ)
  *  * Provide DMA for line printers
  *  * Provide DMA and message framing for DUP-11 sync lines (COMM IOP-DUP)
+ *  * Provide an Arpanet IMP interface (AN22 on the KS10/TOPS-10)
  *
  * The device was also embedded in other products, such as the DX20 Massbus
  * to IBM channel adapter.
@@ -61,16 +68,16 @@
  * the device.
  *
  * The KMC11-B is an enhanced version of the KMC11-A.  Note that microcode
- * loading is handled differently in that version.
+ * loading is handled differently in that version, which is NOT emulated.
  */
 
-#if defined (VM_PDP10)                                  /* PDP10 version */
+#if defined (VM_PDP10)                          /* PDP10 version */
 #include "pdp10_defs.h"
 
-#elif defined (VM_VAX)                                  /* VAX version */
+#elif defined (VM_VAX)                          /* VAX version */
 #include "vax_defs.h"
 
-#else                                                   /* PDP-11 version */
+#else                                           /* PDP-11 version */
 #include "pdp11_defs.h"
 #endif
 
@@ -81,121 +88,10 @@
 #include "pdp11_ddcmp.h"
 
 #define DIM(x) (sizeof(x)/sizeof((x)[0]))
+#define UNUSED_ARG(x) (void)(x)
 
-/* Queue elements
- * A queue is a double-linked list of element headers.
- * The head of the queue is an element without a body.
- * A queue is empty when the only element in the queue is
- * the head.
- * Each queue has an asociated count of the elements in the
- * queue; this simplifies knowing its state.
- * Each queue also has a maximum length.
- *
- * Queues are manipulated with initqueue, insqueue, and remqueue.
+/* Configuration macros
  */
-struct queuehdr {
-  struct queuehdr     *next;
-  struct queuehdr     *prev;
-};
-typedef struct queuehdr QH;
-
-static char *kmc_description (DEVICE *dptr);
-
-extern int32 IREQ (HLVL);
-
-/* bits, SEL0 */
-
-#define SEL0_RUN    0100000  /* Run bit. */
-#define SEL0_MRC    0040000  /* Master clear. */
-#define SEL0_CWR    0020000  /* CRAM write. */
-#define SEL0_SLU    0010000  /* Step Line Unit. */
-#define SEL0_LUL    0004000  /* Line Unit Loop. */
-#define SEL0_RMO    0002000  /* ROM output. */
-#define SEL0_RMI    0001000  /* ROM input. */
-#define SEL0_SUP    0000400  /* Step microprocessor. */
-#define SEL0_RQI    0000200  /* Request input. */
-#define SEL0_IEO    0000020  /* Interrupt enable output. */
-#define SEL0_IEI    0000001  /* Interrupt enable input. */
-
-/* bits, SEL2 */
-
-#define SEL2_OVR    0100000  /* Completion queue overrun. */
-#define SEL2_V_LINE 8        /* Line number assigned by host */
-#define SEL2_LINE   (0177 << SEL2_V_LINE)
-#define   MAX_LINE   017     /* Maximum line number allowed in BASE_IN */
-#define SEL2_RDO    0000200  /* Ready for output transaction. */
-#define SEL2_RDI    0000020  /* Ready for input transaction. */
-#define SEL2_IOT    0000004  /* I/O type, 1 = rx, 0 = tx. */
-#define SEL2_V_CMD        0  /* Command code */
-#define SEL2_CMD    0000003  /* Command code
-                              * IN are commands TO the KMC
-                              * OUT are command completions FROM the KMC.
-                              */
-#  define CMD_BUFFIN      0  /*   BUFFER IN */
-#  define CMD_CTRLIN      1  /*   CONTROL IN */
-#  define CMD_BASEIN      3  /*   BASE IN */
-#  define CMD_BUFFOUT     0  /*   BUFFER OUT */
-#  define CMD_CTRLOUT     1  /*   CONTROL OUT */
-
-#define SEL2_II_RESERVED  (SEL2_OVR | 0354) /* Reserved: 15, 7:5, 3:2 */
-/* bits, SEL4 */
-
-#define SEL4_CI_POLL    0377  /* DUP polling interval, 50 usec units */
-
-#define SEL4_ADDR    0177777  /* Generic: Unibus address <15:0>
-
-/* bits, SEL6 */
-
-#define SEL6_V_CO_XAD    14      /* Unibus extended address bits */
-#define SEL6_CO_XAD    (3u << SEL6_V_CO_XAD)
-
-/* BASE IN */
-#define SEL6_II_DUPCSR 0017770   /* BASE IN: DUP CSR <12:3> */
-
-/* BUFFER IN */
-#define SEL6_BI_ENABLE 0020000   /* BUFFER IN: Assign after KILL */
-#define SEL6_BI_KILL   0010000   /* BUFFER IN: Return all buffers */
-
-/* BUFFER OUT */
-#define SEL6_BO_EOM    0010000   /* BUFFER OUT: End of message */
-
-/* CONTROL OUT event codes */
-#define SEL6_CO_ABORT  006   /* Bit stuffing rx abort */
-#define SEL6_CO_HCRC   010   /* DDCMP Header CRC error */
-#define SEL6_CO_DCRC   012   /* DDCMP Data CRC/ BS frame CRC */
-#define SEL6_CO_NOBUF  014   /* No RX buffer available */
-#define SEL6_CO_DSRCHG 016   /* DSR changed (Initially OFF) */
-#define SEL6_CO_NXM    020   /* NXM */
-#define SEL6_CO_TXU    022   /* Transmitter underrun */
-#define SEL6_CO_RXO    024   /* Receiver overrun */
-#define SEL6_CO_KDONE  026   /* Kill complete */
-
-/* CONTROL IN modifiers */
-#define SEL6_CI_V_DDCMP 15   /* Run DDCMP vs. bit-stuffing */
-#define SEL6_CI_DDCMP   (1u << SEL6_CI_V_DDCMP)
-#define SEL6_CI_V_HDX   13   /* Half-duplex */
-#define SEL6_CI_HDX     (1u << SEL6_CI_V_HDX)
-#define SEL6_CI_V_ENASS 12   /* Enable secondary station address filter */
-#define SEL6_CI_ENASS   (1u << SEL6_CI_V_ENASS)
-#define SEL6_CI_V_NOCRC  9
-#define SEL6_CI_NOCRC   (1u << SEL6_CI_V_NOCRC)
-#define SEL6_CI_V_ENABLE 8
-#define SEL6_CI_ENABLE  (1u << SEL6_CI_V_ENABLE)
-#define SEL6_CI_SADDR    0377
-
-/* Buffer descriptor list bits */
-
-#define BDL_LDS    0100000  /* Last descriptor in list. */
-#define BDL_RSY    0010000  /* Resync transmitter. */
-#define BDL_XAD    0006000  /* Buffer address bits 17 & 16. */
-#define BDL_EOM    0001000  /* End of message. */
-#define BDL_SOM    0000400  /* Start of message. */
-
-#define KMC_CRAMSIZE 1024   /* Size of CRAM (microcode control RAM). */
-#define KMC_DRAMSIZE  1024
-#define KMC_CYCLETIME 300   /* Microinstruction cycle time, nsec */
-
-#define MAXQUEUE 16     /* Number of rx bdl's we can handle. */
 
 /* From host VM: DUP_LINES is the maximum number of DUP lines on the Unibus.
  * The KMC may not control all of them, but the DUP API also uses the index in
@@ -225,33 +121,174 @@ extern int32 IREQ (HLVL);
 #define INITIAL_KMCS KMC_UNITS
 #endif
 
-/* TODO: Remove 4 debug lines */
-#undef KMC_UNITS
-#define KMC_UNITS 2
+#if INITIAL_KMCS == 0
 #undef INITIAL_KMCS
-#define INITIAL_KMCS 2
-/* TODO: adjust this */
-
-/* Interval at which to run service task for each DUP
- * 417 uSec is roughly the byte rate at 19,200 b/sec
- */
-#ifndef KMC_POLLTIME
-#define KMC_POLLTIME 417
+#define INITIAL_KMCS 1
+#define KMC_DIS DEV_DIS
+#else
+#define KMC_DIS 0
 #endif
 
-struct buffer_list {    /* BDL queue elements  */
+/* Data troll facility
+ *
+ * Enables data troll, which simulates imperfect links.
+ */
+#ifndef KMC_TROLL
+#define KMC_TROLL 1
+#endif
+
+/* Define DUP_RXRESYNC to disable/enable RCVEN at the expected times.
+ * This is used to resynch the receiver, but I'm not sure if it would
+ * cause the emulated DUP to lose data...especially with QSYNC
+#define DUP_RXRESYNC 1
+ */
+
+/* End of configuration */
+
+/* Architectural structures and macros */
+
+/* Maximum line speed
+ * KDP limit was about 19,200 BPS.
+ * Used to pace BD consumption.  If too fast, too many messages can
+ * be outstanding and the OS will reject ACKs.  *TODO* Pick a final limit.
+ */
+#define MAX_SPEED (1*1000*1000)
+
+#define DFLT_SPEED (19200)
+
+
+/* Transmission (or reception) time of a buffer of n
+ * characters at speed bits/sec.  8 bit chars (sync line)
+ * result in microseconds.
+ */
+#define XTIME(n,speed) (((n)*8*1000*1000)/(speed))
+
+/* Queue elements
+ * A queue is a double-linked list of element headers.
+ * The head of the queue is an element without a body.
+ * A queue is empty when the only element in the queue is
+ * the head.
+ * Each queue has an asociated count of the elements in the
+ * queue; this simplifies knowing its state.
+ * Each queue also has a maximum length.
+ *
+ * Queues are manipulated with initqueue, insqueue, and remqueue.
+ */
+struct queuehdr {
+  struct queuehdr     *next;
+  struct queuehdr     *prev;
+};
+typedef struct queuehdr QH;
+
+/* bits, SEL0 */
+
+#define SEL0_RUN    0100000                     /* Run bit. */
+#define SEL0_MRC    0040000                     /* Master clear. */
+#define SEL0_CWR    0020000                     /* CRAM write. */
+#define SEL0_SLU    0010000                     /* Step Line Unit. */
+#define SEL0_LUL    0004000                     /* Line Unit Loop. */
+#define SEL0_RMO    0002000                     /* ROM output. */
+#define SEL0_RMI    0001000                     /* ROM input. */
+#define SEL0_SUP    0000400                     /* Step microprocessor. */
+#define SEL0_RQI    0000200                     /* Request input. */
+#define SEL0_IEO    0000020                     /* Interrupt enable output. */
+#define SEL0_IEI    0000001                     /* Interrupt enable input. */
+
+/* bits, SEL2 */
+
+#define SEL2_OVR    0100000                     /* Completion queue overrun. */
+#define SEL2_V_LINE 8                           /* Line number assigned by host */
+#define SEL2_LINE   (0177 << SEL2_V_LINE)
+#define   MAX_LINE   017                        /* Maximum line number allowed in BASE_IN */
+#define   MAX_ACTIVE (MAX_LINE+1)
+#define SEL2_RDO    0000200                     /* Ready for output transaction. */
+#define SEL2_RDI    0000020                     /* Ready for input transaction. */
+#define SEL2_IOT    0000004                     /* I/O type, 1 = rx, 0 = tx. */
+#define SEL2_V_CMD        0                     /* Command code */
+#define SEL2_CMD    0000003                     /* Command code
+                                                 * IN are commands TO the KMC
+                                                 * OUT are command completions FROM the KMC.
+                                                 */
+#  define CMD_BUFFIN      0                     /*   BUFFER IN */
+#  define CMD_CTRLIN      1                     /*   CONTROL IN */
+#  define CMD_BASEIN      3                     /*   BASE IN */
+#  define CMD_BUFFOUT     0                     /*   BUFFER OUT */
+#  define CMD_CTRLOUT     1                     /*   CONTROL OUT */
+
+#define SEL2_II_RESERVED  (SEL2_OVR | 0354)     /* Reserved: 15, 7:5, 3:2 */
+/* bits, SEL4 */
+
+#define SEL4_CI_POLL    0377                    /* DUP polling interval, 50 usec units */
+
+#define SEL4_ADDR    0177777                    /* Generic: Unibus address <15:0>
+
+/* bits, SEL6 */
+
+#define SEL6_V_CO_XAD    14                     /* Unibus extended address bits */
+#define SEL6_CO_XAD    (3u << SEL6_V_CO_XAD)
+
+/* BASE IN */
+#define SEL6_II_DUPCSR 0017770                  /* BASE IN: DUP CSR <12:3> */
+
+/* BUFFER IN */
+#define SEL6_BI_ENABLE 0020000                  /* BUFFER IN: Assign after KILL */
+#define SEL6_BI_KILL   0010000                  /* BUFFER IN: Return all buffers */
+
+/* BUFFER OUT */
+#define SEL6_BO_EOM    0010000                  /* BUFFER OUT: End of message */
+
+/* CONTROL OUT event codes */
+#define SEL6_CO_ABORT  006                      /* Bit stuffing rx abort */
+#define SEL6_CO_HCRC   010                      /* DDCMP Header CRC error */
+#define SEL6_CO_DCRC   012                      /* DDCMP Data CRC/ BS frame CRC */
+#define SEL6_CO_NOBUF  014                      /* No RX buffer available */
+#define SEL6_CO_DSRCHG 016                      /* DSR changed (Initially OFF) */
+#define SEL6_CO_NXM    020                      /* NXM */
+#define SEL6_CO_TXU    022                      /* Transmitter underrun */
+#define SEL6_CO_RXO    024                      /* Receiver overrun */
+#define SEL6_CO_KDONE  026                      /* Kill complete */
+
+/* CONTROL IN modifiers */
+#define SEL6_CI_V_DDCMP 15                      /* Run DDCMP vs. bit-stuffing */
+#define SEL6_CI_DDCMP   (1u << SEL6_CI_V_DDCMP)
+#define SEL6_CI_V_HDX   13                      /* Half-duplex */
+#define SEL6_CI_HDX     (1u << SEL6_CI_V_HDX)
+#define SEL6_CI_V_ENASS 12                      /* Enable secondary station address filter */
+#define SEL6_CI_ENASS   (1u << SEL6_CI_V_ENASS)
+#define SEL6_CI_V_NOCRC  9
+#define SEL6_CI_NOCRC   (1u << SEL6_CI_V_NOCRC)
+#define SEL6_CI_V_ENABLE 8
+#define SEL6_CI_ENABLE  (1u << SEL6_CI_V_ENABLE)
+#define SEL6_CI_SADDR    0377
+
+/* Buffer descriptor list bits */
+
+#define BDL_LDS    0100000                      /* Last descriptor in list. */
+#define BDL_RSY    0010000                      /* Resync transmitter. */
+#define BDL_XAD    0006000                      /* Buffer address bits 17 & 16. */
+#define BDL_S_XAD  (16-10)                      /* Shift to position XAX in address */
+#define BDL_EOM    0001000                      /* End of message. */
+#define BDL_SOM    0000400                      /* Start of message. */
+
+#define KMC_CRAMSIZE 1024                       /* Size of CRAM (microcode control RAM). */
+#define KMC_DRAMSIZE 1024
+#define KMC_CYCLETIME 300                       /* Microinstruction cycle time, nsec */
+
+#define MAXQUEUE 2                              /* Number of bdls that can be queued for tx and rx
+                                                 * per line. (KDP ucode limits to 2)
+                                                 */
+
+struct buffer_list {                            /* BDL queue elements  */
       QH     hdr;
       uint32 ba;
 };
 typedef struct buffer_list BDL;
 
  struct workblock {
-   struct dupstate *dup;
    t_bool    first;
    uint32    bda;
    uint16    bd[3];
    uint16    rcvc;
-#define      xmtc rcvc
    uint32    ba;
  };
  typedef struct workblock WB;
@@ -264,34 +301,58 @@ typedef struct buffer_list BDL;
  */
 
 struct dupstate {
-    int32  kmc;              /* Controlling KMC */
-    int32  line;             /* OS-assigned line number */
-    int32  dupidx;           /* DUP API Number amongst all DUP11's on Unibus (-1 == unassigned) */
-    int32  modemstate;       /* Line Link Status (i.e. 1 when DCD/DSR is on, 0 otherwise */
- #define MDM_DSR    1
+    int32  kmc;                                 /* Controlling KMC */
+    int32  line;                                /* OS-assigned line number */
+    int32  dupidx;                              /* DUP API Number amongst all DUP11's on Unibus (-1 == unassigned) */
+    int32  linkstate;                           /* Line Link Status (i.e. 1 when DCD/DSR is on, 0 otherwise */
+ #define LINK_DSR     1
+ #define LINK_SEL     2
     uint16 ctrlFlags;
     uint32 dupcsr;
-
-    BDL    bdq[MAXQUEUE*2];   /* Queued TX and RX buffer lists */
-    QH     bdqh;              /* Free queue */
+    uint32 linespeed;                           /* Effective line speed (bps) */
+    BDL    bdq[MAXQUEUE*2];                     /* Queued TX and RX buffer lists */
+    QH     bdqh;                                /* Free queue */
     int32  bdavail;
 
-    QH     rxqh;              /* Receive queue from host */
+    QH     rxqh;                                /* Receive queue from host */
     int32  rxavail;
-    QH     txqh;              /* Transmit queue form host */
+    WB     rx;
+    uint32 rxstate;
+/* States.  Note that these are ordered; there are < comparisions */
+#define RXIDLE   0
+#define RXBDL    1
+#define RXBUF    2
+#define RXDAT    3
+#define RXLAST   4
+#define RXFULL   5
+#define RXNOBUF  6
+
+    uint8  *rxmsg;
+    uint16 rxmlen;
+    uint16 rxdlen;
+    uint16 rxused;
+
+    QH     txqh;                                /* Transmit queue from host */
     int32  txavail;
     WB     tx;
     uint32 txstate;
-#define TXIDLE 0
-#define TXSOM  1
-#define TXHDR  2
-#define TXDATA 4
-#define TXACT  5
-#define TXKILL 6
-#define TXKILR 7
+/* States.  Note that these are ordered; there are < comparisions */
+#define TXIDLE   0
+#define TXDONE   1
+#define TXRTS    2
+#define TXSOM    3
+#define TXHDR    4
+#define TXHDRX   5
+#define TXDATA   6
+#define TXDATAX  7
+#define TXMRDY   8
+#define TXRDY    9
+#define TXACT   10
+#define TXKILL  11
+#define TXKILR  12
 
     uint8  *txmsg;
-    size_t  txmsize, txmlen;
+    size_t  txmsize, txslen, txmlen;
     };
 
 typedef struct dupstate dupstate;
@@ -299,26 +360,34 @@ typedef struct dupstate dupstate;
 /* State for every DUP that MIGHT be controlled.
  * A DUP can be controlled by at most one KMC.
  */
-dupstate dupState[DUP_LINES] = { 0 };
+static dupstate dupState[DUP_LINES] = { 0 };
 
 /* Flags defining sim_debug conditions. */
 
-#define DF_CMD    0001  /* Print commands. */
-#define DF_TX     0002  /* Print tx done. */
-#define DF_RX     0004  /* Print rx done. */
-#define DF_DATA   0010  /* Print data. */
-#define DF_QUEUE  0020  /* Print rx/tx queue changes. */
-#define DF_TRC    0040  /* Detailed trace. */
-#define DF_INF    0100  /* Info */
+#define DF_CMD   00001                          /* Trace commands. */
+#define DF_BFO   00002                          /* Trace buffers out */
+#define DF_CTO   00004                          /* Trace control out */
+#define DF_QUE   00010                          /* Trace internal queues */
+#define DF_RGR   00020                          /* Register reads */
+#define DF_RGW   00040                          /* Register writes. */
+#define DF_INF   00100                          /* Info */
+#define DF_ERR   00200                          /* Error halts */
+#define DF_PKT   00400                          /* Errors in packet (use DUP pkt trace for pkt data */
+#define DF_INT   01000                          /* Interrupt delivery */
+#define DF_BUF   02000                          /* Buffer service */
 
-DEBTAB kmc_debug[] = {
+static DEBTAB kmc_debug[] = {
     {"CMD",   DF_CMD},
-    {"TX",    DF_TX},
-    {"RX",    DF_RX},
-    {"DATA",  DF_DATA},
-    {"QUEUE", DF_QUEUE},
-    {"TRC",   DF_TRC},
+    {"BFO",   DF_BFO},
+    {"CTO",   DF_CTO},
+    {"QUE",   DF_QUE},
+    {"RGR",   DF_RGR},
+    {"RGW",   DF_RGW},
     {"INF",   DF_INF},
+    {"ERR",   DF_ERR},
+    {"PKT",   DF_PKT},
+    {"BUF",   DF_BUF},
+    {"INT",   DF_INT},
     {0}
 };
 
@@ -326,8 +395,8 @@ DEBTAB kmc_debug[] = {
  * across all KMCs.
  */
 
-int32 AintPending = 0;
-int32 BintPending = 0;
+static int32 AintPending = 0;
+static int32 BintPending = 0;
 
 /* Per-KMC state */
 
@@ -338,16 +407,20 @@ int32 BintPending = 0;
  * For this to work, k, a uint32 must be in scope and valid.
  *
  * k can be found in several ways:
- *  k is the offset into any of the tables.  E.g. given a UNIT pointer,
- *  k = uptr - kc_units.
+ *  k is the offset into any of the tables. 
+ * Given a UNIT pointer k = txup->unit_kmc.
  * The KMC assigned to control a DUP is stored it its dupstate.
- *  k = dupState[ndupno]->kmc; (-1 if not controlled by any KMC)
+ *  k = dupState[dupno]->kmc; (-1 if not controlled by any KMC)
  * The DUP associated with a line is stored in line2dup.
  *  k = line2dup[line]->kmc
  * From the DEVICE pointer, dptr->units lists all the UNITs, and the
  * number of units is dptr->numunits.
  * From a CSR address:
  *  k = (PA - dib.ba) / IOLN_KMC
+ *
+ * Note that the UNIT arrays are indexed [line][kmc], so pointer
+ * math is not the best way to find k.  (TX line 0 is the public
+ * UNIT for each KMC.)
  *
  */
 
@@ -357,20 +430,18 @@ int32 BintPending = 0;
  * codes are provided here.
  */
 
-#define HALT_STOP      0       /* Run bit cleared */
-#define HALT_MRC       1       /* Master clear */
-#define HALT_BADRES    2       /* Resume without initialization */
-#define HALT_LINE      3       /* Line number out of range */
-#define HALT_BADCMD    4       /* Undefined command received */
-#define HALT_BADCSR    5       /* BASE IN had non-zero MBZ */
-#define HALT_BADDUP    6       /* DUP not configured and enabled */
-#define HALT_DUPALC    7       /* DUP assigned to another KMC */
-#define HALT_RCVOVF    8       /* Too many receive buffers assigned */
-#define HALT_MTRCV     9       /* Receive buffer descriptor has zero size */
-#define HALT_XMTOVF   10       /* Too many transmit buffers assigned */
-#define HALT_XSOM     11       /* Transmission didn't start with SOM */
-#define HALT_XSOM2    12       /* Data buffer didn't start with SOM */
-#define HALT_BADUC    13       /* No or unrecognized microcode loaded */
+#define HALT_STOP      0                        /* Run bit cleared */
+#define HALT_MRC       1                        /* Master clear */
+#define HALT_BADRES    2                        /* Resume without initialization */
+#define HALT_LINE      3                        /* Line number out of range */
+#define HALT_BADCMD    4                        /* Undefined command received */
+#define HALT_BADCSR    5                        /* BASE IN had non-zero MBZ */
+#define HALT_RCVOVF    6                        /* Too many receive buffers assigned */
+#define HALT_MTRCV     7                        /* Receive buffer descriptor has zero size */
+#define HALT_XMTOVF    8                        /* Too many transmit buffers assigned */
+#define HALT_XSOM      9                        /* Transmission didn't start with SOM */
+#define HALT_XSOM2    10                        /* Data buffer didn't start with SOM */
+#define HALT_BADUC    11                        /* No or unrecognized microcode loaded */
 
 /* KMC event notifications are funneled through the small number of CSRs.
  * Since the CSRs may not be available when an event happens, events are
@@ -395,55 +466,59 @@ struct  cqueue {
 typedef struct cqueue CQ;
 
 /* CSRs.  These are known as SELn as words and BSELn as bytes */
-uint16    kmc_sel0[KMC_UNITS];  /* CSR0 - BSEL 1,0 */
-#define       sel0 kmc_sel0[k]
-uint16    kmc_sel2[KMC_UNITS];  /* CSR2 - BSEL 3,2 */
-#define       sel2 kmc_sel2[k]
-uint16    kmc_sel4[KMC_UNITS];  /* CSR4 - BSEL 5,4 */
-#define    sel4 kmc_sel4[k]
-uint16    kmc_sel6[KMC_UNITS];  /* CSR6 - BSEL 7,6 */
-#define    sel6 kmc_sel6[k]
+static uint16    kmc_sel0[KMC_UNITS];           /* CSR0 - BSEL 1,0 */
+#define              sel0 kmc_sel0[k]
+static uint16    kmc_sel2[KMC_UNITS];           /* CSR2 - BSEL 3,2 */
+#define              sel2 kmc_sel2[k]
+static uint16    kmc_sel4[KMC_UNITS];           /* CSR4 - BSEL 5,4 */
+#define              sel4 kmc_sel4[k]
+static uint16    kmc_sel6[KMC_UNITS];           /* CSR6 - BSEL 7,6 */
+#define              sel6 kmc_sel6[k]
 
 /* Microprocessor state - subset  exposed to the host */
-uint16    kmc_upc[KMC_UNITS];   /* Micro PC */
-#define       upc kmc_upc[k]
-uint16    kmc_mar[KMC_UNITS];   /* Micro Memory Address Register */
-#define       mar kmc_mar[k]
-uint16    kmc_mna[KMC_UNITS];   /* Maintenance Address Register */
-#define       mna kmc_mna[k]
-uint16    kmc_mni[KMC_UNITS];   /* Maintenance Instruction Register */
-#define       mni kmc_mni[k]
-uint16    kmc_ucode[KMC_UNITS][KMC_CRAMSIZE];
-#define       ucode kmc_ucode[k]
-uint16    kmc_dram[KMC_UNITS][KMC_DRAMSIZE];
-#define       dram kmc_dram[k]
+static uint16    kmc_upc[KMC_UNITS];            /* Micro PC */
+#define              upc kmc_upc[k]
+static uint16    kmc_mar[KMC_UNITS];            /* Micro Memory Address Register */
+#define              mar kmc_mar[k]
+static uint16    kmc_mna[KMC_UNITS];            /* Maintenance Address Register */
+#define              mna kmc_mna[k]
+static uint16    kmc_mni[KMC_UNITS];            /* Maintenance Instruction Register */
+#define              mni kmc_mni[k]
+static uint16    kmc_ucode[KMC_UNITS][KMC_CRAMSIZE];
+#define              ucode kmc_ucode[k]
+static uint16    kmc_dram[KMC_UNITS][KMC_DRAMSIZE];
+#define              dram kmc_dram[k]
 
-dupstate *kmc_line2dup[KMC_UNITS][MAX_LINE+1];
-#define       line2dup kmc_line2dup[k]
+static dupstate *kmc_line2dup[KMC_UNITS][MAX_ACTIVE];
+#define              line2dup kmc_line2dup[k]
 
 /* General state booleans */
-int       kmc_gflags[KMC_UNITS]; /* Miscellaneous gflags */
-#define       gflags kmc_gflags[k]
-#   define    FLG_INIT  000001  /* Master clear has been done once.
-                                 * Data structures trustworthy.
-                                 */
-#   define    FLG_AINT  000002  /* Pending KMC "A" (INPUT) interrupt */
-#   define    FLG_BINT  000004  /* Pending KMC "B" (OUTPUT) interrupt */
-#   define    FLG_UCINI 000010  /* Ucode initialized */
+static int       kmc_gflags[KMC_UNITS];         /* Miscellaneous gflags */
+#define              gflags kmc_gflags[k]
+#   define             FLG_INIT  000001         /* Master clear has been done once.
+                                                 * Data structures trustworthy.
+                                                 */
+#   define             FLG_AINT  000002         /* Pending KMC "A" (INPUT) interrupt */
+#   define             FLG_BINT  000004         /* Pending KMC "B" (OUTPUT) interrupt */
+#   define             FLG_UCINI 000010         /* Ucode initialized, ucode structures and ints OK */
 
 /* Completion queue elements, header  and freelist */
-CQ        kmc_cqueue[KMC_UNITS][CQUEUE_MAX];
-#define       cqueue kmc_cqueue[k]
+static CQ        kmc_cqueue[KMC_UNITS][CQUEUE_MAX];
+#define              cqueue kmc_cqueue[k]
 
-QH        kmc_cqueueHead[KMC_UNITS];
-#define       cqueueHead kmc_cqueueHead[k]
-int32     kmc_cqueueCount[KMC_UNITS];
-#define       cqueueCount kmc_cqueueCount[k]
+static QH        kmc_cqueueHead[KMC_UNITS];
+#define              cqueueHead kmc_cqueueHead[k]
+static int32     kmc_cqueueCount[KMC_UNITS];
+#define              cqueueCount kmc_cqueueCount[k]
 
-QH        kmc_freecqHead[KMC_UNITS];
-#define       freecqHead kmc_freecqHead[k]
-int32     kmc_freecqCount[KMC_UNITS];
-#define       freecqCount kmc_freecqCount[k]
+static QH        kmc_freecqHead[KMC_UNITS];
+#define              freecqHead kmc_freecqHead[k]
+static int32     kmc_freecqCount[KMC_UNITS];
+#define              freecqCount kmc_freecqCount[k]
+#if KMC_TROLL
+static int32     kmc_trollHungerLevel[KMC_UNITS];
+#define              trollHungerLevel kmc_trollHungerLevel[k]
+#endif
 
 /* *** End of per-KMC state *** */
 
@@ -453,33 +528,70 @@ int32     kmc_freecqCount[KMC_UNITS];
 static t_stat kmc_reset(DEVICE * dptr);
 static t_stat kmc_readCsr(int32* data, int32 PA, int32 access);
 static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access);
-static void kmc_doMicroinstruction( int32 k, uint16 instr );
-static t_stat kmc_eventService(UNIT * uptr);
+static void kmc_doMicroinstruction (int32 k, uint16 instr);
+static t_stat kmc_txService(UNIT * txup);
+static t_stat kmc_rxService(UNIT * rxup);
 
-static t_stat kmc_setDeviceCount (UNIT *uptr, int32 val, char *cptr, void *desc);
-static t_stat kmc_showDeviceCount (FILE *st, UNIT *uptr, int32 val, void *desc);
-static t_stat kmc_showStatus ( FILE *st, UNIT *up, int32 v, void *dp);
+static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc);
+static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc);
+static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc);
+static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc);
+#if KMC_TROLL
+static t_stat kmc_setTrollHunger (UNIT *txup, int32 val, char *cptr, void *desc);
+static t_stat kmc_showTrollHunger (FILE *st, UNIT *txup, int32 val, void *desc);
+#endif
+static t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v, void *dp);
+
+static t_stat kmc_help (FILE *st, struct sim_device *dptr,
+                            struct sim_unit *uptr, int32 flag, char *cptr); 
+static char *kmc_description (DEVICE *dptr);
 
 /* Global data */
+
+extern int32 IREQ (HLVL);
 
 static int32 kmc_AintAck (void);
 static int32 kmc_BintAck (void);
 
 #define IOLN_KMC        010
 
-DIB kmc_dib = { IOBA_AUTO,                  /* ba - Base address */
-                IOLN_KMC * INITIAL_KMCS,    /* lnt - Length */
-                &kmc_readCsr,               /* rd - read IO */
-                &kmc_writeCsr,              /* wr - write IO */
-                2 * INITIAL_KMCS,           /* vnum - number of Interrupt vectors */
-                IVCL (KMCA),                /* vloc - vector locator */
-                VEC_AUTO,                   /* vec - auto */
-                {&kmc_AintAck,              /* ack - iack routines */
-                 &kmc_BintAck} };
+static DIB kmc_dib = {
+    IOBA_AUTO,                                  /* ba - Base address */
+    IOLN_KMC * INITIAL_KMCS,                    /* lnt - Length */
+    &kmc_readCsr,                               /* rd - read IO */
+    &kmc_writeCsr,                              /* wr - write IO */
+    2 * INITIAL_KMCS,                           /* vnum - number of Interrupt vectors */
+    IVCL (KMCA),                                /* vloc - vector locator */
+    VEC_AUTO,                                   /* vec - auto */
+    {&kmc_AintAck,                              /* ack - iack routines */
+     &kmc_BintAck},
+    IOLN_KMC,                                   /* IO space per unit */
+};
 
-UNIT kmc_units[KMC_UNITS];
+/* One UNIT for each (possible) active line for transmit, and another for receive */
+static UNIT tx_units[MAX_ACTIVE][KMC_UNITS]; /* Line 0 is primary unit.  txup references */
+#define unit_kmc      u3
+#define unit_line     u4
+#define unit_htime    u5
 
-BITFIELD kmc_sel0_decoder[] = {
+/* Timers - in usec */
+
+#define RXPOLL_DELAY   (1*1000)                 /* Poll for a new message */
+#define RXBDL_DELAY    (10*1000)                /* Grace period for host to supply a BDL */
+#define RXNEWBD_DELAY  (10)                     /* Delay changing descriptors */
+#define RXSTART_DELAY  (50)                     /* Host provided BDL to receive start */
+
+
+static UNIT rx_units[MAX_ACTIVE][KMC_UNITS];    /* Secondary unit, used for RX.  rxup references */
+
+/* Timers - in usec */
+
+#define TXSTART_DELAY  (10)                     /* TX BUFFER IN to TX start */
+#define TXDONE_DELAY   (10)                     /* Completion to to poll for next bd */
+#define TXCTS_DELAY    (100*1000)               /* Polling for CTS to appear */
+#define TXDUP_DELAY    (1*1000*1000)            /* Wait for DUP to accept data (SNH) */
+
+static BITFIELD kmc_sel0_decoder[] = {
     BIT (IEI),
     BITNCF (3),
     BIT (IEO),
@@ -495,7 +607,7 @@ BITFIELD kmc_sel0_decoder[] = {
     BIT (RUN),
     ENDBITS
 };
-BITFIELD kmc_sel2_decoder[] = {
+static BITFIELD kmc_sel2_decoder[] = {
     BITF (CMD,2),
     BIT (IOT),
     BITNCF (1),
@@ -506,11 +618,11 @@ BITFIELD kmc_sel2_decoder[] = {
     BIT (CQOVF),
     ENDBITS
 };
-REG kmc_reg[] = {
-    { BRDATADF ( SEL0, kmc_sel0, KMC_RDX, 16, KMC_UNITS, "Initialization/control", kmc_sel0_decoder) },
-    { BRDATADF ( SEL2, kmc_sel2, KMC_RDX, 16, KMC_UNITS, "Command/line", kmc_sel2_decoder) },
-    { ORDATA ( SEL4, kmc_sel4, 16) },
-    { ORDATA ( SEL6, kmc_sel6, 16) },
+static REG kmc_reg[] = {
+    { BRDATADF (SEL0, kmc_sel0, KMC_RDX, 16, KMC_UNITS, "Initialization/control", kmc_sel0_decoder) },
+    { BRDATADF (SEL2, kmc_sel2, KMC_RDX, 16, KMC_UNITS, "Command/line", kmc_sel2_decoder) },
+    { ORDATA (SEL4, kmc_sel4, 16) },
+    { ORDATA (SEL6, kmc_sel6, 16) },
     { NULL },
     };
 
@@ -519,63 +631,69 @@ MTAB kmc_mod[] = {
         &set_addr, &show_addr, NULL, "Bus address" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "ADDRESS",
         &set_vec, &show_vec, NULL, "Interrupt vector" },
-    { MTAB_XTD|MTAB_VUN, 1, "STATUS", NULL, NULL, &kmc_showStatus, NULL, "Display KMC status" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "SPEED", "SPEED=dup=bps",
+        &kmc_setLineSpeed, &kmc_showLineSpeed, NULL, "Line speed (bps)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_NMO, 1, "STATUS", NULL, NULL, &kmc_showStatus, NULL, "Display KMC status" },
 #if KMC_UNITS > 1
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "DEVICES", "DEVICES=n",
         &kmc_setDeviceCount, &kmc_showDeviceCount, NULL, "Display number of KMC devices enabled" },
+#endif
+#if KMC_TROLL
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR|MTAB_NMO, 0, "TROLL", "TROLL=appetite",
+      &kmc_setTrollHunger, &kmc_showTrollHunger, NULL, "Appetite in milligulps" },
 #endif
     { 0 },
     };
 
 DEVICE kmc_dev = {
     "KDP", 
-    kmc_units, 
-    kmc_reg,                        /* Register decode tables */
-    kmc_mod,                        /* Modifier table */
-    KMC_UNITS,                      /* Number of units */
-    KMC_RDX,                        /* Address radix */
-    13,                             /* Address width: 18 - <17:13> are 1s, omits UBA */
-    1,                              /* Address increment */
-    KMC_RDX,                        /* Data radix */
-    8,                              /* Data width */
-    NULL,                           /* examine routine */
-    NULL,                           /* Deposit routine */
-    &kmc_reset,                     /* reset routine */
-    NULL,                           /* boot routine */
-    NULL,                           /* attach routine */
-    NULL,                           /* detach routine */
-    &kmc_dib,                       /* context */
-    DEV_UBUS | DEV_DIS              /* Flags */
+    tx_units[0], 
+    kmc_reg,                                    /* Register decode tables */
+    kmc_mod,                                    /* Modifier table */
+    INITIAL_KMCS,                               /* Number of units */
+    KMC_RDX,                                    /* Address radix */
+    13,                                         /* Address width: 18 - <17:13> are 1s, omits UBA */
+    1,                                          /* Address increment */
+    KMC_RDX,                                    /* Data radix */
+    8,                                          /* Data width */
+    NULL,                                       /* examine routine */
+    NULL,                                       /* Deposit routine */
+    &kmc_reset,                                 /* reset routine */
+    NULL,                                       /* boot routine */
+    NULL,                                       /* attach routine */
+    NULL,                                       /* detach routine */
+    &kmc_dib,                                   /* context */
+    DEV_UBUS | KMC_DIS                          /* Flags */
              | DEV_DISABLE
              | DEV_DEBUG,
-    0,                              /* debug control */
-    kmc_debug,                      /* debug flag table */
-    NULL,                           /* memory size routine */
-    NULL,                           /* logical name */
-    NULL,                           /* help routine */
-    NULL,                           /* attach help routine */
-    NULL,                           /* help context */
-    &kmc_description                /* Device description routine */
+    0,                                          /* debug control */
+    kmc_debug,                                  /* debug flag table */
+    NULL,                                       /* memory size routine */
+    NULL,                                       /* logical name */
+    &kmc_help,                                  /* help routine */
+    NULL,                                       /* attach help routine */
+    NULL,                                       /* help context */
+    &kmc_description                            /* Device description routine */
 };
 
 /* Forward declarations: not referenced in simulator data */
 
-static void kmc_masterClear(UNIT *uptr);
+static void kmc_masterClear(uint32 k);
 static void kmc_startUcode (uint32 k);
 static void kmc_dispatchInputCmd(int32 k);
 
 /* Control functions */
-static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line, uint32 ba );
-static void kmc_ctrlIn (int32 k, dupstate *d, int line, uint32 ba );
+static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line);
+static void kmc_ctrlIn (int32 k, dupstate *d, int line);
 
 /* Receive functions */
 void kmc_rxBufferIn(dupstate *d, int32 ba, uint32 sel6v);
+#ifdef DUPALERT
 static void kdp_receive(int dupidx, uint8* data, int count);
-static t_bool kmc_rxWriteViaBDL( WB *wb, uint8 *data, int count );
+#endif
 
 /* Transmit functions */
 static void kmc_txBufferIn(dupstate *d, int32 ba, uint32 sel6v);
-static void kmc_txStartDup(dupstate *d);
 static void kmc_txComplete (int32 dupidx, int status);
 static t_bool kmc_txNewBdl(dupstate *d);
 static t_bool kmc_txNewBd(dupstate *d);
@@ -601,16 +719,58 @@ static void kmc_updints(int32 k);
 static int32 kmc_AintAck (void);
 static int32 kmc_BintAck (void);
 
+/* DUP access */
+
+/* DUP CSR bits */
+#define DUP_RXCSR           0
+#define DUP_RXCSR_V_DTR     1
+#define DUP_RXCSR_M_DTR     (1<<DUP_RXCSR_V_DTR)
+#define DUP_RXCSR_V_RTS     2
+#define DUP_RXCSR_M_RTS     (1<<DUP_RXCSR_V_RTS)
+#define DUP_RXCSR_V_RCVEN   4
+#define DUP_RXCSR_M_RCVEN   (1<<DUP_RXCSR_V_RCVEN)
+#define DUP_RXCSR_V_STRSYN  8
+#define DUP_RXCSR_M_STRSYN  (1<<DUP_RXCSR_V_STRSYN)
+
+#define DUP_PARCSR           2
+#define DUP_PARCSR_V_ADSYNC  0
+#define DUP_PARCSR_S_ADSYNC  8
+#define DUP_PARCSR_M_ADSYNC  (((1<<DUP_PARCSR_S_ADSYNC)-1)<<DUP_PARCSR_V_ADSYNC)
+#define DUP_PARCSR_V_NOCRC   9
+#define DUP_PARCSR_M_NOCRC   (1<<DUP_PARCSR_V_NOCRC)
+#define DUP_PARCSR_V_SECMODE 12
+#define DUP_PARCSR_M_SECMODE (1<<DUP_PARCSR_V_SECMODE)
+#define DUP_PARCSR_V_DECMODE 15
+#define DUP_PARCSR_M_DECMODE (1<<DUP_PARCSR_V_DECMODE)
+
+#define DUP_TXCSR            4
+#define DUP_TXCSR_V_HALFDUP  3
+#define DUP_TXCSR_M_HALFDUP  (1<<DUP_TXCSR_V_HALFDUP)
+#define DUP_TXCSR_V_DRESET   8
+#define DUP_TXCSR_M_DRESET   (1<<DUP_TXCSR_V_DRESET)
+
+#ifndef DUPMODEM
+#define dup_set_DTR(dup, on) modify_dup_csr (dup, DUP_RXCSR, ((on)? 0: DUP_RXCSR_M_DTR), ((on)? DUP_RXCSR_M_DTR: 0))
+#define dup_set_RTS(dup, on) modify_dup_csr (dup, DUP_RXCSR, ((on)? 0: DUP_RXCSR_M_RTS), ((on)? DUP_RXCSR_M_RTS: 0))
+#define dup_set_RCVEN(dup, on) modify_dup_csr (dup, DUP_RXCSR, ((on)? 0: DUP_RXCSR_M_RCVEN), ((on)? DUP_RXCSR_M_RCVEN: 0))
+#endif
+static t_stat modify_dup_csr (int32 dup, uint16 regnum, uint16 clr, uint16 set);
+static t_stat read_dup_csr (int32 dup, uint16 regnum, uint16 *data);
+static t_stat write_dup_csr (int32 dup, uint16 regnum, uint16 data);
+
 /* Debug support */
-static t_bool kmc_printBufferIn (int32 k, DEVICE *dev, int32 line, char *dir,
+static t_bool kmc_printBufferIn (int32 k, DEVICE *dev, int32 line, t_bool rx,
                                  int32 count, int32 ba, uint16 sel6v);
 static t_bool kmc_printBDL(int32 k, uint32 dbits, DEVICE *dev, uint8 line, int32 ba, int prbuf);
+#if KMC_TROLL
+static t_bool kmc_feedTroll (int32 k, int32 line, uint8 *msg, t_bool rx);
+#endif
 
 /* Environment */
-static const char *kmc_verifyUcode ( int32 k );
+static const char *kmc_verifyUcode (int32 k);
 
 /* Queue management */
-static void initqueue (QH *head, int32 *count, int32 max, void *list, size_t size );
+static void initqueue (QH *head, int32 *count, int32 max, void *list, size_t size);
 /* Convenience for initqueue() calls */
 #    define MAX_LIST_SIZE(q)                    DIM(q),    (q),       sizeof(q[0])
 #    define INIT_HDR_ONLY                       0,         NULL,      0
@@ -624,34 +784,48 @@ static void *remqueue (QH *entry, int32 *count);
  */
 
 static t_stat kmc_reset(DEVICE* dptr) {
-    UNIT *uptr = dptr->units;
-    uint32 k, dupidx;
+    uint32 k, i;
 
     if (sim_switches & SWMASK ('P')) {
-        for (dupidx = 0; dupidx < DIM (dupState); dupidx++) {
-            dupstate *d = &dupState[dupidx];
+        for (i = 0; i < DIM (dupState); i++) {
+            dupstate *d = &dupState[i];
             d->kmc = -1;
             d->dupidx = -1;
+            d->linespeed = DFLT_SPEED;
+        }
+        for (k = 0; k < kmc_dev.numunits; k++) {
+            trollHungerLevel = 0;
         }
     }
 
-    for (k = 0; k < KMC_UNITS; k++, uptr++) {
-        sim_debug(DF_INF, dptr, "KMC%d: Reset\n", k);
+    for (k = 0; k < kmc_dev.numunits; k++) {
+        sim_debug (DF_INF, dptr, "KMC%d: Reset\n", k);
 
-        /* One-time initialization  of UNIT */
-        if( !uptr->action ) {
-            memset (uptr, 0, sizeof *uptr);
-            uptr->action = &kmc_eventService;
-            uptr->flags = 0;
-            uptr->capac = 0;
+        /* One-time initialization of UNITs, one/direction/line */
+        for (i = 0; i < MAX_ACTIVE; i++) {
+            if (!tx_units[i][k].action) {
+                memset (&tx_units[i][k], 0, sizeof tx_units[0][0]);
+                memset (&rx_units[i][k], 0, sizeof tx_units[0][0]);
+
+                tx_units[i][k].action = &kmc_txService;
+                tx_units[i][k].flags = 0;
+                tx_units[i][k].capac = 0;
+                tx_units[i][k].unit_kmc = k;
+                tx_units[i][k].unit_line = i;
+
+                rx_units[i][k].action = &kmc_rxService;
+                rx_units[i][k].flags = 0;
+                rx_units[i][k].capac = 0;
+                rx_units[i][k].unit_kmc = k;
+                rx_units[i][k].unit_line = i;
+            }
         }
-
-        kmc_masterClear (uptr); /* If previously running, halt */
+        kmc_masterClear (k); /* If previously running, halt */
 
         if (sim_switches & SWMASK ('P'))
             gflags &= ~FLG_INIT;
 
-        if (!(gflags & FLG_INIT) ) { /* Power-up reset */
+        if (!(gflags & FLG_INIT)) { /* Power-up reset */
             sel0 = 0x00aa;
             sel2 = 0xa5a5;
             sel4 = 0xdead;
@@ -663,18 +837,19 @@ static t_stat kmc_reset(DEVICE* dptr) {
         }
     }
 
-    return auto_config (dptr->name, ((dptr->flags & DEV_DIS)? 0: dptr->numunits ));  /* auto config */
+    return auto_config (dptr->name, ((dptr->flags & DEV_DIS)? 0: dptr->numunits));  /* auto config */
 }
 
    
 /*
- * KMC11, read registers:
+ * Read registers:
  */
 
-t_stat kmc_readCsr(int32* data, int32 PA, int32 access) {
+static t_stat kmc_readCsr (int32* data, int32 PA, int32 access) {
     int32 k;
 
     k = ((PA-((DIB *)kmc_dev.ctxt)->ba) / IOLN_KMC);
+
     switch ((PA >> 1) & 03) {
     case 00:
         *data = sel0;
@@ -683,7 +858,7 @@ t_stat kmc_readCsr(int32* data, int32 PA, int32 access) {
         *data = sel2;
         break;
     case 02:
-        if ( (sel0 & SEL0_RMO) && (sel0 & SEL0_RMI)) {
+        if ((sel0 & SEL0_RMO) && (sel0 & SEL0_RMI)) {
             *data = mni;
         } else {
             *data = sel4;
@@ -702,16 +877,16 @@ t_stat kmc_readCsr(int32* data, int32 PA, int32 access) {
         break;
     }
     
-    sim_debug(DF_TRC, &kmc_dev, "KMC%u CSR rd: addr=0%06o  SEL%d, data=%06o 0x%04x access=%d\n",
+    sim_debug (DF_RGR, &kmc_dev, "KMC%u CSR rd: addr=0%06o  SEL%d, data=%06o 0x%04x access=%d\n",
               k, PA, PA & 07, *data, *data, access);
     return SCPE_OK;
 }
 
 /*
- * KMC11, write registers:
+ * Write registers:
  */
 
-static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
+static t_stat kmc_writeCsr (int32 data, int32 PA, int32 access) {
     uint32 changed;
     int reg = PA & 07;
     int sel = (PA >> 1) & 03;
@@ -720,10 +895,10 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
     k = ((PA-((DIB *)kmc_dev.ctxt)->ba) / IOLN_KMC);
 
     if (access == WRITE) {
-        sim_debug(DF_TRC, &kmc_dev, "KMC%u CSR wr: addr=0%06o  SEL%d, data=%06o 0x%04x\n",
+        sim_debug (DF_RGW, &kmc_dev, "KMC%u CSR wr: addr=0%06o  SEL%d, data=%06o 0x%04x\n",
                   k, PA, reg, data, data);
     } else {
-        sim_debug(DF_TRC, &kmc_dev, "KMC%u CSR wr: addr=0%06o BSEL%d, data=%06o 0x%04x\n",
+        sim_debug (DF_RGW, &kmc_dev, "KMC%u CSR wr: addr=0%06o BSEL%d, data=%06o 0x%04x\n",
                   k, PA, reg, data, data);
     }
 
@@ -740,17 +915,17 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
             if (((sel0 & SEL0_RUN) == 0) && (changed & SEL0_RUN)) {
                 kmc_halt (k, HALT_MRC);
             }
-            kmc_masterClear(&kmc_units[k]);
+            kmc_masterClear(k);
             break;
         }
-        if( !(data & SEL0_RUN) ) {
+        if (!(data & SEL0_RUN)) {
             if (data & SEL0_RMO) {
                 if ((changed & SEL0_CWR) && (data & SEL0_CWR)) { /* CWR rising */
                     ucode[mna] = sel6;
-                    sel4 = ucode[mna]; /* Copy contents to sel 4 */
+                    sel4 = ucode[mna];          /* Copy contents to sel 4 */
                 }
             } else {
-                if (changed & SEL0_RMO) { /* RMO falling */
+                if (changed & SEL0_RMO) {       /* RMO falling */
                     sel4 = mna;
                 }
             }
@@ -765,7 +940,7 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
                 }
             }
         }
-        if (changed & SEL0_RUN) {	/* Changing the run bit? */
+        if (changed & SEL0_RUN) {	            /* Changing the run bit? */
             if (sel0 & SEL0_RUN) {
                 kmc_startUcode (k);
             } else {
@@ -790,11 +965,11 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
         if (sel0 & SEL0_RUN) {
             /* Handle commands in and out.
              * Output takes priority, but after servicing an
-             * output, we must service an input request even
-             * if we have another output command ready.
+             * output, an input request must be serviced even
+             * if another output command is ready.
              */
             if ((sel2 & SEL2_RDO) && (!(data & SEL2_RDO))) {
-                sel2 = data;                  /* RDO clearing, RDI can't be set */
+                sel2 = data;                    /* RDO clearing, RDI can't be set */
                 if (sel0 & SEL0_RQI) {
                     sel2 |= SEL2_RDI;
                     kmc_updints(k);
@@ -802,8 +977,8 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
                     kmc_processCompletions(k);
             } else {
                 if ((sel2 & SEL2_RDI) && (!(data & SEL2_RDI))) {
-                    sel2 = data;              /* RDI clearing,  RDO can't be set */
-                    kmc_dispatchInputCmd(k);          /* Can set RDO */
+                    sel2 = data;                /* RDI clearing,  RDO can't be set */
+                    kmc_dispatchInputCmd(k);    /* Can set RDO */
                     if ((sel0 & SEL0_RQI) && !(sel2 & SEL2_RDO))
                         sel2 |= SEL2_RDI;
                     kmc_updints(k);
@@ -820,7 +995,7 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
         sel4 = data;
         break;
     case 03: /* SEL6 */
-        if ( sel0 & SEL0_RMI) {
+        if (sel0 & SEL0_RMI) {
             mni = data;
         }
         sel6 = data;
@@ -830,7 +1005,16 @@ static t_stat kmc_writeCsr(int32 data, int32 PA, int32 access) {
     return SCPE_OK;
 }
 
-static void kmc_doMicroinstruction( int32 k, uint16 instr ) {
+/* Microengine simulator
+ *
+ * This simulates a small subset of the KMC11-A's instruction set.
+ * This is necessary because the operating systems force microprocessor
+ * to execute these instructions in order to load (and extract) state.
+ * These are implemented here so that the OS tools are happy, and to
+ * give their error logging tools something to do.
+ */
+
+static void kmc_doMicroinstruction (int32 k, uint16 instr) {
  switch (instr) {
  case 0041222: /* MOVE <MEM><BSEL2> */
 	sel2 = (sel2 & ~0xFF) |  (dram[mar%KMC_DRAMSIZE] & 0xFF);
@@ -866,64 +1050,607 @@ static void kmc_doMicroinstruction( int32 k, uint16 instr ) {
    }
    if ((instr & 0163400) == 0100400) {
      upc = ((instr & 0014000) >> 3) | (instr & 0377);
-     sim_debug (DF_CMD, &kmc_dev, "KMC%u microcode start uPC %04o\n", k, upc);
+     sim_debug (DF_INF, &kmc_dev, "KMC%u microcode start uPC %04o\n", k, upc);
      break;
    }
  }
  return;
 }
 
-/*
- * KMC11 service routine:
+/* Transmitter service.
+ *
+ * Each line has a TX unit.  This thread handles message transmission.
+ *
+ * A host-supplied buffer descriptor list is walked and the data handed off
+ * to the line.  Because the DUP emulator can't abort a transmission in progress,
+ * and wants to receive formatted messages, the data from host memory is
+ * accumulated into an intermediate buffer.
+ *
+ * TX BUFFER OUT completions are delivered as the data is retrieved, which happens
+ * at approximately the 'line speed'; this does not indicate that the data is on
+ * the wire.  Only a DDCMP ACK confirms receipt.
+ *
+ * TX CONTROL OUT completions are generated for errors.
+ *
+ * The buffer descriptor flags for resync, start and end of message are obeyed.
+ *
+ * The transmitter asserts RTS at the beginning of a message, and clears it when
+ * idle.
+ *
+ * No more than one message is on the wire at any time.
+ *
+ * The DUP may be speed limited, delivering transmit completions at line speed.
+ * In that case, the KDP and DUP limits will interact.
+ *
+ * This thread wakes:
+ *   o When a new buffer descriptor is delivered by the host
+ *   o When a state machine timeout expires
+ *   o When a DUP transmit completion occurs.
+ * 
  */
 
-static t_stat kmc_eventService (UNIT* uptr) {
-    int dupidx;
-    int32 k = uptr - kmc_units;
+static t_stat kmc_txService (UNIT *txup) {
+    int32 k = txup->unit_kmc;
+    dupstate *d = line2dup[txup->unit_line];
+    t_bool more;
 
-    assert ( (k >= 0) && (k < KMC_UNITS) );
+    assert ((k >= 0) && (k < (int32) kmc_dev.numunits) && (d->kmc == k) &&
+             (d->line == txup->unit_line));
 
-    /* Service all the DUPs assigned to this KMC */
+    /* Provide the illusion of progress. */
+    upc = 1 + ((upc + 1) % (KMC_CRAMSIZE -1));
 
-    for (dupidx = 0; dupidx < DUP_LINES; dupidx++) {
-        dupstate *d = &dupState[dupidx];
+    /* Process one buffer descriptor per cycle
+     * CAUTION: this switch statement uses fall-through cases.
+     */
 
-        /* Only process enabled lines */
+/* State control macros.
+ *
+ * All exit the current statement (think "break" or "continue")
+ *
+ * Change to newstate and process immediately
+ */
 
-        if ((d->kmc != k) || !(d->ctrlFlags & SEL6_CI_ENABLE)) {
-            continue;
+#define TXSTATE(newstate) {    \
+    d->txstate = newstate;     \
+    more = FALSE;              \
+    continue;            }
+
+/* Change to newstate after a delay of time. */
+#define TXDELAY(newstate,time) {       \
+                txup->wait = time;     \
+                d->txstate = newstate; \
+                more = FALSE;          \
+                break;         }
+
+/* Stop processing an return to IDLE.
+ * This will NOT check for more work - it is used
+ * primarily in error conditions.
+ */
+#define TXSTOP {             \
+        d->txstate = TXIDLE; \
+        more = FALSE;        \
+        break; }
+
+    do {
+        more = TRUE;
+
+        if (d->txstate > TXRTS) {
+            sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: transmit service %s state = %u\n",
+                       k, txup->unit_line, (more? "continued": "activated"), d->txstate);
         }
 
-        kmc_updateDSR (d);
+        switch (d->txstate) {
+        case TXDONE:                            /* Resume from completions */
+            d->txstate = TXIDLE;
 
-        /* Feed transmitter */
-        
-        /* Poll receiver */
+        case TXIDLE:                            /* Check for new BD */
+            if (!kmc_txNewBdl(d)) {
+                TXSTOP;
+            }
+            d->txmlen = 
+                d->txslen = 0;
+            d->txstate = TXRTS;
+
+            dup_set_RTS (d->dupidx, TRUE);
+
+        case TXRTS:                             /* Wait for CTS */
+            if (dup_get_CTS (d->dupidx) <= 0) {
+                TXDELAY (TXRTS, TXCTS_DELAY);
+            }
+
+            d->txstate = TXSOM;
+
+            sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: transmitting bdl=%06o\n",
+                       k, txup->unit_line, d->tx.bda);
+        case TXSOM:                             /* Start assembling a message */
+            if (!(d->tx.bd[2] & BDL_SOM)) {
+                sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: TX BDL not SOM\n", k, d->line);
+                kmc_halt (k, HALT_XSOM);
+                TXSTOP;
+            }
+
+            if (d->tx.bd[2] & BDL_RSY) {
+                static const uint8 resync[8] = { DDCMP_SYN, DDCMP_SYN, DDCMP_SYN, DDCMP_SYN,
+                                                 DDCMP_SYN, DDCMP_SYN, DDCMP_SYN, DDCMP_SYN, };
+                if (!d->txmsg || (d->txmsize < sizeof (resync))) {
+                    d->txmsize = 8 + sizeof (resync);
+                    d->txmsg = (uint8 *)realloc (d->txmsg, 8 + sizeof (resync));
+                }
+                memcpy (d->txmsg, resync, sizeof (resync));
+                d->txmlen =
+                    d->txslen = sizeof (resync);
+            }
+
+            d->txstate = TXHDR;
+
+        case TXHDR:                             /* Assemble the header */
+            if (!kmc_txAppendBuffer(d)) {       /* NXM - Try next list */
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+            TXDELAY (TXHDRX, XTIME (d->tx.bd[1], d->linespeed));
+
+        case TXHDRX:                            /* Report header descriptor done */
+            if (!kmc_bufferAddressOut (k, 0, 0, d->line, d->tx.bda)) {
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+            if (!(d->tx.bd[2] & BDL_EOM)) {
+                if (kmc_txNewBd(d)) {
+                    TXSTATE (TXHDR);
+                }
+                /* Not EOM, no more BDs - underrun or NXM.  In theory
+                 * this should have waited on char time before declaring
+                 * underrun, but no sensible OS would live that dangerously.
+                 */
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+
+            /* EOM. Control messages are always complete */
+            if (d->txmsg[d->txslen+0] == DDCMP_ENQ) {
+                TXSTATE (TXRDY);
+            }
+
+            /* EOM expecting data to follow.
+             * However, if the OS computes and includes HRC in a data/MOP message, this can
+             * be the last descriptor.  In that case, this is EOM.
+             */ 
+            if (d->tx.bd[2] & BDL_LDS) {
+                TXSTATE (TXMRDY);
+                break;
+            }
+
+            /* Data sent in a separate descriptor */
+
+            if (!kmc_txNewBd(d)) {
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+
+            if (!(d->tx.bd[2] & BDL_SOM)) {
+                kmc_halt (k, HALT_XSOM2);
+                sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: TX BDL not SOM\n", k, d->line);
+                TXSTOP;
+            }
+            d->txstate = TXDATA;
+
+        case TXDATA:                            /* Assemble data/maint payload */
+            if (!kmc_txAppendBuffer(d)) {       /* NXM */
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+            TXDELAY (TXDATAX, XTIME (d->tx.bd[1], d->linespeed));
+
+        case TXDATAX:                           /* Report BD completion */
+            if (!kmc_bufferAddressOut (k, 0, 0, d->line, d->tx.bda)) {
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+            if (d->tx.bd[2] & BDL_EOM) {
+                TXSTATE (TXRDY);
+            }
+            if (!kmc_txNewBd(d)) {
+                TXDELAY (TXDONE, TXDONE_DELAY);
+            }
+            TXSTATE (TXDATA);
+
+            /* These states hand-off the message to the DUP.
+             * txService suspends until transmit complete.
+             * Note that txComplete can happen within the calls to the DUP.
+             */
+        case TXMRDY:                            /* Data with OS-embedded HCRC */
+            d->txstate = TXACT; 
+#if KMC_TROLL
+            if (trollHungerLevel) {             /* Troll in the house? */
+                if (kmc_feedTroll (k, d->line, d->txmsg + d->txslen, TRUE)) {
+                    kmc_txComplete (d->dupidx, 0);
+                    TXDELAY (TXDONE, TXDONE_DELAY);
+                }
+            }
+#endif
+            assert (d->txmsg[d->txslen + 0] != DDCMP_ENQ);
+            assert (((d->txmlen - d->txslen) > 8) &&    /* Data, length should match count */
+                    ((((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1]) ==
+                                                             (d->txmlen - (d->txslen + 8))));
+            if (!dup_put_msg_bytes (d->dupidx, d->txmsg + d->txslen, d->txmlen - d->txslen, TRUE, TRUE)) {
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
+                TXDELAY (TXMRDY, TXDUP_DELAY);
+            }
+            more = FALSE;
+            break;
+
+        case TXRDY:                             /* Control or DATA with KDP-CRCH */
+            d->txstate = TXACT;                 /* Note that DUP can complete before returning */
+#if KMC_TROLL
+            if (trollHungerLevel) {             /* Troll in the house? */
+                if (kmc_feedTroll (k, d->line, d->txmsg + d->txslen, TRUE)) {
+                    kmc_txComplete (d->dupidx, 0);
+                    TXDELAY (TXDONE, TXDONE_DELAY);
+                }
+            }
+#endif
+            if (d->txmsg[d->txslen + 0] == DDCMP_ENQ) { /* Control message */
+                assert ((d->txmlen - d->txslen) == 6);
+                if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txslen + 6, TRUE, TRUE)) {
+                    sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
+                    TXDELAY (TXRDY, TXDUP_DELAY);
+                }
+                more = FALSE;
+                break;
+            }
+
+            assert (((d->txmlen - d->txslen) > 6) &&    /* Data, length should match count */
+                    ((((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1]) ==
+                                                             (d->txmlen - (d->txslen + 6))));
+            if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txslen + 6, TRUE, TRUE)) {
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
+                TXDELAY (TXRDY, TXDUP_DELAY);
+            }
+            if (!dup_put_msg_bytes (d->dupidx, d->txmsg + d->txslen + 6, d->txmlen - (d->txslen + 6), FALSE, TRUE)) {
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
+                 TXDELAY (TXRDY, TXDUP_DELAY);
+            }
+            more = FALSE;
+            break;
+
+            /* Active should never be reached as txService is not
+             * scheduled while transmission is in progress.
+             * txComplete will reset txstate based on the final descriptor.
+             */
+        default:
+        case TXACT:
+            sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: kmc_txService called while active\n", k, d->line);
+            TXSTOP;
+        }
+    } while (more);
+#undef TXSTATE
+#undef TXDELAY
+#undef TXSTOP
+
+    if (d->txstate == TXIDLE) {
+        assert (!d->txavail);
+        dup_set_RTS (d->dupidx, FALSE);
+    } else {
+        if (d->txstate != TXACT)
+            sim_activate_after(txup, txup->wait);
+    }
+    return SCPE_OK;
+}
+
+/* Receiver service
+ *
+ * Each line has an RX unit.  This service thread accepts incoming
+ * messages from the DUP, and delivers the data into buffer descriptors
+ * provided by the host.
+ *
+ * Polling is not necessary if the DUP provides input notification; otherwise
+ * it's at a rate of a few character times at 19,200 - the maximum line speed.
+ *
+ * Once a message has been accepted, the thread looks for a host-provided
+ * buffer descriptor.  If one doesn't appear in a reasonable time (in hardware,
+ * it's one character time - this code is more generous), the message is dropped
+ * and a RX CONTROL OUT is issued.
+ *
+ * Then the message is parsed, validated and delivered to the host buffer.
+ *
+ * Any CRC errors generate RX CONTROL OUTs.  RX BUFFER OUTs are generated for each
+ * descriptor filled, and at of message for the last descriptor used.
+ *
+ * If the line is configured for Secondary Station address matching, the
+ * message is discarded if the address does not match (and the CRC validated).
+ *
+ * After generating a RX BUFFER OUT, the thread suspends prior to filling the
+ * next descriptor.
+ *
+ * If reception is killed, the RX state machine is reset by the RX BUFFER IN.
+ *
+ * This thread wakes:
+ *   o When a RX BUFFER IN delivers a buffer
+ *   o When timeouts between states expire.
+ *   o When the DUP notifies it of a new message received.
+ */
+
+static t_stat kmc_rxService (UNIT *rxup) {
+    int32 k = rxup->unit_kmc;
+    dupstate *d = line2dup[rxup->unit_line];
+    BDL *bdl;
+    t_stat r;
+    int32 xrem, seglen;
+
+    assert ((k >= 0) && (k < (int32) kmc_dev.numunits) && (d->kmc == k) &&
+             (d->line == rxup->unit_line));
+
+    if (d->rxstate > RXBDL) {
+        sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: receive service activated state = %u\n",
+                   k, rxup->unit_line, d->rxstate);
     }
 
     /* Provide the illusion of progress. */
-    upc = 1 + ((upc + ((KMC_POLLTIME*1000)/KMC_CYCLETIME)) % (KMC_CRAMSIZE -1));
+    upc = 1 + ((upc + 1) % (KMC_CRAMSIZE -1));
 
-    sim_activate_after(uptr, KMC_POLLTIME);
+    rxup->wait = RXPOLL_DELAY;
+
+    /* CAUTION: This switch statement uses fall-through cases 
+     *
+     * The KILL logic in kmc_rxBufferIn tracks these states.
+     */
+
+    switch (d->rxstate) {
+    case RXIDLE:
+        rxup->wait = RXPOLL_DELAY;
+
+        r = dup_get_ddcmp_packet_with_crcs (d->dupidx, &d->rxmsg, &d->rxmlen);
+        if (r == SCPE_LOST) {
+            kmc_updateDSR (d);
+            break;
+        }
+        if ((r != SCPE_OK) || (d->rxmsg == NULL)) {
+            break;
+        }
+
+        if (!(d->ctrlFlags & SEL6_CI_ENABLE)) {
+            break;
+        }
+
+        while (d->rxmlen && (d->rxmsg[0] == DDCMP_SYN)) {
+            d->rxmsg++;
+            d->rxmlen--;
+        }
+        if (d->rxmlen < 8) {
+            break;
+        }
+
+        if (!((d->rxmsg[0] == DDCMP_SOH) ||
+              (d->rxmsg[0] == DDCMP_ENQ) ||
+              (d->rxmsg[0] == DDCMP_DLE))) {
+
+         /* Toggling RCVEN causes the DUP receiver to resync.
+          */
+#ifdef DUP_RXRESYNC
+            dup_set_RCVEN (d->dupidx, FALSE);
+            dup_set_RCVEN (d->dupidx, TRUE);
+#endif
+            break;
+        }
+
+#if KMC_TROLL
+        if (trollHungerLevel) {                 /* Troll in the house? */
+            if (kmc_feedTroll (k, d->line, d->rxmsg, TRUE)) {
+                break;
+            }
+        }
+#endif
+
+        d->rxstate = RXBDL;
+        d->rxused   = 0;
+
+        if (DEBUG_PRS (kmc_dev)) {
+            if (d->rxmsg[0] == DDCMP_ENQ) {
+                static const char *const ctlnames [] = {
+                    "00", "ACK", "NAK", "REP", "04", "05", "STRT", "STACK" };
+                uint8 type = d->rxmsg[1];
+
+                sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: receiving %s\n",
+                           k, rxup->unit_line, 
+                           ((type >= DIM (ctlnames))? "UNKNOWN" : ctlnames[type]));
+            } else {
+                sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: receiving %s len=%u\n",
+                           k, rxup->unit_line,
+                           ((d->rxmsg[0] == DDCMP_SOH)? "DATA" : "MAINT"), d->rxmlen);
+            }
+        }
+
+    case RXBDL:
+        if (!(bdl = (BDL *)remqueue(d->rxqh.next, &d->rxavail))) {
+            rxup->wait = RXBDL_DELAY;
+            d->rxstate = RXNOBUF;
+            break;
+        }
+        d->rx.bda = bdl->ba;
+        assert (insqueue (&bdl->hdr, d->bdqh.prev, &d->bdavail, DIM(d->bdq)));
+
+        sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: receiving bdl=%06o\n",
+                   k, rxup->unit_line, d->rx.bda);
+
+        if (Map_ReadW (d->rx.bda, 3*2, d->rx.bd)) {
+            kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, d->line, d->rx.bda);
+            d->rxstate = RXIDLE;
+            break;
+        }            
+        d->rxstate = RXBUF;
+
+    case RXBUF:
+        d->rx.ba = ((d->rx.bd[2] & BDL_XAD) << BDL_S_XAD) | d->rx.bd[0];
+        if (d->rx.bd[1] == 0) {
+            sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: RX buffer descriptor size is zero\n", k, d->line);
+            kmc_halt (k, HALT_MTRCV);
+            d->rxstate = RXIDLE;
+            break;
+        }
+        d->rx.rcvc = 0;
+        d->rxdlen = 0;
+        d->rxstate = RXDAT;
+
+    case RXDAT:
+    more:
+        if (d->rxused < 8) {
+            seglen = 6 - d->rxused;
+        } else {
+            seglen = d->rxmlen - (d->rxused +2);
+        }
+        if (seglen > d->rx.bd[1]) {
+            seglen = d->rx.bd[1];
+        }
+        assert (seglen > 0);
+
+        xrem = Map_WriteB (d->rx.ba, seglen, d->rxmsg + d->rxused);
+        if (xrem != 0) {
+            uint16 bd[3];
+            memcpy (bd, &d->rx.bd, sizeof bd);
+            seglen -= xrem;
+            d->rx.rcvc += seglen;
+            bd[1] = d->rx.rcvc;
+            kmc_updateBDCount (d->rx.bda, bd);  /* Unchecked because already reporting NXM */
+            kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, d->line, d->rx.bda);
+            d->rxstate = RXIDLE;
+            break;
+        }
+        d->rx.ba += seglen;
+        d->rx.rcvc += seglen;
+        d->rxused += seglen;
+
+        if (d->rxused == 6) {
+            if (0 != ddcmp_crc16 (0, d->rxmsg, 8)) {
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: HCRC Error for %d byte packet\n",
+                          k, d->line, d->rxmlen);
+#ifdef DUP_RXRESYNC
+                dup_set_RCVEN (d->dupidx, FALSE);
+                dup_set_RCVEN (d->dupidx, TRUE);
+#endif
+                kmc_ctrlOut (k, SEL6_CO_HCRC, SEL2_IOT, d->line, d->rx.bda);
+                d->rxstate = RXIDLE;
+                break;
+            }
+            d->rxused += 2;
+            d->linkstate &= ~LINK_SEL;
+            if (d->rxmsg[2] & 0x80) {
+                d->linkstate |= LINK_SEL;
+            }
+            if (d->ctrlFlags & SEL6_CI_ENASS) { /* Note that spec requires first bd >= 6 if SS match enabled */
+                if (!(d->rxmsg[5] == (d->ctrlFlags & SEL6_CI_SADDR))) { /* Also include SELECT? */
+                    assert ((bdl = (BDL *)remqueue(d->bdqh.prev, &d->bdavail)) != NULL);
+                    assert (bdl->ba == d->rx.bda);
+                    assert (insqueue (&bdl->hdr, &d->rxqh, &d->rxavail, MAXQUEUE));
+                    d->rxstate = RXIDLE;
+                    break;
+                }
+            }
+            d->rxdlen = ((d->rxmsg[2] &~ 0300) << 8) | d->rxmsg[1];
+        }
+        if (((d->rxused == 8) && (d->rxmsg[0] == DDCMP_ENQ)) ||
+            (((d->rxused - 8) == d->rxdlen) && (d->rxmsg[0] != DDCMP_ENQ))) { /* End of message */
+
+            /* Issue completion after the nominal reception delay */
+
+            rxup->wait = XTIME (d->rx.rcvc+2, d->linespeed);
+            d->rxstate = RXLAST;
+            break;
+        }
+        if (d->rx.rcvc < d->rx.bd[1]) {
+            goto more;
+        }
+
+        /* This descriptor is full.  No need to update its bc.
+         * Issue the completion after the nominal reception delay.
+         */
+        d->rxstate = RXFULL;
+        rxup->wait = XTIME (d->rx.bd[1], d->linespeed);
+        break;
+
+    case RXLAST:
+        /* End of message.  Update final BD count, check data CRC & report either
+         * BUFFER OUT (with EOM) or error CONTROL OUT (NXM or DCRC).
+         */
+        d->rx.bd[1] = d->rx.rcvc;
+        if (kmc_updateBDCount (d->rx.bda, d->rx.bd)) {
+            kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, d->line, d->rx.bda);
+        } else {
+            if ((d->rxmsg[0] != DDCMP_ENQ) &&
+                (0 !=  ddcmp_crc16 (0, d->rxmsg +8, d->rxdlen+2))) {
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DCRC Error for %d byte packet\n",
+                           k, d->line, d->rxmlen);
+#ifdef DUP_RXRESYNC
+                dup_set_RCVEN (d->dupidx, FALSE);
+                dup_set_RCVEN (d->dupidx, TRUE);
+#endif
+                kmc_ctrlOut (k, SEL6_CO_DCRC, SEL2_IOT, d->line, d->rx.bda);
+            } else {
+                kmc_bufferAddressOut (k, SEL6_BO_EOM, SEL2_IOT, d->line, d->rx.bda);
+#ifdef DUP_RXRESYNC
+                if (d->rxmsg[2] & 0x40) {       /* QSYNC? (Next message uses short sync) */
+                    dup_set_RCVEN (d->dupidx, FALSE);
+                    dup_set_RCVEN (d->dupidx, TRUE);
+                }
+#endif
+            }
+        }
+        rxup->wait = RXNEWBD_DELAY;
+        d->rxstate = RXIDLE;
+        break;
+
+    case RXFULL:
+        kmc_bufferAddressOut (k, 0, SEL2_IOT, d->line, d->rx.bda);
+
+        /* Advance to next descriptor */
+
+        if (d->rx.bd[2] & BDL_LDS) {
+            d->rxstate = RXBDL;
+        } else {
+            d->rx.bda += 3*2;
+            if (Map_ReadW (d->rx.bda, 3*2, d->rx.bd)) {
+                kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, d->line, d->rx.bda);
+                d->rxstate = RXIDLE;
+                break;
+            }
+            sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: receiving bd=%06o\n",
+                       k, rxup->unit_line, d->rx.bda);
+            d->rx.rcvc = 0;                     /* Set here in case of kill */
+            d->rxstate = RXBUF;
+        }
+        rxup->wait = RXNEWBD_DELAY;
+       break;
+    
+    case RXNOBUF:
+        kmc_ctrlOut (k, SEL6_CO_NOBUF, SEL2_IOT, d->line, 0);
+        d->rxstate = RXIDLE;
+        break;
+
+    default:
+        assert (FALSE);
+    }
+
+#ifdef DUPALERT
+    if ((d->rxstate != RXIDLE) || d->rxavail) {
+        sim_activate_after(rxup, rxup->wait);
+    }
+#else
+    sim_activate_after(rxup, rxup->wait);
+#endif
+
     return SCPE_OK;
 }
 
 /*
  * master clear a KMC
- * Master clear initializes the logic, but does not clear any RAM.
+ *
+ * Master clear initializes the hardware, but does not clear any RAM.
  * This includes the CSRs, which are a dual-ported RAM structure.
  *
  * There is no guarantee that any data structures are initialized.
  */
 
-static void kmc_masterClear(UNIT *uptr) {
-    uint32 k;
-
-    k = uptr - kmc_units;
+static void kmc_masterClear(uint32 k) {
 
     if (sim_deb) {
-        DEVICE *dptr = find_dev_from_unit (uptr);
-        sim_debug(DF_INF, dptr, "KMC%d: Master clear\n", k);
+        DEVICE *dptr = find_dev_from_unit (&tx_units[0][k]);
+
+        sim_debug (DF_INF, dptr, "KMC%d: Master clear\n", k);
     }
 
     if (sel0 & SEL0_RUN) {
@@ -955,12 +1682,22 @@ static void kmc_startUcode (uint32 k) {
         return;
     }
 
-    sim_debug(DF_INF, &kmc_dev, "KMC%u started %s microcode at uPC %04o\n",
+    sim_debug (DF_INF, &kmc_dev, "KMC%u started %s microcode at uPC %04o\n",
               k, uname, upc);
 
-    if (upc != 0) { /* Resume from cleared RUN */
+    if (upc != 0) {                             /* Resume from cleared RUN */
         if (gflags & FLG_UCINI) {
-            sim_activate_after (&kmc_units[k], KMC_POLLTIME);
+            for (i = 0; i < MAX_ACTIVE; i++) {
+                UNIT *up = &tx_units[i][k];
+
+                if (up->unit_htime) {
+                    sim_activate (up, up->unit_htime);
+                }
+                up = &rx_units[i][k];
+                if (up->unit_htime) {
+                    sim_activate (up, up->unit_htime);
+                }
+            }
             return;
         }
         kmc_halt (k, HALT_BADRES);
@@ -982,7 +1719,7 @@ static void kmc_startUcode (uint32 k) {
 
     /* Initialize OS mapping to least likely device. (To avoid validating everywhere.) */
 
-    for (i = 0; i <= MAX_LINE; i++ ) {
+    for (i = 0; i < MAX_ACTIVE; i++) {
         line2dup[i] = &dupState[DUP_LINES-1];
     }
 
@@ -994,28 +1731,41 @@ static void kmc_startUcode (uint32 k) {
     for (i = 0; i < DUP_LINES; i++) {
         dupstate *d = dupState + i;
 
-        d->line = MAX_LINE;
         if ((d->kmc == k) && (d->dupidx != -1)) {
-            dup_set_DTR (i, FALSE);
+            /* Make sure no callbacks are issued.
+             * Hardware initialization is done by BASE IN.
+             */
             dup_set_callback_mode (i, NULL, NULL, NULL);
         }
-        d->dupidx = -1;
-        d->kmc = -1;
-        initqueue( &d->rxqh, &d->rxavail, INIT_HDR_ONLY );
-        initqueue( &d->txqh, &d->txavail, INIT_HDR_ONLY );
-        initqueue( &d->bdqh, &d->bdavail, MAX_LIST_SIZE(d->bdq) );
+        /* Initialize DUP state if dup is unassigned or previously assigned
+         * to this KMC.  This releases the DUP, so restarting ucode will
+         * release devices, allowing another KMC to assign them if desired.
+         * This is a level of cooperation that the real devices don't have,
+         * but it helps catch configuration errors and keeps these data
+         * structures consistent.  Don't deassign a device currently owned
+         * by another kmc!
+         */
+        if ((d->kmc == k) || (d->kmc == -1)) {
+            d->dupidx = -1;
+            d->kmc = -1;
+            d->line = MAX_LINE;
 
-        d->txstate = TXIDLE;
+            initqueue (&d->rxqh, &d->rxavail, INIT_HDR_ONLY);
+            initqueue (&d->txqh, &d->txavail, INIT_HDR_ONLY);
+            initqueue (&d->bdqh, &d->bdavail, MAX_LIST_SIZE(d->bdq));
+            
+            d->rxstate = RXIDLE;
+            d->txstate = TXIDLE;
+        }
     }
 
     /* Completion queue */
 
-    initqueue( &cqueueHead, &cqueueCount, INIT_HDR_ONLY);
-    initqueue( &freecqHead, &freecqCount, MAX_LIST_SIZE(cqueue));
-
-    sim_activate_after (&kmc_units[k], KMC_POLLTIME);
+    initqueue(&cqueueHead, &cqueueCount, INIT_HDR_ONLY);
+    initqueue(&freecqHead, &freecqCount, MAX_LIST_SIZE(cqueue));
 
     gflags |= FLG_UCINI;
+    kmc_updints (k);
     return;
 }
  
@@ -1028,7 +1778,7 @@ static void kmc_startUcode (uint32 k) {
  *
  * Input commands are processed by the KMC when the host
  * clears RDI.  Upon completion of a command, 'all bits of bsel2
- * are cleared by the KMC'.  We don't implement this literally, since
+ * are cleared by the KMC'. This is not implemented literally, since
  * the processing of a command can result in an immediate completion,
  * setting RDO and the other registers. 
  * Thus, although all bits are cleared before dispatching, RDO
@@ -1044,35 +1794,35 @@ static void kmc_dispatchInputCmd(int32 k) {
     
     line = (cmdsel2 & SEL2_LINE) >> SEL2_V_LINE;
 
-    sel2 &= ~0xFF;                          /* Clear BSEL2. */
-    if (sel0 & SEL0_RQI)                    /* If RQI was left on, grant the input request */
-        sel2 |= SEL2_RDI;                   /* here so any generated completions will block. */
+    sel2 &= ~0xFF;                              /* Clear BSEL2. */
+    if (sel0 & SEL0_RQI)                        /* If RQI was left on, grant the input request */
+        sel2 |= SEL2_RDI;                       /* here so any generated completions will block. */
 
     if (line > MAX_LINE) {
-        sim_debug (DF_CMD, &kmc_dev, "KMC%u line%u: Line number is out of range\n", k, line);
+        sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: Line number is out of range\n", k, line);
         kmc_halt (k, HALT_LINE);
         return;
     }
     d = line2dup[line];
     ba = ((sel6 & SEL6_CO_XAD) << (16-SEL6_V_CO_XAD)) | sel4;
     
-    sim_debug(DF_CMD, &kmc_dev, "KMC%u line%u: INPUT COMMAND sel2=%06o sel4=%06o sel6=%06o ba=%06o\n", k, line,
+    sim_debug (DF_CMD, &kmc_dev, "KMC%u line %u: INPUT COMMAND sel2=%06o sel4=%06o sel6=%06o ba=%06o\n", k, line,
               cmdsel2, sel4, sel6, ba);
     
     switch (cmdsel2 & (SEL2_IOT | SEL2_CMD)) {
-    case CMD_BUFFIN:		                /* TX BUFFER IN */
+    case CMD_BUFFIN:		                    /* TX BUFFER IN */
         kmc_txBufferIn(d, ba, sel6);
         break;
-    case CMD_CTRLIN:			            /* CONTROL IN. */
+    case CMD_CTRLIN:			                /* CONTROL IN. */
     case SEL2_IOT | CMD_CTRLIN:
-        kmc_ctrlIn (k, d, line, ba);
+        kmc_ctrlIn (k, d, line);
         break;
 
-    case CMD_BASEIN:			            /* BASE IN. */
-        kmc_baseIn (k, d, cmdsel2, line, ba);
+    case CMD_BASEIN:			                /* BASE IN. */
+        kmc_baseIn (k, d, cmdsel2, line);
         break;
 
-    case (SEL2_IOT | CMD_BUFFIN):			/* Buffer in, receive buffer for us... */
+    case (SEL2_IOT | CMD_BUFFIN):			    /* Buffer in, receive buffer for us... */
         kmc_rxBufferIn(d, ba ,sel6);
         break;
     default:
@@ -1086,55 +1836,91 @@ static void kmc_dispatchInputCmd(int32 k) {
  *
  *  BASE IN assigns a line number to a DUP device, and marks it
  *  assigned by a KMC.  The CSR address is expressed as bits <12:3>
- *  only.  <17:13> are all set for IO page addresses.  The DUP 
- *  has 8 registers, so <2:1> must be zero.  The other bits are reserved
- *  and must be zero.  
+ *  only.  <17:13> are all set for IO page addresses and added by ucode.
+ *  The DUP has 8 registers, so <2:1> must be zero.  The other bits are
+ *  reserved and must be zero.  
+ *
+ * There is no way  to release a line, short of re-starting the microcode.
+ *
  */
-static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line, uint32 ba ) {
-    uint16 csr;
+static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line) {
     uint32 csraddress;
+    int32 dupidx;
 
     /* Verify DUP is enabled and at specified address */
 
-    csraddress = sel6;
-    if ((csraddress & ~SEL6_II_DUPCSR) || (sel4 != 0) ||
-                       (cmdsel2 & SEL2_II_RESERVED)) {
-        sim_debug (DF_CMD, &kmc_dev, "KMC%u: reserved bits set in BASE IN\n");
+    /* Ucode clears low three bits of CSR address, ors 1s into the high 3.
+     * CSR address here may include bits >17 (e.g. UBA number)
+     *
+     * The check for reserved bits is not done by the ucode, and can be
+     * removed.  It's here for debugging any cases where this code is at fault.
+     */
+
+    csraddress = sel6 & SEL6_II_DUPCSR;
+
+    if ((sel4 != 0) || (cmdsel2 & SEL2_II_RESERVED)) {
+        sim_debug (DF_ERR, &kmc_dev, "KMC%u: BASE IN reserved bits set\n");
         kmc_halt (k, HALT_BADCSR);
         return;
     }
-    csraddress += IOPAGEBASE;
+    csraddress |= IOPAGEBASE;
 
-    /* Verify that the DUP is on-line and that its CSRs can be read.
-     * The hardware would probably discover this later.
-     */
-    if (Map_ReadW (csraddress, 2, &csr)) {
-        sim_debug (DF_CMD, &kmc_dev, "KMC%u line%u: %060 0x%x DUP CSR0 NXM\n",
+    dupidx = dup_csr_to_linenum (sel6);
+    if ((dupidx < 0) || (dupidx >= DIM(dupState))) { /* Call this a NXM so OS can recover */
+        sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x is not an enabled DUP\n", 
                    k, line, csraddress, csraddress);
-        kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, 0); /* KMC would fail differently. */
-        return;                                /* This will cause OS to take action. */
-    }
-    ba = dup_csr_to_linenum (sel6);
-    if ((ba < 0) || (ba >= DIM(dupState))) {
-        sim_debug (DF_CMD, &kmc_dev, "KMC%u line%u: %06o 0x%x is not an enabled DUP\n", 
-                   k, line, csraddress, csraddress);
-        kmc_halt (k, HALT_BADDUP);
+        kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, 0);
         return;
     }
-    d = &dupState[ba];
+    d = &dupState[dupidx];
     if ((d->kmc != -1) && (d->kmc != k)) {
-        sim_debug (DF_CMD, &kmc_dev, "KMC%u line%u: %06o 0x%x is already assigned to KMC%u\n",
+        sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x is already assigned to KMC%u\n",
                    k, line, csraddress, csraddress,
                    d->kmc);
-        kmc_halt (k, HALT_DUPALC);
+        kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, 0);
         return;
     }
-    d->dupidx = ba;
-    d->line = line;
+
+    /* OK to take ownership.
+     * Master clear the DUP. NXM will cause a control-out.
+     *
+     * The DUP technical manual (Table 2-1, P2.2) states:
+     * Jumper W3 Installed causes RTS,DTR, and SecTxD to be cleared on Device Reset or bus init.
+     *  Jumper W3 is installed in factory DUPs, and in the KS10 config.
+     * The DUP emulator currently acts as though this jumper was OUT.
+     * This does not seem desirable.
+     *
+     * The microcode takes no special action to clear DTR.
+     */
+
     d->dupcsr = csraddress;
     d->kmc = k;
     line2dup[line] = d;
-    sim_debug(DF_CMD, &kmc_dev, "KMC%u line%u: DUP%u address=%06o 0x%x assigned\n", 
+    d->line = line;
+
+    if (write_dup_csr (dupidx, DUP_TXCSR, DUP_TXCSR_M_DRESET) != SCPE_OK) {
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x DUP TXCSR NXM\n",
+                   k, line, csraddress + DUP_TXCSR, csraddress + DUP_TXCSR);
+        d->kmc = -1;
+        return;
+    }
+
+    /* Hardware requires a 2 usec delay before next access to DUP.
+     * DRESET is self-clearing.
+     */
+
+    d->dupidx = dupidx;
+
+    /* Clear DTR and RTS regardless of W3.
+     */
+    if (modify_dup_csr (dupidx, DUP_RXCSR, DUP_RXCSR_M_DTR | DUP_RXCSR_M_RTS, 0) != SCPE_OK) {
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x DUP RXCSR NXM\n",
+                   k, line, csraddress + DUP_RXCSR, csraddress + DUP_RXCSR);
+        d->kmc = -1;
+        return;
+    }
+
+    sim_debug (DF_INF, &kmc_dev, "KMC%u line %u: BASE IN DUP%u address=%06o 0x%05x assigned\n", 
                   k, line, d->dupidx,csraddress, csraddress);
     return;
 }
@@ -1145,251 +1931,259 @@ static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line, uint32 b
  * controlled by the KMC.  At least one CONTROL IN must be issued for each
  * DUP that is to communicate.
  *
- * CONTROL IN is also used to enable/disable a line, which also sets/clears DTR.
+ * CONTROL IN writes the DUP CSRs to configure it for the selected mode.
+ *
+ * Not implemented:
+ *  o Polling count (no mapping to emulator) (SEL4_CI_POLL)
  */
 
-static void kmc_ctrlIn (int32 k, dupstate *d, int line, uint32 ba ) {
-    sim_debug(DF_CMD, &kmc_dev, "KMC%u line%u: DUP%d %s in %s duplex", 
-              k, line, d->dupidx,
-              (sel6 & SEL6_CI_DDCMP)? "DDCMP":"Bit-stuffing",
-              (sel6 & SEL6_CI_HDX)? "half" : "full");
-    if (sel6 & SEL6_CI_ENASS)
-        sim_debug(DF_CMD, &kmc_dev, " SS:%u",
-                  (sel6 & SEL6_CI_SADDR), line);
-    sim_debug(DF_CMD, &kmc_dev, "  %s\n",
-              (sel6 & SEL6_CI_ENABLE)? "enabled":"disabled");
-        
-    dup_set_DDCMP (d->dupidx, TRUE);
-    d->modemstate &= ~MDM_DSR;           /* Initialize modem state reporting. */      
-    d->ctrlFlags = sel6;
-    if (sel6 & SEL6_CI_ENABLE) {
-        dup_set_DTR (d->dupidx, TRUE);
-        dup_set_callback_mode (d->dupidx, kdp_receive, kmc_txComplete, kmc_modemChange);
-    } else {
-        dup_set_DTR (d->dupidx, FALSE);
-        dup_set_callback_mode (d->dupidx, NULL, kmc_txComplete, kmc_modemChange);
+static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
+    uint32 csraddress;
+    uint16 csr;
+    t_stat r;
+
+    if (DEBUG_PRS (&kmc_dev)) {
+        sim_debug (DF_CMD, &kmc_dev, "KMC%u line %u: CONTROL IN ", k, line);
+        if (!(sel6 & SEL6_CI_ENABLE)) {
+            sim_debug (DF_CMD, &kmc_dev, "line disabled\n");
+        } else {
+            sim_debug (DF_CMD, &kmc_dev, "enabled for %s in %s duplex", 
+                      (sel6 & SEL6_CI_DDCMP)? "DDCMP":"Bit-stuffing",
+                      (sel6 & SEL6_CI_HDX)? "half" : "full");
+            if (sel6 & SEL6_CI_ENASS)
+                sim_debug (DF_CMD, &kmc_dev, " SS:%u",
+                          (sel6 & SEL6_CI_SADDR), line);
+            sim_debug (DF_CMD, &kmc_dev, " \n");
+        }
     }
+
+    /* BSEL4 has the polling count, which isn't needed for emulation */
+
+    d->linkstate &= ~(LINK_DSR|LINK_SEL);/* Initialize modem state reporting. */      
+
+    d->ctrlFlags = sel6;
+
+    /* Initialize DUP registers
+     */
+
+    /* RXCSR
+     * Set DTR/RCVEN and STRSYN
+     */
+
+    if (sel6 & SEL6_CI_ENABLE) {                /* Enable line: DTR & RCVEN */
+        csr = DUP_RXCSR_M_DTR | DUP_RXCSR_M_RCVEN;
+    } else {                                    /* Disable line: Drop */
+        csr = 0;
+    }
+    if (sel6 & SEL6_CI_DDCMP) {
+        csr |= DUP_RXCSR_M_STRSYN;
+    }
+    r = write_dup_csr (d->dupidx, DUP_RXCSR, csr);
+    csraddress = d->dupcsr + DUP_RXCSR;
+
+    /* PARCSR
+     * CRC inhibit is never set for DDCMP mode.
+     * DDCMP secondary address is handled by microcode.
+     */
+
+    csr = 0;
+    if (sel6 & SEL6_CI_DDCMP) {
+        csr = DUP_PARCSR_M_DECMODE | (DDCMP_SYN << DUP_PARCSR_V_ADSYNC);
+    } else {
+        if (sel6 & SEL6_CI_ENASS)
+            csr = (sel6 & SEL6_CI_SADDR) << DUP_PARCSR_V_ADSYNC;
+        if (sel6 & SEL6_CI_NOCRC)
+            csr |= DUP_PARCSR_M_NOCRC;
+    }
+    if (r == SCPE_OK) {
+        r = write_dup_csr (d->dupidx, DUP_PARCSR, csr);
+        csraddress = d->dupcsr + DUP_PARCSR;
+    }
+
+    /* TXCSR
+     * Set duplex mode, clear maintenance bits and loopback modes
+     */ 
+    if (sel6 & SEL6_CI_HDX) {
+        csr = DUP_TXCSR_M_HALFDUP;
+    } else {
+        csr = 0;
+    }
+    if (r == SCPE_OK) {
+        r = write_dup_csr (d->dupidx, DUP_TXCSR, csr);
+        csraddress = d->dupcsr + DUP_TXCSR;
+    }
+
+    /* If all register writes succeeded, enable packet callbacks.
+     *
+     * If any register writes failed, the first generated a CONTROL OUT.
+     */
+    if (r == SCPE_OK) {
+#ifdef DUPALERT
+        dup_set_callback_mode (d->dupidx, kdp_receive, kmc_txComplete, kmc_modemChange);
+#else
+        dup_set_callback_mode (d->dupidx, NULL, kmc_txComplete, kmc_modemChange);
+#endif
+    } else {
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: CONTROL IN %06o 0x%05x DUP CSR NXM\n",
+                   k, line, csraddress, csraddress);
+    }
+
     return;
 }
-   /*
-    * RX BUFFER IN
-    */
+
+/* Process RX BUFFER IN command
+ *
+ * RX BUFFER IN delivers a buffer descriptor list from the host to
+ * the KMC.  It may also deassign a buffer descriptor list.
+ *
+ * A buffer descriptor list is a sequential list of three word blocks in 
+ * host memory space.  Each 3-word block points to and describes the
+ * boundaries of a single buffer, which is also in host CPU memory.  
+ *
+ * A buffer descriptor list is defined by its starting address.  The
+ * end of a buffer descriptor list is marked in the list.  A maximum of
+ * MAXQUEUE transmit and MAXQUEUE receive lists can be assigned to each
+ * COMM IOP-DUP communications line. 
+ *
+ * The starting address of a buffer descriptor list must be word aligned.
+ *
+ * The buffers in this list will be filled with data received from the
+ * line and returned to the host by RX BUFFER OUT completions.
+ *
+ * Buffer descriptor lists are deassigned through use of the Kill bit
+ * and also reassigned when this bit is used in conjuntion with the
+ * Buffer Enable bit.  When Kill is set, all buffer descriptor lists for
+ * the specified direction (RX or TX) are released.  If the enable bit is
+ * also set, a new buffer descriptor list is assigned after the old lists
+ * are deassigned.  In any case, RX kill places the associated DUP in sync
+ * search mode.  TX kill brings the line to a mark hold state.
+ *
+ * Note that Buffer Enable is ignored unless Kill is also set.
+ *
+ */
 
 void kmc_rxBufferIn(dupstate *d, int32 ba, uint32 sel6v) {
     int32 k = d->kmc;
     BDL *qe;
     uint32 bda = 0;
-    
+    UNIT *rxup;
+
     if (d->line == -1)
         return;
 
-    if (!kmc_printBufferIn (k, &kmc_dev, d->line, "RX", d->rxavail, ba, sel6v))
+    assert ((k >= 0) && (((unsigned int)k) < kmc_dev.numunits) && (d->dupidx != -1));
+
+    rxup = &rx_units[d->line][k];
+
+    if (!kmc_printBufferIn (k, &kmc_dev, d->line, TRUE, d->rxavail, ba, sel6v))
         return;
     
     if (sel6v & SEL6_BI_KILL) {
-        uint16 bd[3];
-        
-        /* Kill all current RX buffers.  The DUP currently provides the entire message in
-         * one completion.  So this is fairly simple.  TODO: Ought to tell the DUP to resync.
+        /* Kill all current RX buffers.
+         * Resync the DUP receiver.
          */
-        if (d->rxavail) {
-            qe = (BDL *)(d->rxqh.next);
-            bda = qe->ba;
-            /* Update bytes done should be done before the kill.  TOPS-10 clears the UBA map
+#ifdef DUP_RXRESYNC
+        dup_set_RCVEN (d->dupidx, FALSE);
+        dup_set_RCVEN (d->dupidx, TRUE);
+#endif
+        if ((d->rxstate >= RXBUF) && (d->rxstate < RXFULL)) {
+            /* A bd is open (active).
+             * Updating bytes received should be done before the kill.  TOPS-10 clears the UBA map
              * before requesting it.  But it doesn't look at bd.  So don't report NXM.
-             * We don't necessarily have the bd cached in this case, so we re-read it here.
+             * In these states, the bd is always cached.
              */
-            if (!Map_ReadW (bda, 2*3, bd)) {
-                bd[1] = 0;
-                if (kmc_updateBDCount (bda, bd)) { ;/*
-                                              kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, bda);
-                                              return;*/
-                }
-            }
+            d->rx.bd[1] = d->rx.rcvc;
+            kmc_updateBDCount (d->rx.bda, d->rx.bd);
+            bda = d->rx.bda;
+        } else {
+            bda = 0;
         }
+        d->rxstate = RXIDLE;
+        sim_cancel (rxup);
         while ((qe = (BDL *)remqueue (d->rxqh.next, &d->rxavail)) != NULL) {
             assert (insqueue (&qe->hdr, d->bdqh.prev, &d->bdavail, DIM(d->bdq)));
         }
         if (!(sel6v & SEL6_BI_ENABLE)) {
-            kmc_ctrlOut (k, SEL6_CO_KDONE, SEL2_IOT, d->line, 0);
+            kmc_ctrlOut (k, SEL6_CO_KDONE, SEL2_IOT, d->line, bda);
             return;
         }
     }
-    
+
+    /* Add new buffer to available for RX queue */
+
     if ((qe = (BDL *)remqueue (d->bdqh.next, &d->bdavail)) == NULL) {
+        sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: Too many receive buffers from  hostd\n", k, d->line);
         kmc_halt (k, HALT_RCVOVF);
-        sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: Too many receive buffers from  hostd\n", k, d->line);
         return;
     }
     qe->ba = ba;
-    assert (insqueue( &qe->hdr, d->rxqh.prev, &d->rxavail, MAXQUEUE));
+    assert (insqueue (&qe->hdr, d->rxqh.prev, &d->rxavail, MAXQUEUE));
     
-    if (sel6v & SEL6_BI_KILL) { /* ENABLE is set too */
+    if (sel6v & SEL6_BI_KILL) {                 /* KILL & Replace - ENABLE is set too */
         kmc_ctrlOut (k, SEL6_CO_KDONE, SEL2_IOT, d->line, bda);
     }
-    
+
+    /* Start receiver if necessary */
+
+    if ((d->rxstate == RXIDLE) && !sim_is_active (rxup)) {
+        sim_activate_after (rxup, RXSTART_DELAY);
+    }
     return;
 }
+
+#ifdef DUPALERT
+/* Message available callback
+ *
+ * The DUP calls this routine when a new message is availble.
+ *
+ * If the line's receive thread is idle, it is called to start the
+ * receive process.  If the thread is busy, the message will be
+ * retrieved when the current receive process completes.
+ *
+ * This notification avoids the need for the receive thread to
+ * periodically poll for an incoming message when idle.
+ *
+ * The data and count arguments are unused - the function signature
+ * requires them for other modes.
+ */
 
 static void kdp_receive(int dupidx, uint8* data, int count) {
     int32 k;
     dupstate* d;
-    uint8 msgtyp;
-    WB wb;
+    UNIT *rxup;
+    UNUSED_ARG (data);
+    UNUSED_ARG (count);
 
     assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
     d = &dupState[dupidx];
-    assert( dupidx == d->dupidx );
+    assert (dupidx == d->dupidx);
     k = d->kmc;
-    
-    wb.first = TRUE;
-    wb.dup = d;
-    wb.bd[1] = 0;
-    wb.bd[2] = BDL_LDS;
-    
-    /* Flush messages too short to have a header, or with invalid msgtyp */
-    if( count < 8 )
-        return;
-    
-    msgtyp = data[0];
-    if ( !((msgtyp == DDCMP_SOH) || (msgtyp == DDCMP_ENQ) || (msgtyp == DDCMP_DLE)) )
-        return;
-    
-    
-    /* Validate hcrc */
-    
-    if (0 != ddcmp_crc16 (0, data, 8)) {
-        sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: HCRC Error for %d byte packet\n", k, d->line, count);
-        if (!kmc_rxWriteViaBDL (&wb, data, 6))
-            return;
-        kmc_ctrlOut (k, SEL6_CO_HCRC, SEL2_IOT, d->line, wb.bda);
-        return;
-    }
-    
-    if (d->ctrlFlags & SEL6_CI_ENASS) {
-        if (!(data[5] == (d->ctrlFlags & SEL6_CI_SADDR))) { /* Also include SELECT? */
-            return;
-        }
-    }
+    rxup = &rx_units[d->line][k];
 
-    if (!kmc_rxWriteViaBDL (&wb, data, 6))
-        return;
-    
-    if (msgtyp != DDCMP_ENQ) {
-    /* The DUP has framed this mesage, so the length had better match
-     * what's in the header.
-     */
-        assert( (((data[2] &~ 0300) << 8) | data[1]) == (count -10) );
-        
-        if (!kmc_rxWriteViaBDL (&wb, data+8, count -(8+2)))
-            return;
-        
-        if (0 != ddcmp_crc16 (0, data+8, count-8)) {
-            sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: data CRC error for %d byte packet\n", k, d->line, count);
-            kmc_ctrlOut (k, SEL6_CO_HCRC, SEL2_IOT, d->line, wb.bda);
-            return;
-        }
+    if ((d->rxstate == RXIDLE) && !sim_is_active (rxup)) {
+        sim_activate_after (rxup, RXNEWBD_DELAY);
     }
-    
-    wb.bd[1] = wb.rcvc;
-    if (kmc_updateBDCount (wb.bda, wb.bd)) {
-        kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, d->line, wb.bda);
-        return;
-    }
-    
-    if (!kmc_bufferAddressOut (k, SEL6_BO_EOM, SEL2_IOT, d->line, wb.bda))
-        return;
-    
     return;
 }
+#endif
 
-/*
- * Here with a framed message to be delivered.
- * The DUP has ensured that the data starts with a DDCMP MSGTYP,
- * and that the entire message (thru BCC2) is in the data.
+/* Process TX BUFFER IN command
  *
- * In real hardware, the bytes would be processed one at a time, allowing
- * an OS time to provide a new BDL if necessary.  We can't do this with
- * the kdp_receive callback - without a lot of extra complexity.  So
- * for this approximation, any lack of buffer is treated as an RX overrun.
- */
-
-static t_bool kmc_rxWriteViaBDL( WB *wb, uint8 *data, int count ) {
-    int32 k = wb->dup->kmc;
-
-    while (count != 0) {
-        int seglen = count;
-        int32 xrem;
-        if ( wb->bd[1] == 0 ) {
-            BDL    *bdl;
-            
-            if (wb->bd[2] & BDL_LDS) {
-                dupstate *d = wb->dup;
-                
-                if (!wb->first) {
-                    wb->bd[1] = wb->rcvc;
-                    if (kmc_updateBDCount (wb->bda, wb->bd)) {
-                        kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, wb->dup->line, wb->bda);
-                        return FALSE;
-                    }
-                    if (!kmc_bufferAddressOut (k, 0, SEL2_IOT, wb->dup->line, wb->bda))
-                        return FALSE;
-                    wb->first = FALSE;
-                }
-                /* Get the first available buffer descriptor list, return to free queue */
-                if (!(bdl = (BDL *)remqueue(d->rxqh.next, &d->rxavail))) {
-                    kmc_ctrlOut(k, SEL6_CO_NOBUF, SEL2_IOT, d->line, 0 );
-                    return FALSE;
-                }
-                wb->bda = bdl->ba;
-                assert( insqueue (&bdl->hdr, d->bdqh.prev, &d->bdavail, DIM(d->bdq)) );
-            } else {
-                wb->bda += (3 * 2);
-            }
-            
-            if (Map_ReadW (wb->bda, 3*2, wb->bd)) {
-                kmc_ctrlOut(k, SEL6_CO_NXM, SEL2_IOT, wb->dup->line, wb->bda);
-                return FALSE;
-            }
-            
-            wb->ba = ((wb->bd[2] & 06000) << 6) | wb->bd[0];
-            if( wb->bd[2] == 0) {
-                kmc_halt (k, HALT_MTRCV);
-                sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: RX buffer descriptor size is zero\n", k, wb->dup->line);
-                return FALSE;
-            }
-            wb->rcvc = 0;
-        }
-        if (seglen > wb->bd[2] )
-            seglen = wb->bd[2];
-        xrem = Map_WriteB (wb->ba, seglen, data);
-        if (xrem != 0) {
-            uint16 bd[3];
-            memcpy (bd, &wb->bd, sizeof bd);
-            seglen -= xrem;
-            wb->rcvc += seglen;
-            bd[1] = wb->rcvc;
-            kmc_updateBDCount (wb->bda, bd); /* Unchecked because already reporting NXM */
-            kmc_ctrlOut (k, SEL6_CO_NXM, SEL2_IOT, wb->dup->line, wb->bda);
-            return FALSE;
-        }
-        wb->ba += seglen;
-        wb->rcvc += seglen;
-        count -= seglen;
-        data += seglen;
-    }
-    return TRUE;
-}
-
-/* Transmit */
-/*
- * Here with a bdl for some new transmit buffers.
- * This has some timing/completion queue issues in
- * degenerate cases.  For now, assemble the whole
- * message for the DUP and complete when we're told.
- * If the DUP refuses a message, we drop it as we should
- * only be offering a message when the DUP is idle.  So
- * Any problem represents a a hard error.
+ * TX BUFFER IN delivers a buffer descriptor list from the host to
+ * the KMC.  It may also deassign a buffer descriptor list.
+ *
+ * For a complete description of buffer descriptor list, see
+ * RX BUFFER IN.
+ *
+ * The buffers in this list contain data to be transmitted to the
+ * line, and are returned to the host by TX BUFFER OUT completions.
+ *
+ * TX buffer descriptors include control flags that indicate start
+ * and end of message.  These determine when the DUP is told start/
+ * stop accumulating data for and to insert CRCs.  A resync flag
+ * indicates when sync characters must be inserted (after half-duplex
+ * line turn-around or CRC errors.)
+ *
  */
 
 void kmc_txBufferIn(dupstate *d, int32 ba, uint32 sel6v) {
@@ -1399,25 +2193,33 @@ void kmc_txBufferIn(dupstate *d, int32 ba, uint32 sel6v) {
     if (d->line == -1)
         return;
 
-    if (!kmc_printBufferIn (k, &kmc_dev, d->line, "TX", d->txavail, ba, sel6v))
+    assert ((k >= 0) && (((unsigned int)k) < kmc_dev.numunits) && (d->dupidx != -1));
+
+    if (!kmc_printBufferIn (k, &kmc_dev, d->line, FALSE, d->txavail, ba, sel6v))
         return;
     
     if (sel6v & SEL6_BI_KILL) {
-        /* Kill all current TX buffers.  We can't abort the DUP in simulation, so
-         * anything pending will stop when complete.  The queue is reset here because
-         * the kill & replace option has to be able to enqueue the replacement BDL.
-         * If a tx is active, the DUP will issue a completion, which will report completion.
-         */
+      /* Kill all current TX buffers.  The DUP can't abort transmission in simulation, so
+       * anything pending will stop when complete.  The queue is reset here because
+       * the kill & replace option has to be able to enqueue the replacement BDL.
+       * If a tx is active, the DUP will issue a completion, which will report
+       * completion of the kill.  A partial message that has been buffered, but
+       * not handed to the DUP can be stopped here.
+       */
         while ((qe = (BDL *)remqueue (d->txqh.next, &d->txavail)) != NULL) {
             assert (insqueue (&qe->hdr, d->bdqh.prev, &d->bdavail, DIM(d->bdq)));
         }
-        if (d->txstate == TXIDLE) {
+        if (d->txstate < TXACT) {               /* DUP is idle */
+            sim_cancel (&tx_units[d->line][k]); /* Stop tx bdl walker */
+            d->txstate = TXIDLE;
+
             if (!(sel6v & SEL6_BI_ENABLE)) {
                 kmc_ctrlOut (k, SEL6_CO_KDONE, 0, d->line, 0);
                 return;
             }
-        } else {
-            if (sel6v & SEL6_BI_ENABLE)
+            /* Continue to replace buffer */
+        } else {                                /* DUP is transmitting, defer */
+            if (sel6v & SEL6_BI_ENABLE)         /* Replace now, kill done later */
                 d->txstate = TXKILR;
             else {
                 d->txstate = TXKILL;
@@ -1427,130 +2229,71 @@ void kmc_txBufferIn(dupstate *d, int32 ba, uint32 sel6v) {
     }
     
     if (!(qe = (BDL *)remqueue (d->bdqh.next, &d->bdavail))) {
+        sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: Too many transmit buffers from host\n", k, d->line);
         kmc_halt (k, HALT_XMTOVF);
-        sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: Too many transmit buffers from host\n", k, d->line);
         return;
     }
     qe->ba = ba;
     assert (insqueue (&qe->hdr, d->txqh.prev, &d->txavail, MAXQUEUE));
-    if (d->txstate == TXIDLE)
-        kmc_txStartDup(d);
+    if (d->txstate == TXIDLE) {
+        UNIT *txup = &tx_units[d->line][k];   
+        if (!sim_is_active (txup)) {
+            txup->wait = TXSTART_DELAY; 
+            sim_activate_after (txup, txup->wait);
+        }
+    }
    
     return;
 }
 
-
-/*
- * Try to start DUP output.  Does nothing if output is already in progress,
- * or if there are no packets in the output queue.
- */
-static void kmc_txStartDup(dupstate *d) {
-    int32 k = d->kmc;
-    
-    while (TRUE) {
-        switch (d->txstate){
-        case TXIDLE:
-            if (!kmc_txNewBdl(d))
-                return;
-            d->txmlen = 0;
-            d->txstate = TXSOM;
-        case TXSOM:
-            if (!(d->tx.bd[2] & BDL_SOM)) {
-                kmc_halt (k, HALT_XSOM);
-                sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: TX BDL not SOM\n", k, d->line);
-                return;
-            }
-            d->txstate = TXHDR;
-        case TXHDR:
-            if (!kmc_txAppendBuffer(d))
-                return;
-            if (!(d->tx.bd[2] & BDL_EOM)) {
-                if (!kmc_txNewBd(d))
-                    return;
-                continue;
-            }
-            if (d->txmsg[0] != DDCMP_ENQ) {
-                /* If the OS computes and includes HRC, this can
-                 * be the last descriptor.  In that case, this is EOM.
-                 */
-                if (d->tx.bd[2] & BDL_LDS) {
-                    assert (d->tx.bd[2] & BDL_EOM);
-                    assert (d->txmlen > 6);
-                    d->txstate = TXACT;
-                    if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txmlen, TRUE, TRUE)) {
-                        sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
-                    }
-                    return;
-                }
-                /* Data sent in a separate descriptor */
-                d->txstate = TXDATA;
-                d->tx.first = TRUE;
-                d->tx.bda += 6;
-                if (!kmc_txNewBd(d))
-                    return;
-                if (!(d->tx.bd[2] & BDL_SOM)) {
-                    kmc_halt (k, HALT_XSOM2);
-                    sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: TX BDL not SOM\n", k, d->line);
-                    return;
-                }
-                continue;
-            }
-            assert (d->txmlen == 6);
-            d->txstate = TXACT;
-            if (!dup_put_ddcmp_packet (d->dupidx, d->txmsg, d->txmlen)) {
-                sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
-            }
-            return;
-        case TXDATA:
-            if (!kmc_txAppendBuffer(d))
-                return;
-            if (!(d->tx.bd[2] & BDL_EOM)) {
-                if (!kmc_txNewBd(d))
-                    return;
-                continue;
-            }
-            d->txstate = TXACT;
-            if (!dup_put_ddcmp_packet (d->dupidx, d->txmsg, d->txmlen)) {
-                sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
-            }
-            return;
-        default:
-        case TXACT:
-            sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line%u: dup_start_output called while active\n", k, d->line);
-            return;
-        }
-    }
-}
-
 /* Transmit complete callback from the DUP
- * Called with the last byte of a packet has been transmitted.
- * Handle any deferred kill and start the next message.
+ *
+ * Called when the last byte of a packet has been transmitted.
+ *
+ * Handle any deferred kill and schedule the next message.
+ *
+ * Note that this may be called from within the txService when the
+ * DUP is not speed limited.  The unconditional activation ensures
+ * that txService will not be called recursively.
  */
 
 static void kmc_txComplete (int32 dupidx, int status) {
     dupstate *d;
+    UNIT *txup;
     int32 k;
 
     assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
 
     d = &dupState[dupidx];
     k = d->kmc;
+    txup = &tx_units[d->line][k];
 
-    if (status) { /* Failure is probably due to modem state change */
-        kmc_updateDSR(d); /* Change does not stop transmission or release buffer */
+    if (status) {                               /* Failure is probably due to modem state change */
+        kmc_updateDSR(d);                       /* Change does not stop transmission or release buffer */
     }
-    d->txmlen = 0;
+
+    if (d->txstate < TXACT) {                   /* DUP shouldn't call when KMC is not sending */
+        sim_debug (DF_BUF, &kmc_dev, "KMC%u line %u: tx completion while inactive\n",
+                   k, d->line);
+        return;
+    }
+
+    d->txmlen =
+        d->txslen = 0;
     if ((d->txstate == TXKILL) || (d->txstate == TXKILR)) {
-        /* If we could kill a partial transmission, would update bd here */
-        d->txstate = TXIDLE;
+        /* If DUP could kill a partial transmission, would update bd here */
+        d->txstate = TXDONE;
         kmc_ctrlOut (k, SEL6_CO_KDONE, 0, d->line, d->tx.bda);
     } else {
         if (d->tx.bd[2] & BDL_LDS)
-            d->txstate = TXIDLE;
+            d->txstate = TXDONE;
         else 
             d->txstate = TXSOM;
     }
-    kmc_txStartDup(d);
+    sim_cancel (txup);
+    sim_activate_after (txup, TXDONE_DELAY);
+
+    return;
 }
 
 /* Obtain a new buffer descriptor list from those queued by the host */
@@ -1572,8 +2315,9 @@ static t_bool kmc_txNewBdl(dupstate *d) {
 
 /* Obtain a new TX buffer descriptor.
  *
- * Release the current BD if there is one.
- * If the current BD is the last of a list, request a new BDL.
+ * If the current descriptor is last, obtain a new list.
+ * (The new list case will recurse.)
+ *
  */
 
 static t_bool kmc_txNewBd(dupstate *d) {
@@ -1582,29 +2326,21 @@ static t_bool kmc_txNewBd(dupstate *d) {
     if (d->tx.first)
         d->tx.first = FALSE;
     else {
-        d->tx.bd[1] = d->tx.xmtc;
-        if (kmc_updateBDCount (d->tx.bda, d->tx.bd)) {
-            kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, d->tx.bda);
-            return FALSE;
-        }
-        if (!kmc_bufferAddressOut (k, 0, 0, d->line, d->tx.bda))
-            return FALSE;
         if (d->tx.bd[2] & BDL_LDS) {
             if (!kmc_txNewBdl(d)) {
-                /* TODO??xmit_underrun notice?*/
+                kmc_ctrlOut (k, SEL6_CO_TXU, 0, d->line, d->tx.bda);
                 return FALSE;
             }
-            d->tx.first = FALSE;
-        } else
-            d->tx.bda += 6;
+            return TRUE;
+        }
+        d->tx.bda += 6;
     }
     if (Map_ReadW (d->tx.bda, 2*3, d->tx.bd)) {
         kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, d->tx.bda);
         return FALSE;
     }
     
-    d->tx.ba = ((d->tx.bd[2] & 0006000) << 6) | d->tx.bd[0];
-    d->tx.xmtc = 0;
+    d->tx.ba = ((d->tx.bd[2] & BDL_XAD) << BDL_S_XAD) | d->tx.bd[0];
     return TRUE;
 }
 
@@ -1619,7 +2355,7 @@ static t_bool kmc_txAppendBuffer(dupstate *d) {
     if (!d->txmsg || (d->txmsize < d->txmlen+d->tx.bd[1])) {
         d->txmsize = d->txmlen+d->tx.bd[1];
         d->txmsg = (uint8 *)realloc(d->txmsg, d->txmsize);
-        assert( d->txmsg );
+        assert (d->txmsg);
     }
     rem = Map_ReadB (d->tx.ba, d->tx.bd[1], d->txmsg+d->txmlen);
     d->tx.bd[1] -= rem;
@@ -1629,8 +2365,6 @@ static t_bool kmc_txAppendBuffer(dupstate *d) {
         return FALSE;
     }
     d->txmlen += d->tx.bd[1];
-    if (!kmc_bufferAddressOut (k, 0, 0, d->line, d->tx.bda))
-        return FALSE;
     return TRUE;
 }
 
@@ -1659,23 +2393,24 @@ static t_bool kmc_txAppendBuffer(dupstate *d) {
 static void kmc_processCompletions (int32 k) {
     CQ *qe;
 
-    if (sel2 & (SEL2_RDO | SEL2_RDI)) /* CSRs available? */
+    if (sel2 & (SEL2_RDO | SEL2_RDI))           /* CSRs available? */
         return;
 
     if (!(qe = (CQ *)remqueue (cqueueHead.next, &cqueueCount))) {
         return;
     }
 
-    assert( insqueue( &qe->hdr, freecqHead.prev, &freecqCount, CQUEUE_MAX ) );
+    assert (insqueue (&qe->hdr, freecqHead.prev, &freecqCount, CQUEUE_MAX));
     sel2 = qe->bsel2;
     sel4 = qe->bsel4;
     sel6 = qe->bsel6;
 
-    sim_debug (DF_CMD, &kmc_dev, "KMC%u line%u: %s %s sel2=%06o sel4=%06o sel6=%06o\n",
-               k, ((sel2 & SEL2_LINE)>>SEL2_V_LINE), 
-               (sel2 & SEL2_IOT)? "RX":"TX",
-               ((sel2 & SEL2_CMD) == CMD_BUFFOUT)? "BUFFER OUT":"CONTROL OUT",
-               sel2, sel4, sel6);
+    sim_debug (DF_QUE, &kmc_dev, "KMC%u line %u: %s %s delivered: sel2=%06o sel4=%06o sel6=%06o\n",
+                k, ((sel2 & SEL2_LINE)>>SEL2_V_LINE), 
+                (sel2 & SEL2_IOT)? "RX":"TX",
+                ((sel2 & SEL2_CMD) == CMD_BUFFOUT)? "BUFFER OUT":"CONTROL OUT",
+                sel2, sel4, sel6);
+
     sel2 |= SEL2_RDO;
 
     kmc_updints (k);
@@ -1699,11 +2434,18 @@ static void kmc_ctrlOut (int32 k, uint8 code, uint16 rx, uint8 line, uint32 bda)
 {
   CQ *qe;
 
-  sim_debug (DF_QUEUE, &kmc_dev, "KMC%u line%u: enqueue %s CONTROL OUT Code=%02o Address=%06o\n",
-             k, line, rx? "RX":"TX", code, bda);
+  if (DEBUG_PRS (kmc_dev)) {
+      static const char *const codenames[] = {
+          "Undef", "Abort", "HCRC", "DCRC", "NoBfr", "DSR", "NXM", "TXU", "RXO", "KillDun" };
+      unsigned int idx = code;
+      idx = ((code < 06) || (code > 026))? 0: ((code/2)-2);
 
-  if (!(qe = (CQ *)remqueue( freecqHead.next, &freecqCount ))) {
-      sim_debug (DF_QUEUE, &kmc_dev, "KMC%u line%u: Completion queue overflow\n", k, line);
+      sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: %s CONTROL OUT Code=%02o (%s) Address=%06o\n",
+                 k, line, rx? "RX":"TX", code, codenames[idx], bda);
+  }
+
+  if (!(qe = (CQ *)remqueue (freecqHead.next, &freecqCount))) {
+      sim_debug (DF_QUE, &kmc_dev, "KMC%u line %u: Completion queue overflow\n", k, line);
       /* Set overflow status in last entry of queue */
       qe = (CQ *)cqueueHead.prev;
       qe->bsel2 |= SEL2_OVR;
@@ -1711,8 +2453,8 @@ static void kmc_ctrlOut (int32 k, uint8 code, uint16 rx, uint8 line, uint32 bda)
   }
   qe->bsel2 = ((line << SEL2_V_LINE) & SEL2_LINE) | rx | CMD_CTRLOUT;
   qe->bsel4 = bda & 0177777;
-  qe->bsel6 = ((bda & 0600000) >> (16-SEL6_V_CO_XAD)) | code;
-  assert (insqueue( &qe->hdr, cqueueHead.prev, &cqueueCount, CQUEUE_MAX ));
+  qe->bsel6 = ((bda >> (16-SEL6_V_CO_XAD)) & SEL6_CO_XAD) | code;
+  assert (insqueue (&qe->hdr, cqueueHead.prev, &cqueueCount, CQUEUE_MAX));
   kmc_processCompletions(k);
   return;
 }
@@ -1755,9 +2497,9 @@ static t_bool kmc_updateDSR (dupstate *d) {
     int32 status;
 
     status = dup_get_DSR(d->dupidx);
-    status = status? MDM_DSR : 0;
-    if (status != (d->modemstate & MDM_DSR)) {
-        d->modemstate = (d->modemstate &~MDM_DSR) | status;
+    status = status? LINK_DSR : 0;
+    if (status ^ (d->linkstate & LINK_DSR)) {
+        d->linkstate = (d->linkstate &~LINK_DSR) | status;
         kmc_ctrlOut (k, SEL6_CO_DSRCHG, 0, d->line, 0);
         return TRUE;
     }
@@ -1765,7 +2507,8 @@ static t_bool kmc_updateDSR (dupstate *d) {
 }
 
 /* Queue a BUFFER ADDRESS OUT command to the host.
- * flags are applied to bsel6 (e.g. receive EOM).
+ *
+ * flags are applied to BSEL6 (e.g. receive EOM).
  * rx is TRUE for a receive buffer, false for transmit.
  * line is the line number assigned by BASE IN
  * bda is the address of the buffer descriptor that has been processed.
@@ -1776,13 +2519,13 @@ static t_bool kmc_updateDSR (dupstate *d) {
 static t_bool kmc_bufferAddressOut (int32 k, uint16 flags, uint16 rx, uint8 line, uint32 bda) {
     CQ *qe;
 
-    sim_debug (DF_QUEUE, &kmc_dev, "KMC%u line%u: enqueue %s BUFFER OUT Flags=%06o Address=%06o\n",
-               k, line, rx? "RX":"TX", flags, bda);
+    sim_debug (DF_BFO, &kmc_dev, "KMC%u line %u: %s BUFFER OUT Flags=%06o Address=%06o\n",
+               k, line, rx? "RX": "TX", flags, bda);
     
-    if (!kmc_printBDL(k, DF_QUEUE, &kmc_dev, line, bda, 2))
+    if (!kmc_printBDL(k, DF_BFO, &kmc_dev, line, bda, rx? 6: 2))
         return FALSE;
-    if (!(qe = (CQ *)remqueue( freecqHead.next, &freecqCount ))) {
-        sim_debug (DF_QUEUE, &kmc_dev, "KMC%u line%u: Completion queue overflow\n", k, line);
+    if (!(qe = (CQ *)remqueue (freecqHead.next, &freecqCount))) {
+        sim_debug (DF_QUE, &kmc_dev, "KMC%u line %u: Completion queue overflow\n", k, line);
         /* Set overflow status in last entry of queue */
         qe = (CQ *)cqueueHead.prev;
         qe->bsel2 |= SEL2_OVR;
@@ -1790,30 +2533,34 @@ static t_bool kmc_bufferAddressOut (int32 k, uint16 flags, uint16 rx, uint8 line
     }
     qe->bsel2 = ((line << SEL2_V_LINE) & SEL2_LINE) | rx | CMD_BUFFOUT;
     qe->bsel4 = bda & 0177777;
-    qe->bsel6 = ((bda & 0600000) >> (16-SEL6_V_CO_XAD)) | flags;
-    assert (insqueue( &qe->hdr, cqueueHead.prev, &cqueueCount, CQUEUE_MAX ));
+    qe->bsel6 = ((bda >> (16-SEL6_V_CO_XAD)) & SEL6_CO_XAD) | flags;
+    assert (insqueue (&qe->hdr, cqueueHead.prev, &cqueueCount, CQUEUE_MAX));
 
     kmc_processCompletions(k);
     return TRUE;
 }
 
-/* The KMC can only do byte NPRs, even for word quantities.
- * We shortcut by writng words when updating the buffer descriptor's
- * count field.  The UBA does not do a RPW cycle when byte 0 (of 4)
+/* The UBA does not do a RPW cycle when byte 0 (of 4)
  * on a -10 is written.  (It can, but the OS doesn't program it that
  * way.  Thus, if the count word is in the left half-word, updating
  * it will trash the 3rd word of that buffer descriptor.  The hardware
- * works, so I suspect that the KMC always writes the whole descriptor.
- * That isn't sufficient: if the count is in the right half, writing
- * the whole descriptor would trash the first word of the following
- * descriptor.  So, I suspect that the KMC must read the next descriptor
- * (if the current one doesn't have LAST set) before updating the count.
- * This means the cached copy corrects any trashing.  Read before write
- * also would tend to minimize the chance of under-run, so it's a reasonable
- * guess.  This is, er, awkward to emulate.  As a compromise, we always
- * write the count.  We write the 3rd word iff the count is in the LH.
- * This is guaranteed to restore the third word if it was trashed and
- * not trash the following descriptor otherwise.  
+ * works.  The KMC microcode does a word NPR write.   At this writing
+ * how the hardware works is a mystery.  The UBA documentation is quite
+ * clear that a write is done; the prints show zeros muxed into the bits.
+ * The OS is NOT setting 'read reverse'.  The KMC ucode is not doing
+ * any magic.  And the OS will kill the KMC if the 3rd word of the BD
+ * is trashed.  Unless there is an undiscovered ECO to the KS10, there
+ * is no explanation for the fact that the KDP does work on that machine.
+ * Certainly, if the UBA always did RPW cycles, this would work, and
+ * probably no one would notice the performance loss.
+ *
+ * For now, this code writes the count, and also the 3rd word if the
+ * count is in byte 0.  It's not the right solution, but it works for now.
+ * This does an extra write if the UBA trashed the following word, and not
+ * otherwise.  Note that any BDL with two buffers is guaranteed to
+ * run into this issue.  If the first BD is in byte 0, its count is OK, but
+ * the following BD will start in byte 2, putting its count in byte 0 of
+ * the following word, causing the write to step on that bd's flags.
  */
 
 static int32 kmc_updateBDCount(uint32 bda, uint16 *bd) {
@@ -1827,13 +2574,31 @@ static int32 kmc_updateBDCount(uint32 bda, uint16 *bd) {
  */
 
 static void kmc_halt (int32 k, int error) {
+    int line;
+
     if (error){
         sel0 &= ~(SEL0_IEO|SEL0_IEI);
     }
     sel0 &= ~SEL0_RUN;
 
     kmc_updints (k);
-    sim_cancel ( &kmc_units[k] );
+    for (line = 0; line < MAX_ACTIVE; line++) {
+        UNIT *up = &tx_units[line][k];
+
+        if (sim_is_active (up)) {
+            up->unit_htime = sim_activate_time (up);
+            sim_cancel (up);
+        } else {
+            up->unit_htime = 0;
+        }
+        up = &rx_units[line][k];
+        if (sim_is_active (up)) {
+            up->unit_htime = sim_activate_time (up);
+            sim_cancel (up);
+        } else {
+            up->unit_htime = 0;
+        }
+    }
     sim_debug (DF_INF, &kmc_dev, "KMC%u: Halted at uPC %04o reason=%d\n", k, upc, error);
     return;
 }
@@ -1841,10 +2606,10 @@ static void kmc_halt (int32 k, int error) {
  * Update interrupts pending.
  *
  * Since the interrupt request is shared across all KMCs
- * (a simplification), we keep pending flags per KMC,
- * and a global request count across KMCs fot the UBA.
+ * (a simplification), pending flags are kept per KMC,
+ * and a global request count across KMCs for the UBA.
  * The UBA will clear the global request flag when it grants
- * an interrupt; thus for set we always set the global flag
+ * an interrupt; thus for set the global flag is always set
  * if this KMC has a request.  This doesn't quite match "with IEI
  * set, only one interrupt is generated for each setting of RDI."
  * An extra interrupt, however, should be harmless.
@@ -1860,14 +2625,14 @@ static void kmc_updints(int32 k) {
 
     if ((sel0 & SEL0_IEI) && (sel2 & SEL2_RDI)) {
         if (!(gflags & FLG_AINT)) {
-            sim_debug(DF_TRC, &kmc_dev, "KMC%u: set input interrupt pending\n", k);
+            sim_debug (DF_INT, &kmc_dev, "KMC%u: set input interrupt pending\n", k);
             gflags |= FLG_AINT;
             AintPending++;
         }
         SET_INT(KMCA);
     } else {
         if (gflags & FLG_AINT) {
-            sim_debug(DF_TRC, &kmc_dev, "KMC%u: cleared pending input interrupt\n", k);
+            sim_debug (DF_INT, &kmc_dev, "KMC%u: cleared pending input interrupt\n", k);
             gflags &= ~FLG_AINT;
             if (--AintPending == 0) {
                 CLR_INT(KMCA);
@@ -1877,14 +2642,14 @@ static void kmc_updints(int32 k) {
 
     if ((sel0 & SEL0_IEO) && (sel2 & SEL2_RDO)) {
         if (!(gflags & FLG_BINT)) {
-            sim_debug(DF_TRC, &kmc_dev, "KMC%u: set output interrupt\n", k);
+            sim_debug (DF_INT, &kmc_dev, "KMC%u: set output interrupt\n", k);
             gflags |= FLG_BINT;
             BintPending++;
         }
         SET_INT(KMCB);
     } else {
         if (gflags & FLG_BINT) {
-            sim_debug(DF_TRC, &kmc_dev, "KKMC%u: clear output interrupt\n", k);
+            sim_debug (DF_INT, &kmc_dev, "KKMC%u: clear output interrupt\n", k);
             gflags &= ~FLG_BINT;
             if (--BintPending == 0) {
                 CLR_INT(KMCB);
@@ -1901,7 +2666,8 @@ static void kmc_updints(int32 k) {
  * These routines return the vector number from the
  * interrupting KMC.  Lower numbered KMCs have
  * priority over higher numbered KMCs.
- * A given KMC should never have both input and output
+ *
+ * Any one  KMC should never have both input and output
  * pending at the same time.
  */
 
@@ -1916,16 +2682,20 @@ static int32 kmc_AintAck (void) {
             if (--AintPending == 0) {
                 CLR_INT(KMCA);
             }
+            break;
         }
     }
 
-    sim_debug(DF_TRC, &kmc_dev, "KMC%u input (A) interrupt ack vector %030\n", k, vec);
+    if (vec)
+        sim_debug (DF_INT, &kmc_dev, "KMC%u input (A) interrupt ack vector %03o\n", k, vec);
+    else
+        sim_debug (DF_INT, &kmc_dev, "KMC  input (A) passive release\n");
 
     return vec;
 }
 
 static int32 kmc_BintAck (void) {
-    int32 vec = 0; /* no interrupt request active */
+    int32 vec = 0;                              /* no interrupt request active */
     int32 k;
 
     for (k = 0; k < DIM (kmc_gflags); k++) {
@@ -1935,12 +2705,78 @@ static int32 kmc_BintAck (void) {
             if (--BintPending == 0) {
                 CLR_INT(KMCB);
             }
+            break;
         }
     }
 
-    sim_debug(DF_TRC, &kmc_dev, "KMC%u output (B) interrupt ack vector %03o\n", k, vec);
+    if (vec)
+        sim_debug (DF_INT, &kmc_dev, "KMC%u output (B) interrupt ack vector %03o\n", k, vec);
+    else
+        sim_debug (DF_INT, &kmc_dev, "KMC  output (B) passive release\n");
 
     return vec;
+}
+
+/* Access DUP CSRs
+ * These are handled as NPR requests, as the hardware would.
+ *
+ * DUP CSR address is in the dupState entry.
+ * The dup must be assigned to a KMC.
+ *
+ * Any NXMs are reported with CONTROL OUTs blaming the assigned line.
+ */
+
+/* Modify DUP CSR
+ */
+static t_stat modify_dup_csr (int32 dup, uint16 regnum, uint16 clr, uint16 set) {
+    uint16 csrdata;
+    t_stat r;
+
+    r = read_dup_csr (dup, regnum, &csrdata);
+    if (r != SCPE_OK)
+        return r;
+    csrdata = (csrdata &~ clr) | set;
+    return write_dup_csr (dup, regnum, csrdata);
+}
+
+/* Read DUP CSR
+ */
+static t_stat read_dup_csr (int32 dup, uint16 regnum, uint16 *data) {
+    uint32 csraddress;
+    dupstate *d = &dupState[dup];
+    int32 k = d->kmc;
+ 
+    if ((csraddress = d->dupcsr) == 0) {
+        return SCPE_ARG;
+    }
+
+    if (Map_ReadW (csraddress + regnum, 2, data)) {
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: %06o 0x%05x DUP CSR NXM\n",
+                   k, d->line, csraddress, csraddress);
+        kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
+        return SCPE_NXM;
+    }
+    return SCPE_OK;
+}
+
+/* Write DUP CSR
+ */
+static t_stat write_dup_csr (int32 dup, uint16 regnum, uint16 data) {
+    uint32 csraddress;
+    dupstate *d = &dupState[dup];
+    int32 k = d->kmc;
+ 
+    if ((csraddress = d->dupcsr) == 0) {
+        return SCPE_ARG;
+    }
+
+    if (Map_WriteW (csraddress + regnum, 2, &data)) {
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: %06o 0x%05x DUP CSR NXM\n",
+                   k, d->line, csraddress, csraddress);
+        kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
+        return SCPE_NXM;
+    }
+    return SCPE_OK;
 }
 
 /* Debug: Log a BUFFER IN or BUFFER OUT command.
@@ -1948,82 +2784,169 @@ static int32 kmc_BintAck (void) {
  * (b) only one completion per bdl.
  */
 
-static t_bool kmc_printBufferIn (int32 k, DEVICE *dev, int32 line, char *dir, 
+static t_bool kmc_printBufferIn (int32 k, DEVICE *dev, int32 line, t_bool rx, 
                                  int32 count, int32 ba, uint16 sel6v) {
     t_bool kill = ((sel6v & (SEL6_BI_KILL|SEL6_BI_ENABLE)) == SEL6_BI_KILL);
+    const char *dir = rx? "RX": "TX";
 
-    sim_debug(DF_CMD, &kmc_dev, "KMC%u line %u %s BUFER IN%s\n", k, line, dir, (kill? "(Buffer kill)": ""));
+    sim_debug (DF_CMD, &kmc_dev, "KMC%u line %u: %s BUFFER IN%s %d, bdl=%06o 0x%04x\n", k, line, dir,
+            (kill? "(Buffer kill)": ((sel6v & SEL6_BI_KILL)? "(Kill & replace)":  "")),
+            count, ba, ba);
 
     if (kill) /* Just kill doesn't use BDL, may NXM if attempt to dump */
         return TRUE;
 
     /* Kill and replace supplies new BDL */
 
-    if (!kmc_printBDL(k, DF_CMD, dev, line, ba, 1))
+    if (!kmc_printBDL(k, DF_CMD, dev, line, ba, rx? 5: 1))
         return FALSE;
 
-    sim_debug(DF_QUEUE, &kmc_dev, "KMC%u line %u: %s BUFFER IN %d, bdas=%06o 0x%04X\n", k, line, dir, count, ba, ba);
+    sim_debug (DF_QUE, &kmc_dev, "KMC%u line %u: %s BUFFER IN %d, bdl=%06o 0x%04X\n", k, line, dir, count, ba, ba);
 
     return TRUE;
 }
 /*
  * Debug: Dump a BDL and a sample of its buffer.
+ *
+ * prbuf: non-zero to access buffer
+ *        Bit 1 set to print just one descriptor (BFO), clear to do entire list (BFI)
+ *        Bit 2 set if rx (rx bfi doesn't print data)
  */
 
 static t_bool kmc_printBDL(int32 k, uint32 dbits, DEVICE *dev, uint8 line, int32 ba, int prbuf) {
     uint16 bd[3];
     int32 dp;
 
-    if (!DEBUG_PRJ(dev,dbits) )
+    if (!DEBUG_PRJ(dev,dbits))
         return TRUE;
 
     for (;;) {
         if (Map_ReadW (ba, 3*2, bd) != 0) {
-            kmc_ctrlOut(k, SEL6_CO_NXM, 0, line, ba );
-            sim_debug(dbits,dev, "KMC%u line%u: NXM reading descriptor addr=%06o\n", k, line, ba);
+            kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, ba);
+            sim_debug (dbits,dev, "KMC%u line %u: NXM reading descriptor addr=%06o\n", k, line, ba);
             return FALSE;
         }
         
-        sim_debug(dbits, dev, "  bd[0] = %06o 0x%04X\n", bd[0], bd[0]);
-        sim_debug(dbits, dev, "  bd[1] = %06o 0x%04X\n", bd[1], bd[1]);
-        sim_debug(dbits, dev, "  bd[2] = %06o 0x%04X\n", bd[2], bd[2]);
-        
+        dp = bd[0] | ((bd[2] & BDL_XAD) << BDL_S_XAD);
+        sim_debug (dbits, dev, "  bd[0] = %06o 0x%04X Adr=%06o\n", bd[0], bd[0], dp);
+        sim_debug (dbits, dev, "  bd[1] = %06o 0x%04X Len=%u.\n", bd[1], bd[1], bd[1]);
+        sim_debug (dbits, dev, "  bd[2] = %06o 0x%04X", bd[2], bd[2]);
+        if (bd[2] & BDL_LDS)
+            sim_debug (dbits, dev, " Last");
+        if (bd[2] & BDL_RSY)
+            sim_debug (dbits, dev, " Rsync");
+        if (bd[2] & BDL_EOM)
+            sim_debug (dbits, dev, " XEOM");
+        if (bd[2] & BDL_SOM)
+            sim_debug (dbits, dev, " XSOM");
+        sim_debug (dbits, dev, " \n");
+
         if (prbuf) {
             uint8 buf[20];
             if (bd[1] > sizeof buf)
                 bd[1] = sizeof buf;
-            
-            dp = bd[0] | ((bd[2] & 06000) << 6);
+
             if (Map_ReadB (dp, bd[1], buf) != 0) {
-                kmc_ctrlOut(k, SEL6_CO_NXM, 0, line, dp );
-                sim_debug(dbits, dev, "KMC%u line%u: NXM reading buffer %060\n", k, line, dp);
+                kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, dp);
+                sim_debug (dbits, dev, "KMC%u line %u: NXM reading buffer %06o\n", k, line, dp);
                 return FALSE;
             }
             
-            for (dp = 0; dp < bd[1]; dp++) {
-                sim_debug(dbits, dev, " %02x", buf[dp]);
+            if (prbuf != 5) {                   /* Don't print RX buffer in */                
+                for (dp = 0; dp < bd[1] ; dp++) {
+                    sim_debug (dbits, dev, " %02x", buf[dp]);
+                }
+                sim_debug (dbits, dev, "\r\n");
             }
-            sim_debug(dbits, dev, "\r\n");
         }
-        if ((bd[2] & BDL_LDS) || (prbuf & 2))
+        if ((bd[2] & BDL_LDS) || (prbuf & 2))   /* Last, or 1 only */
             break;
         ba += 6;
     }
     return TRUE;
 }
 
-/* Verify that the microcode image is one we know how to emulate.
+/* Evaluate the troll's appetite.
+ *
+ * A message can be eaten (dropped), nibbled (corrupted) or spared.
+ *
+ * The probability of a message not being spared is trollHungerLevel,
+ * expressed in milli-gulps - 0.1%.  The troll selects which action
+ * to taken on selected messages with equal probability.
+ *
+ * Nibbled messages' CRCs are changed when possible to simplify
+ * identifying them when debugging.  When it's too much work to
+ * find the CRC, the first byte of data is changed.  The change
+ * is an XOR to make it possible to reconstruct the original data.
+ *
+ * A particularly unfortunate message can be nibbled by both
+ * the transmitter and receiver; thus the troll applies a direction-
+ * dependent pattern.
+ *
+ * Return TRUE if the troll ate the message.
+ * Return FALSE if the message was nibbled or spared.
+ */
+#if KMC_TROLL
+static t_bool kmc_feedTroll (int32 k, int32 line, uint8 *msg, t_bool rx) {
+#if defined(_POSIX_VERSION) || defined (_XOPEN_VERSION)
+    double r = (double)random();
+    double rmax = (double)0x7fffffff;
+#else
+    double r = rand();
+    double rmax = (double)RAND_MAX;
+#endif
+
+    if (msg[0] == DDCMP_ENQ) {
+        int eat =  0 + (int) (2000.0 * (r / rmax));
+        
+        if (eat <= (trollHungerLevel * 2)) {    /* Hungry? */
+            if (eat <= trollHungerLevel) {      /* Eat the packet */
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: troll ate a %s control message\n",
+                           k, line, (rx? "rx" : "tx"));
+                return TRUE;
+            }
+            sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: troll bit %d control CRC\n",
+                       k, line, (rx? "rx" : "tx"));
+            msg[6] ^= rx? 0114: 0154;           /* Eat the CRC */
+        }
+    } else {
+        int eat =  0 + (int) (3000.0 * (r / rmax));
+
+        if (eat <= (trollHungerLevel * 3)) {    /* Hungry? */
+            if (eat <= trollHungerLevel) {      /* Eat the packet */
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: troll ate a %s %s message\n",
+                           k, line, (rx? "rx" : "tx"), ((msg[0] == DDCMP_SOH)? "data" : "maintenance"));
+                return TRUE;
+            }
+            if (eat <= (trollHungerLevel * 2)) { /* HCRC */
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: troll bit %s %s HCRC\n",
+                           k, line, (rx? "rx" : "tx"), ((msg[0] == DDCMP_SOH)? "data" : "maintenance"));
+                msg[6] ^= rx? 0124: 0164;
+            } else {                            /* DCRC */
+                sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: troll bit %s %s DCRC\n",
+                           k, line, (rx? "rx" : "tx"), ((msg[0] == DDCMP_SOH)? "data" : "maintenance"));
+                msg[8] ^= rx? 0114: 0154;       /* Rather than find the CRC, the first data byte will do */
+            }
+        }
+    }
+    return FALSE;
+}
+#endif
+
+/* Verify that the microcode image is one that this code knows how to emulate.
  * As far as I know, there was COMM IOP-DUP V1.0 and one patch, V1.0A.
  * This is the patched version, which I have verified by rebuilding the
  * V1.0A microcode from sources and computing its CRC from the binary.
  *
+ * RSX DECnet has a different binary; the version is unknown.
+ *
  * The reason for this check is that there ARE other KMC microcodes.
  * If some software thinks it's loading one of those, the results
  * could be catastrophic - and hard to diagnose.  (COMM IOP-DZ has
- * a similar function; but there were other, stranger microcodes.
+ * a similar function; but there are other, stranger microcodes.
  */
 
-static const char *kmc_verifyUcode ( int32 k ) {
+static const char *kmc_verifyUcode (int32 k) {
     int i, n;
     uint16 crc = 'T' << 8 | 'L';
     uint8 w[2];
@@ -2035,27 +2958,29 @@ static const char *kmc_verifyUcode ( int32 k ) {
         { 0x1a38, "COMM IOP-DUP RSX" },
     };
 
-    for (i = 0, n = 0; i < DIM (ucode); i++ ) {
-        if (ucode[i] != 0 )
+    for (i = 0, n = 0; i < DIM (ucode); i++) {
+        if (ucode[i] != 0)
             n++;
         w[0] = ucode[i] >> 8;
         w[1] = ucode[i] & 0xFF;
         crc = ddcmp_crc16 (crc, &w, sizeof w);
     }
     if (n < ((3 * DIM (ucode))/4)) {
-        sim_debug (DF_CMD, &kmc_dev, "KDP%u: Microcode not loaded\n", k );
+        sim_debug (DF_INF, &kmc_dev, "KMC%u: Microcode not loaded\n", k);
         return NULL;
     }
     for (i = 0; i < DIM (known); i++) {
         if (crc == known[i].crc) {
-            sim_debug (DF_CMD, &kmc_dev, "KDP%u: %s microdcode loaded\n", k, known[i].name );
+            sim_debug (DF_INF, &kmc_dev, "KMC%u: %s microcode loaded\n", k, known[i].name);
             return known[i].name;
         }
     }
-    sim_debug (DF_CMD, &kmc_dev, "KDP%u: Unknown microdcode loaded\n", k);
+    sim_debug (DF_INF, &kmc_dev, "KMC%u: Unknown microcode loaded\n", k);
     return NULL;
 }
+
 /* Initialize a queue to empty.
+ *
  * Optionally, adds a list of elements to the queue.
  * max, list and size are only used if list is non-NULL.
  *
@@ -2065,12 +2990,12 @@ static const char *kmc_verifyUcode ( int32 k ) {
  * header and count are to be initialized.
  */
 
-static void initqueue (QH *head, int32 *count, int32 max, void *list, size_t size ) {
+static void initqueue (QH *head, int32 *count, int32 max, void *list, size_t size) {
     head->next = head->prev = head;
     *count = 0;
     if (list == NULL)
         return;
-    while (insqueue( (QH *)list, head->prev, count, max ))
+    while (insqueue ((QH *)list, head->prev, count, max))
         list = (QH *)(((char *)list)+size);
     return;
 }
@@ -2102,8 +3027,7 @@ static t_bool insqueue (QH *entry, QH *pred, int32 *count, int32 max) {
  * returns FALSE if queue is empty.
  */
 
-static void *remqueue (QH *entry, int32 *count)
-{
+static void *remqueue (QH *entry, int32 *count) {
     if (*count <= 0)
         return NULL;
     entry->prev->next = entry->next;
@@ -2118,15 +3042,18 @@ static void *remqueue (QH *entry, int32 *count)
  *
  * Adjusts the size of I/O space and number of vectors to match the specified
  * number of KMCs.
- * The uptr is that of unit zero.
+ * The txup is that of unit zero.
  */
 
 #if KMC_UNITS > 1
-static t_stat kmc_setDeviceCount (UNIT *uptr, int32 val, char *cptr, void *desc) {
+static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc) {
     int32 newln;
     uint32 dupidx;
     t_stat r;
-    DEVICE *dptr = &kmc_dev;
+    DEVICE *dptr = find_dev_from_unit(txup);
+    
+    if (cptr == NULL)
+        return SCPE_ARG;
 
     for (dupidx = 0; dupidx < DIM (dupState); dupidx++) {
         dupstate *d = &dupState[dupidx];
@@ -2134,8 +3061,6 @@ static t_stat kmc_setDeviceCount (UNIT *uptr, int32 val, char *cptr, void *desc)
             return SCPE_ALATT;
         }
     }
-    if (cptr == NULL)
-        return SCPE_ARG;
     newln = (int32) get_uint (cptr, 10, KMC_UNITS, &r);
     if ((r != SCPE_OK) || (newln == dptr->numunits))
         return r;
@@ -2151,8 +3076,8 @@ static t_stat kmc_setDeviceCount (UNIT *uptr, int32 val, char *cptr, void *desc)
 /* Report number of configured KMCs */
 
 #if KMC_UNITS > 1
-static t_stat kmc_showDeviceCount (FILE *st, UNIT *uptr, int32 val, void *desc) {
-    DEVICE *dev = find_dev_from_unit(uptr);
+static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc) {
+    DEVICE *dev = find_dev_from_unit(txup);
 
     if (dev->flags & DEV_DIS) {
             fprintf (st, "Disabled");
@@ -2164,24 +3089,141 @@ static t_stat kmc_showDeviceCount (FILE *st, UNIT *uptr, int32 val, void *desc) 
 }
 #endif
 
+/* Set line speed
+ *
+ * This is the speed at which the KMC processed data for/from a DUP.
+ * This limits the rate at which buffer descriptors are processed, even
+ * if the actual DUP speed is faster.  If the DUP speed is slower, of
+ * course the DUP wins.  This limit ensures that the infinite speed DUPs
+ * of simulation won't overrun the host's ability to process buffers.
+ *
+ * The speed range is expressed as line bits/sec for user convenience.
+ * The limits are 300 bps (a sync line won't realistically run slower than
+ * that), and 1,000,000 bps - the maximum speed of a DMR11.  The KDP's
+ * practical limit was about 19,200 BPS.  The higher limit is a rate that
+ * the typicaly host software could handle, even if the line couldn't.
+ *
+ * Note that the DUP line speed can also be set.
+ *
+ * To allow setting the speed before a DUP has been assigned to a KMC by
+ * the OS, the set (and show) commands reference the DUP and apply to any
+ * potential use of that DUP by a KMC.
+ */
+
+static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc) {
+    DEVICE *dptr = find_dev_from_unit(txup);
+    int32 k = txup->unit_kmc;
+    dupstate *d;
+    int32 dupidx, newspeed;
+    char gbuf[CBUFSIZE];
+    t_stat r;
+
+    if (!cptr || !*cptr)
+        return SCPE_ARG;
+
+    cptr = get_glyph (cptr, gbuf, '=');         /* get next glyph */
+    if (*cptr == 0)                             /* should be speed */
+        return SCPE_2FARG;
+    dupidx = (int32) get_uint (gbuf, 10, DUP_LINES, &r); /* Parse dup # */
+    if ((r != SCPE_OK) || (dupidx < 0))         /* error? */
+        return SCPE_ARG;
+
+    cptr = get_glyph (cptr, gbuf, 0);           /* get next glyph */
+    if (*cptr != 0)                             /* should be end */
+        return SCPE_2MARG;
+    cptr = gbuf;
+    if (!strcmp (cptr, "DUP"))
+        cptr += 3;
+    newspeed = (int32) get_uint (cptr, 10, MAX_SPEED, &r);
+    if ((r != SCPE_OK) || (newspeed < 300))     /* error? */
+        return SCPE_ARG;
+
+    d = &dupState[dupidx];
+    d->linespeed = newspeed;
+    return SCPE_OK;
+}
+
+static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc) {
+    int dupidx;
+
+    fprintf (st, "DUP KMC Line   Speed\n"
+                 "--- --- ---- --------\n");
+
+    for (dupidx =0; dupidx < DUP_LINES; dupidx++) {
+        dupstate *d = &dupState[dupidx];
+
+        fprintf (st, "%3u ", dupidx);
+
+        if (d->kmc == -1) {
+            fprintf (st, " -   - ");
+        } else {
+            fprintf (st, "%3u %3u", d->kmc, d->line);
+        }
+        fprintf (st, " %8u\n", d->linespeed);
+    }
+
+    return SCPE_OK;
+}
+
+#if KMC_TROLL
+/* Manage the troll's appetite, in units of milli-gulps.
+ *
+ * See kmc_feedTroll for usage.
+ */
+static t_stat kmc_setTrollHunger (UNIT *txup, int32 val, char *cptr, void *desc) {
+    int32 k = txup->unit_kmc;
+    t_stat r;
+    int32 appetite;
+
+    if (cptr == NULL)
+        return SCPE_ARG;
+
+    appetite = (int32) get_uint (cptr, 10, 999, &r);
+    if (r != SCPE_OK) {
+        return r;
+    }
+
+    trollHungerLevel = appetite;
+
+    return SCPE_OK;
+}
+
+/* Display the troll's appetite */
+
+static t_stat kmc_showTrollHunger (FILE *st, UNIT *txup, int32 val, void *desc) {
+    int32 k = txup->unit_kmc;
+
+    if (trollHungerLevel) {
+        fprintf (st, "Troll's share: %u milligulps (%.1f%% of messages processed)\n",
+                 trollHungerLevel, ((double)trollHungerLevel)/10.0);
+    } else {
+        fprintf (st, "Troll is not at the table\n");
+    }
+
+    return SCPE_OK;
+}
+#endif
+
 /* Show KMC status */
 
-t_stat kmc_showStatus ( FILE *st, UNIT *up, int32 v,  void *dp) {
-    int32 k = up - kmc_units;
+t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v,  void *dp) {
+    int32 k = up->unit_kmc;
     int32 line;
     t_bool first = TRUE;
     DEVICE *dev = find_dev_from_unit(up);
     const char *ucname;
 
-    if (dev->flags & DEV_DIS) {
-            fprintf (st, "Disabled");
-            return SCPE_OK;
+    if ((dev->flags & DEV_DIS) || (((uint32)k) >= dev->numunits)) {
+        fprintf (st, "KMC%u  Disabled\n", k);
+        return SCPE_OK;
     }
 
     ucname = kmc_verifyUcode (k);
 
+    fprintf (st, "KMC%u  ", k);
+
     if (!(sel0 & SEL0_RUN)) {
-        fprintf (st, "%s halted at uPC %04o", 
+        fprintf (st, "%s halted at uPC %04o\n", 
                  (ucname?ucname: "(No or unknown microcode)"), upc);
         return SCPE_OK;
     }
@@ -2199,29 +3241,110 @@ t_stat kmc_showStatus ( FILE *st, UNIT *up, int32 v,  void *dp) {
             if (first) {
                 fprintf (st, "     Line DUP   CSR   State\n");
                 first = FALSE;
-            } else {
-                fprintf (st, "\n");
             }
             fprintf (st, "     %3u %3u %06o %-8s %3s %s %s %s",
                      line, d->dupidx, d->dupcsr,
                      (d->ctrlFlags & SEL6_CI_ENABLE)? "enabled": "disabled",
-                     (d->modemstate & MDM_DSR)? "DSR" : "OFF",
+                     (d->linkstate & LINK_DSR)? "DSR" : "OFF",
                      (d->ctrlFlags & SEL6_CI_DDCMP)? "DDCMP" : "Bit-Stuff",
                      (d->ctrlFlags & SEL6_CI_HDX)? "HDX " : "FDX",
                      (d->ctrlFlags & SEL6_CI_NOCRC)? "NOCRC": "");
             if (d->ctrlFlags & SEL6_CI_ENASS)
                 fprintf (st, " SS (%u) ", d->ctrlFlags & SEL6_CI_SADDR);
+            fprintf (st, "\n");
         }
     }
     if (first)
-        fprintf (st, "     No DUPs assigned");
+        fprintf (st, "     No DUPs assigned\n");
 
     return SCPE_OK;
 }
 
+/* Help for this device.
+ *
+ */
+
+static t_stat kmc_help (FILE *st, struct sim_device *dptr,
+                         struct sim_unit *uptr, int32 flag, char *cptr) {
+    const char *const text =
+    " The Whizbang 100 is a DMA line printer controller used on the Whizbang 1000\n"
+    " and Gurgle 1200 processor familes of the Obsolete Hardware Corporation.\n"
+    "1 Hardware Description\n"
+    " The Whizbang 100 is specified to operate \"any printer you and a friend can\n"
+    " lift\", and speeds up to 0.5 C.\n"
+    "\n"
+    " The controller requires a refrigerator-sized box, consumes 5.5KW, and is\n"
+    " liquid cooled.  It uses GBL (Granite Baked Logic).\n"
+    "\n"
+    " Painted a cool blue, it consistently won industrial design awards, even\n"
+    " as mechanically, it was less than perfect.  Plumbers had full employment.\n"
+    "2 Models\n"
+    " The Whizbang 100 model G was commissioned by a government agency, which\n"
+    " insisted on dull gray paint, and speeds limited to 11 MPH.\n"
+    "\n"
+    " The Whizbang 100 Model X is powered by the improbability drive, and is\n"
+    " rarely seen once installed.\n"
+    "2 $Registers\n"
+    " The two main registers are the Print Control register and the Print Data\n"
+    " register.  The Print Maintenance register is usually broken.\n"
+    "3 Print Control register\n"
+    "  Bit 0 turns the attached printer on when set, off when clear.\n"
+    "  Bit 1 ejects the current page\n"
+    "  Bit 2 ejects the operator\n"
+    "  Bit 3 enables interrupts\n"
+    "3 Print data register\n"
+    "  The print data register is thiry-seven bits wide, and accepts data in\n"
+    "  elephantcode, the precursor to Unicode.  Paper advance is accomplished\n"
+    "  with the Rocket Return and Page Trampoline characters.\n"
+    "1 Configuration\n"
+    "  The Whizbang 100 requires 4 address slots on the LooneyBus.\n"
+    "+  SET WHIZBANG LUNA 11\n"
+    "  will assign the controller to its default bus address.\n"
+    "2 $Set commands\n"
+    "  The output codeset can be ASCII or elephantcode\n"
+    "+ SET WHIZBANG CODESET ASCII\n"
+    "+   SET WHIZBANG CODESET ELEPHANTCODE\n"
+    "\n"
+    "  The VFU (carriage control tape) is specifed with\n"
+    "+ SET WHIZBANG TAPE vfufile\n"
+    "2 WOS\n"
+    "  Under WOS, the device will only work at LooneyBus slot 9\n"
+    "2 RTG\n"
+    "  The RTG driver has been lost.  It is not known if the\n"
+    "  Whizbang will operate correctly.\n"
+    "2 Files\n"
+    "  The VFU is programmed with an ASCII text file.  Each line of the\n"
+    "  file corresponds to a line of the form.  Enter the channel numbers\n"
+    "  as base 33 roman numerals.\n"
+    "2 Examples\n"
+    "  TBS\n"
+    "1 Operation\n"
+    "  Specify the host file to receive output using the \n"
+    "+ATTACH WHIZBANG filespec\n"
+    " command.\n"
+    "1 Monitoring\n"
+    "  The Whizbang shas no lights or switches.  The model X may be located\n"
+    "  with the\n"
+    "+SHOW WHIZBANG LOCATION\n"
+    " simulator command.\n"
+    "2 $Show commands\n"
+    "1 Restrictions\n"
+    " The emulator is limited to a single Whizbang controller.\n"
+    "1 Debugging\n"
+    " The only implemented debugging command is\n"
+    "+ SET WHIZBANG DEBUG=PRAY\n"
+    " To stop:\n"
+    "+ SET WHIZBANG NODEBUG=PRAY\n"
+    "1 Related Devices\n"
+    "  See also the Whizbang paper shredder (SHRED).\n"
+    "";
+
+    return scp_help (st, dptr, uptr, text, cptr);
+}
 /* Description of this device.
  * Conventionally last function in the file.
  */
 static char *kmc_description (DEVICE *dptr) {
     return "KMC11-A Synchronous line controller supporting only COMM IOP/DUP microcode";
 }
+
