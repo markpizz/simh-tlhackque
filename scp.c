@@ -7111,6 +7111,7 @@ typedef struct topic {
     char          *text;
     size_t         len;
     uint32         flags;
+    uint32         kidwid;
 #define HLP_MAGIC_TOPIC  1
 } TOPIC;
 
@@ -7359,7 +7360,10 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
             topic->children[topic->kids++] = newt;
             newt->level = n;
             newt->parent = topic;
-
+            n = strlen (newt->title);
+            if (n > topic->kidwid) {
+                topic->kidwid = n;
+            }
             topic = newt;
             continue;
         } /* digits introducing a topic */
@@ -7496,12 +7500,12 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
                         *p = '_';
                     p++;
                 }
-                w += 4 + strlen (cbuf);
+                w += 4 + topic->kidwid;
                 if (w > 80) {
-                    w = 4 + strlen (cbuf);
+                    w = 4 + topic->kidwid;
                     fputc ('\n', st);
                 }
-                fprintf (st, "    %s", cbuf);
+                fprintf (st, "    %-*s", topic->kidwid, cbuf);
             }
             fprintf (st, "\n\n");
         }
