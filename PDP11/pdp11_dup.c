@@ -518,7 +518,11 @@ switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
         dup_set_modem (dup, data);
         dup_rxcsr[dup] &= ~RXCSR_WRITEABLE;
         dup_rxcsr[dup] |= (data & RXCSR_WRITEABLE);
-        if ((dup_rxcsr[dup] & RXCSR_M_RTS) &&           /* Upward transition of RTS */
+#if 0
+        /* This does not compute [TL].  Perhaps if it was a CD transition... RTS is about sending.
+         * Need to understand what is being attempted here.  For now, it breaks RTS use by KDP.
+         */
+       if ((dup_rxcsr[dup] & RXCSR_M_RTS) &&           /* Upward transition of RTS */
             (!(orig_val & RXCSR_M_RTS)))                /* Enables Receive on the line */
             dup_desc.ldsc[dup].rcve = TRUE;
         if ((dup_rxcsr[dup] & RXCSR_M_RTS) &&           /* Upward transition of RTS */
@@ -531,6 +535,9 @@ switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
             if (dup_rxcsr[dup] & RXCSR_M_RXIE)
                 dup_set_rxint (dup);
             }
+#else
+        dup_desc.ldsc[dup].rcve = (dup_rxcsr[dup] & RXCSR_M_RCVEN) != 0;
+#endif
         if ((dup_rxcsr[dup] & RXCSR_M_RCVEN) && 
             (!(orig_val & RXCSR_M_RCVEN))) {            /* Upward transition of receiver enable */
             dup_rcv_byte (dup);                         /* start any pending receive */
