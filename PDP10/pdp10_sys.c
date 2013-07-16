@@ -109,6 +109,7 @@ const char *sim_stop_messages[] = {
     "Invalid I/O controller",
     "Address stop",
     "Console FE halt",
+    "Unaligned DMA",
     "Panic stop"
      };
 

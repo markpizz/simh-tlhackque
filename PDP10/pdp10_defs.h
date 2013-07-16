@@ -115,7 +115,8 @@ typedef t_int64         d10;                            /* PDP-10 data (36b) */
 #define STOP_ILLIOC     10                              /* invalid UBA num */
 #define STOP_ASTOP      11                              /* address stop */
 #define STOP_CONSOLE    12                              /* FE halt */
-#define STOP_UNKNOWN    13                              /* unknown stop  */
+#define STOP_IOALIGN    13                              /* DMA word access to odd address */
+#define STOP_UNKNOWN    14                              /* unknown stop  */
 #define PAGE_FAIL       -1                              /* page fail */
 #define INTERRUPT       -2                              /* interrupt */
 #define ABORT(x)        longjmp (save_env, (x))         /* abort */
