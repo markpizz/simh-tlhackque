@@ -116,7 +116,7 @@ extern int32 tmr_poll;                                  /* instructions per tick
 
 #define TYPE_BACCI 0
 #define TYPE_CNTLI 1
-#define TYPE_BASEI 03
+#define TYPE_BASEI 3
 #define TYPE_HALT  2
 #define TYPE_BACCO 0
 #define TYPE_CNTLO 1
@@ -129,18 +129,19 @@ extern int32 tmr_poll;                                  /* instructions per tick
 
 /* SEL0 */
 #define DMC_TYPE_INPUT_MASK 0x0003
-#define DMC_IN_HALT_MASK 0x0002
-#define DMC_IN_IO_MASK 0x0004
-#define DMP_IEO_MASK 0x0010
-#define DMC_RQI_MASK 0x0020
-#define DMP_RQI_MASK 0x0080
-#define DMC_RDYI_MASK 0x0080
-#define DMC_IEI_MASK 0x0040
-#define DMP_IEI_MASK 0x0001
-#define ROMI_MASK 0x0200
-#define LU_LOOP_MASK 0x0800
-#define MASTER_CLEAR_MASK 0x4000
-#define RUN_MASK 0x8000
+#define DMC_IN_HALT_MASK    0x0002
+#define DMC_IN_IO_MASK      0x0004
+#define DMP_IEO_MASK        0x0010
+#define DMC_RQI_MASK        0x0020
+#define DMP_RQI_MASK        0x0080
+#define DMC_RDYI_MASK       0x0080
+#define DMC_IEI_MASK        0x0040
+#define DMP_IEI_MASK        0x0001
+#define ROMI_MASK           0x0200
+#define LU_LOOP_MASK        0x0800
+#define STEPUP_MASK         0x0100
+#define MASTER_CLEAR_MASK   0x4000
+#define RUN_MASK            0x8000
 
     /* SEL2 */
 #define DMP_IN_IO_MASK 0x0004
@@ -162,20 +163,23 @@ extern int32 tmr_poll;                                  /* instructions per tick
 #define TIMEOUT_MASK    0x0002
 #define NACK_THRES_MASK 0x0001
 
-#define DSPDSR 0x22b3       /* KMC opcode to move line unit status to SEL2 */
+#define DSPDSR    0x22b3    /* KMC opcode to move line unit status to SEL2 */
+#define DROPDTR   0xa40b    /* KMC opcode to drop DTR */
+#define UINST_CNF 0x2296    /* KMC opcode to get config switches */
 
-#define SEL0_RUN_BIT 15
-#define SEL0_MCLR_BIT 14
+#define SEL0_RUN_BIT     15
+#define SEL0_MCLR_BIT    14
 #define SEL0_LU_LOOP_BIT 11
-#define SEL0_ROMI_BIT 9
-#define SEL0_RDI_BIT 7
-#define SEL0_DMC_IEI_BIT 6
-#define SEL0_DMP_IEI_BIT 0
-#define SEL0_DMP_IEO_BIT 4
-#define SEL0_DMC_RQI_BIT 5
-#define SEL0_DMP_RQI_BIT 7
-#define SEL0_IN_IO_BIT 2
-#define SEL0_TYPEI_BIT 0
+#define SEL0_ROMI_BIT     9
+#define SEL0_STEPUP_BIT   8
+#define SEL0_RDI_BIT      7
+#define SEL0_DMC_IEI_BIT  6
+#define SEL0_DMP_IEI_BIT  0
+#define SEL0_DMP_IEO_BIT  4
+#define SEL0_DMC_RQI_BIT  5
+#define SEL0_DMP_RQI_BIT  7
+#define SEL0_IN_IO_BIT    2
+#define SEL0_TYPEI_BIT    0
 
 #define SEL2_TYPEO_BIT 0
 #define SEL2_RDO_BIT 7
@@ -200,8 +204,6 @@ extern int32 tmr_poll;                                  /* instructions per tick
 
 #define BUFFER_QUEUE_SIZE 8
 
-
-#define POLL 1000
 #define TRACE_BYTES_PER_LINE 16
 
 struct csrs {
@@ -238,6 +240,28 @@ typedef enum
     TransferInProgress
 } BufferState;
 
+typedef enum
+{
+    Halt,       /* initially */
+    IStart,     /* Initiating Start */
+    AStart,     /* Acknowledging Start */
+    Run,        /* Start ACK received */
+    Maintenance /* off-line maintenance messages */
+} LinkState;
+
+typedef struct 
+{
+    uint8 R;    /* number of the highest sequential data message received */
+    uint8 N;    /* number of the highest sequential data message transmitted */
+    uint8 A;    /* number of the highest sequential data message acknowledged */
+    uint8 T;    /* number of the next data message to be transmitted */
+    uint8 X;    /* number of the last data message that has been transmitted */
+    t_bool SACK;/* Send ACK.  */
+    t_bool SNAK;/* Send NAK.  */
+    t_bool SREP;/* Send REP.  */
+    LinkState state;
+} DDCMP;
+
 typedef struct control
 {
     struct control *next;       /* Link */
@@ -246,7 +270,7 @@ typedef struct control
 
 typedef struct buffer
 {
-    uint32 address;           /* unibus address of the buffer */
+    uint32 address;           /* unibus address of the buffer (or 0 for DDCMP control messages) */
     uint16 count;             /* size of the buffer passed to the device by the driver */
     uint8 *transfer_buffer;   /* the buffer into which data is received or from which it is transmitted*/
     int actual_bytes_transferred;/* the number of bytes from the actual block that have been read or written */
@@ -259,10 +283,11 @@ typedef struct buffer
 typedef struct
 {
     char * name;
-    BUFFER queue[BUFFER_QUEUE_SIZE];
-    int head;
-    int tail;
-    int count;
+    BUFFER *queue;
+    size_t size;
+    size_t head;
+    size_t tail;
+    size_t count;
     struct dmc_controller *controller; /* back pointer to the containing controller */
 } BUFFER_QUEUE;
 
@@ -280,6 +305,9 @@ typedef struct dmc_controller {
     int index;                  /* Index in controller array */
     ControllerState state;
     TransferState transfer_state; /* current transfer state (type of transfer) */
+    DDCMP link;
+    uint8 ReceiveSeq;
+    uint8 TransmitSeq;
     int transfer_type;
     int transfer_in_io; // remembers IN I/O setting at start of input transfer as host changes it during transfer!
     TMLN *line;
@@ -300,6 +328,8 @@ typedef struct dmc_controller {
     uint32 receive_buffer_input_transfers_completed;
     uint32 transmit_buffer_input_transfers_completed;
     uint32 control_out_operations_completed;
+    uint32 ddcmp_control_packets_received;
+    uint32 ddcmp_control_packets_sent;
     uint32 byte_wait;                           /* rcv/xmt byte delay */
 } CTLR;
 
@@ -344,12 +374,16 @@ void dmc_process_command(CTLR *controller);
 t_bool dmc_buffer_fill_receive_buffers(CTLR *controller);
 void dmc_start_transfer_receive_buffer(CTLR *controller);
 int dmc_buffer_send_transmit_buffers(CTLR *controller);
-void dmc_buffer_queue_init(CTLR *controller, BUFFER_QUEUE *q, char *name);
+void dmc_buffer_queue_init(CTLR *controller, BUFFER_QUEUE *q, char *name, size_t size);
 void dmc_buffer_queue_init_all(CTLR *controller);
 BUFFER *dmc_buffer_queue_head(BUFFER_QUEUE *q);
-int dmc_buffer_queue_full(BUFFER_QUEUE *q);
+BUFFER *dmc_buffer_queue_allocate(BUFFER_QUEUE *q);
+t_bool dmc_transmit_queue_empty(CTLR *controller);
 void dmc_start_transfer_transmit_buffer(CTLR *controller);
 void dmc_queue_control_out(CTLR *controller, uint16 sel6);
+void dmc_send_ddcmp_start(CTLR *controller);
+void dmc_send_ddcmp_start_ack(CTLR *controller);
+void dmc_send_ddcmp_ack(CTLR *controller);
 
 /* debugging bitmaps */
 #define DBG_TRC  0x0001                                 /* trace routine calls */
@@ -414,7 +448,7 @@ uint8 dmp_modem[DMP_NUMDEVICE];
 
 TMLN dmc_ldsc[DMC_NUMDEVICE];               /* line descriptors */
 TMXR dmc_desc = { 1, NULL, 0, dmc_ldsc };   /* mux descriptor */
-uint32 dmc_connect_poll;                    /* seconds between polls when no connection */
+uint32 dmc_connect_poll = DMC_CONNECT_POLL; /* seconds between polls when no connection */
 
 uint32 dmc_ini_summary = 0;         /* In Command Interrupt Summary for all controllers */
 uint32 dmc_outi_summary = 0;        /* Out Command Interrupt Summary for all controllers */
@@ -740,6 +774,8 @@ t_stat dmc_showstats (FILE* st, UNIT* uptr, int32 val, void* desc)
     fprintf(st, "Input transfers completed for receive buffers=%d\n", controller->receive_buffer_input_transfers_completed);
     fprintf(st, "Input transfers completed for transmit buffers=%d\n", controller->transmit_buffer_input_transfers_completed);
     fprintf(st, "Control Out operations processed=%d\n", controller->control_out_operations_completed);
+    fprintf(st, "DDCMP control packets received=%d\n", controller->ddcmp_control_packets_received);
+    fprintf(st, "DDCMP control packets sent=%d\n", controller->ddcmp_control_packets_sent);
 
     return SCPE_OK;
 }
@@ -812,6 +848,8 @@ t_stat dmc_setstats (UNIT* uptr, int32 val, char* cptr, void* desc)
     controller->receive_buffer_input_transfers_completed = 0;
     controller->transmit_buffer_input_transfers_completed = 0;
     controller->control_out_operations_completed = 0;
+    controller->ddcmp_control_packets_received = 0;
+    controller->ddcmp_control_packets_sent = 0;
 
     printf("Statistics reset\n" );
 
@@ -924,7 +962,7 @@ t_stat dmc_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
     fprintf(st, "\n");
     fprintf(st, "   sim> SET %s CONNECTPOLL=n\n", dptr->name);
     fprintf(st, "\n");
-    fprintf(st, "Where n is the number of seconds. The default is 5 seconds.\n");
+    fprintf(st, "Where n is the number of seconds. The default is %d seconds.\n", DMC_CONNECT_POLL);
     fprintf(st, "\n");
     fprintf(st, "If you want to experience the actual data rates of the physical hardware you\n");
     fprintf(st, "can set the bit rate of the simulated line can be set using the following\n");
@@ -1067,13 +1105,14 @@ void dmc_dumpregsel0(CTLR *controller, int trace_level, char * prefix, uint16 da
         sim_debug(
             trace_level,
             controller->device,
-            "%s SEL0 (0x%04x) %s%s%s%s%s%s%s%s%s\n",
+            "%s SEL0 (0x%04x) %s%s%s%s%s%s%s%s%s%s\n",
             prefix,
             data,
             dmc_bitfld(data, SEL0_RUN_BIT, 1) ? "RUN " : "",
             dmc_bitfld(data, SEL0_MCLR_BIT, 1) ? "MCLR " : "",
             dmc_bitfld(data, SEL0_LU_LOOP_BIT, 1) ? "LU LOOP " : "",
             dmc_bitfld(data, SEL0_ROMI_BIT, 1) ? "ROMI " : "",
+            dmc_bitfld(data, SEL0_STEPUP_BIT, 1) ? "STEPUP " : "",
             dmc_bitfld(data, SEL0_RDI_BIT, 1) ? "RDI " : "",
             dmc_bitfld(data, SEL0_DMC_IEI_BIT, 1) ? "IEI " : "",
             dmc_bitfld(data, SEL0_DMC_RQI_BIT, 1) ? "RQI " : "",
@@ -1266,6 +1305,11 @@ int dmc_is_lu_loop_set(CTLR *controller)
     return *controller->csrs->sel0 & LU_LOOP_MASK;
 }
 
+int dmc_is_run_set(CTLR *controller)
+{
+    return *controller->csrs->sel0 & RUN_MASK;
+}
+
 int dmc_is_rqi_set(CTLR *controller)
 {
     int ans = 0;
@@ -1349,7 +1393,7 @@ void dmc_set_rdyi(CTLR *controller)
     if (dmc_is_dmc(controller))
     {
         dmc_setreg(controller, 0, *controller->csrs->sel0 | DMC_RDYI_MASK, DBG_RGC);
-        dmc_setreg(controller, 4, *controller->modem, DBG_RGC);
+        dmc_setreg(controller, 4, *controller->modem | 0x0800, DBG_RGC);
         dmc_setreg(controller, 6, *controller->modem & SEL4_MDM_DTR, DBG_RGC);
     }
     else
@@ -1364,7 +1408,7 @@ void dmc_clear_rdyi(CTLR *controller)
 {
     if (dmc_is_dmc(controller))
     {
-        dmc_setreg(controller, 0, *controller->csrs->sel0 & ~DMC_RDYI_MASK, DBG_RGC);
+        dmc_setreg(controller, 0, *controller->csrs->sel0 & ~(DMC_RDYI_MASK|DMC_TYPE_INPUT_MASK|DMC_IN_IO_MASK), DBG_RGC);
     }
     else
     {
@@ -1462,6 +1506,7 @@ void dmc_process_master_clear(CTLR *controller)
     sim_debug(DBG_INF, controller->device, "Master clear\n");
     dmc_clear_master_clear(controller);
     dmc_clr_modem_dtr(controller);
+    controller->link.state = Halt;
     controller->state = Initialised;
     while ((control = controller->control_out))
     {
@@ -1576,6 +1621,7 @@ t_stat dmc_svc(UNIT* uptr)
 static t_stat dmc_poll_svc (UNIT *uptr)
 {
     DEVICE *dptr = ((CTLR *)uptr->ctlr)->device;
+    CTLR *controller;
     int maxunits = (&dmc_dev == dptr) ? DMC_NUMDEVICE : DMP_NUMDEVICE;
     DIB *dibptr = (DIB *)dptr->ctxt;
     int addrlnt = (UNIBUS) ? IOLN_DMC : IOLN_DMV;
@@ -1587,7 +1633,10 @@ static t_stat dmc_poll_svc (UNIT *uptr)
     dmc = tmxr_poll_conn(mp);
     if (dmc >= 0)                                   /* new connection? */
     {
-        dmc_get_modem ((CTLR *)dptr->units[dmc].ctlr);
+        controller = (CTLR *)dptr->units[dmc].ctlr;
+        dmc_get_modem (controller);
+        controller->link.state = IStart;
+        dmc_send_ddcmp_start(controller);
     }
     tmxr_poll_rx (mp);
     tmxr_poll_tx (mp);
@@ -1597,6 +1646,7 @@ static t_stat dmc_poll_svc (UNIT *uptr)
         CTLR *controller = (CTLR *)dptr->units[dmc].ctlr;
         uint8 old_modem, new_modem;
 
+        controller = (CTLR *)dptr->units[dmc].ctlr;
         if (dptr->units[dmc].flags & UNIT_ATT)
             ++attached;
         if (mp->ldsc[dmc].conn)
@@ -1691,35 +1741,48 @@ void dmc_buffer_trace(CTLR *controller, const uint8 *buf, int length, char *pref
     }
 }
 
-void dmc_buffer_queue_init(CTLR *controller, BUFFER_QUEUE *q, char *name)
+void dmc_buffer_queue_init(CTLR *controller, BUFFER_QUEUE *q, char *name, size_t size)
 {
     q->name = name;
+    q->size = size;
     q->head = 0;
     q->tail = 0;
     q->count = 0;
     q->controller = controller;
+    free (q->queue);
+    q->queue = (BUFFER *)calloc (size, sizeof(*q->queue));
+}
+
+t_bool dmc_transmit_queue_empty(CTLR *controller)
+{
+    BUFFER *head = dmc_buffer_queue_head(controller->transmit_queue);
+
+    return ((head == NULL) || (head->state == Available));
 }
 
 void dmc_buffer_queue_init_all(CTLR *controller)
 {
-    dmc_buffer_queue_init(controller, controller->receive_queue, "receive");
-    dmc_buffer_queue_init(controller, controller->transmit_queue, "transmit");
+    dmc_buffer_queue_init(controller, controller->receive_queue, "receive", BUFFER_QUEUE_SIZE);
+    /* 
+       The transmit queue has twice as many entries as the receive queue 
+       to hold enough ACKs for all recieved packets 
+    */
+    dmc_buffer_queue_init(controller, controller->transmit_queue, "transmit", 2*BUFFER_QUEUE_SIZE);
 }
 
-int dmc_buffer_queue_full(BUFFER_QUEUE *q)
+BUFFER *dmc_buffer_queue_allocate(BUFFER_QUEUE *q)
 {
-    return q->count > BUFFER_QUEUE_SIZE;
-}
+    BUFFER *buffer = NULL;
 
-void dmc_buffer_queue_add(BUFFER_QUEUE *q, uint32 address, uint16 count)
-{
-    if (!dmc_buffer_queue_full(q))
+    if (q->count < q->size)
     {
-        int new_buffer = 0;
+        size_t new_buffer = 0;
+
         if (q->count > 0)
         {
-            int last_buffer = q->tail;
-            new_buffer = (q->tail +1) % BUFFER_QUEUE_SIZE;
+            size_t last_buffer = q->tail;
+
+            new_buffer = (q->tail + 1) % q->size;
 
             /* Link last buffer to the new buffer */
             q->queue[last_buffer].next = &q->queue[new_buffer];
@@ -1731,14 +1794,27 @@ void dmc_buffer_queue_add(BUFFER_QUEUE *q, uint32 address, uint16 count)
         }
 
         q->tail = new_buffer;
-        q->queue[new_buffer].address = address;
-        q->queue[new_buffer].count = count;
+        buffer = &q->queue[new_buffer];
+        q->queue[new_buffer].address = 0;
+        q->queue[new_buffer].count = 0;
         q->queue[new_buffer].transfer_buffer = NULL;
         q->queue[new_buffer].actual_bytes_transferred = 0;
         q->queue[new_buffer].next = NULL;
         q->queue[new_buffer].state = Available;
-        q->queue[new_buffer].is_loopback = dmc_is_lu_loop_set(q->controller);
         q->count++;
+    }
+    return buffer;
+}
+
+void dmc_buffer_queue_add(BUFFER_QUEUE *q, uint32 address, uint16 count)
+{
+    BUFFER *buffer = dmc_buffer_queue_allocate(q);
+
+    if (buffer)
+    {
+        buffer->address = address;
+        buffer->count = count;
+        buffer->is_loopback = dmc_is_lu_loop_set(q->controller);
         sim_debug(DBG_INF, q->controller->device, "Queued %s buffer address=0x%08x count=%d\n", q->name, address, count);
     }
     else
@@ -1748,6 +1824,7 @@ void dmc_buffer_queue_add(BUFFER_QUEUE *q, uint32 address, uint16 count)
     }
 }
 
+
 void dmc_buffer_queue_release_head(BUFFER_QUEUE *q)
 {
     if (q->count > 0)
@@ -1755,7 +1832,7 @@ void dmc_buffer_queue_release_head(BUFFER_QUEUE *q)
         free(q->queue[q->head].transfer_buffer);
         q->queue[q->head].transfer_buffer = NULL;
         q->queue[q->head].state = Available;
-        q->head = (q->head + 1) % BUFFER_QUEUE_SIZE;
+        q->head = (q->head + 1) % q->size;
         q->count--;
     }
     else
@@ -1847,10 +1924,44 @@ t_bool dmc_buffer_fill_receive_buffers(CTLR *controller)
             controller->buffers_received_from_net++;
             dmc_buffer_trace (controller, pbuf, buffer->actual_bytes_transferred, "REC ", buffer->address);
             buffer->is_loopback = FALSE;
-            buffer->state = ContainsData;
-            Map_WriteB (buffer->address, buffer->actual_bytes_transferred, (uint8 *)pbuf);
-            ans = TRUE;
-            buffer = buffer->next;
+            switch (pbuf[0])
+            {
+            case DDCMP_SOH:         /* DDCMP Data Packet */
+                if (controller->link.state != Run)
+                {
+                }
+                buffer->state = ContainsData;
+                Map_WriteB (buffer->address, buffer->actual_bytes_transferred-(DDCMP_HEADER_SIZE+DDCMP_CRC_SIZE), ((uint8 *)pbuf)+DDCMP_HEADER_SIZE);
+                buffer = buffer->next;
+                ans = TRUE;
+                controller->ReceiveSeq = pbuf[DDCMP_NUM_OFFSET];
+                if (dmc_transmit_queue_empty(controller)) /* No Transmit packet in Queue? */
+                    dmc_send_ddcmp_ack(controller);
+                break;
+            case DDCMP_ENQ:         /* DDCMP Control Packet */
+                switch (pbuf[1])
+                {
+                case DDCMP_CTL_ACK: /* Control Message ACK Type */
+                    break;
+                case DDCMP_CTL_NAK: /* Control Message NAK Type */
+                    break;
+                case DDCMP_CTL_REP: /* Control Message REP Type */
+                    break;
+                case DDCMP_CTL_STRT: /* Control Message STRT Type */
+                    dmc_send_ddcmp_start_ack(controller);
+                    break;
+                case DDCMP_CTL_STACK: /* Control Message STACK Type */
+                    controller->link.state = Run;
+                    controller->TransmitSeq = controller->ReceiveSeq = 0;
+                    dmc_send_ddcmp_ack(controller);
+                    break;
+                }
+                break;
+            case DDCMP_DLE:         /* DDCMP Maintenance Packet */
+                break;
+            default:                /* Undefined DDCMP Packet */
+                break;
+            }
         }
     }
     return ans;
@@ -1867,22 +1978,25 @@ int dmc_buffer_send_transmit_buffers(CTLR *controller)
     {
         t_stat r;
 
-        /* only send the buffer if it actually has some data, sometimes get zero length buffers - don't send these */
+        /* only send the buffer if it actually has some data, sometimes get zero length 
+           buffers - don't send these.  Getting a zero length buffer should be an error */
         if (buffer->count > 0)
         {
             if (buffer->transfer_buffer == NULL)
             {
                 int n;
-                /* construct buffer */
-                buffer->transfer_buffer = (uint8 *)malloc (buffer->count);
-                n = Map_ReadB (buffer->address, buffer->count, buffer->transfer_buffer);
+
+                /* construct buffer - leaving room for DDCMP header and CRCs */
+                buffer->transfer_buffer = (uint8 *)malloc (buffer->count + DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE);
+                n = Map_ReadB (buffer->address, buffer->count, buffer->transfer_buffer + DDCMP_HEADER_SIZE);
                 if (n > 0)
                 {
                     sim_debug(DBG_WRN, controller->device, "DMA error\n");
                 }
+                ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count, 0, controller->TransmitSeq++, controller->ReceiveSeq);
             }
 
-            r = tmxr_put_packet_ln (controller->line, buffer->transfer_buffer, buffer->count);
+            r = ddcmp_tmxr_put_packet_crc_ln (controller->line, buffer->transfer_buffer, buffer->count);
             if (r == SCPE_OK)
             {
                 buffer->actual_bytes_transferred = buffer->count;
@@ -1938,10 +2052,18 @@ void dmc_start_transfer_transmit_buffer(CTLR *controller)
         (controller->transfer_state != Idle) ||
         (dmc_is_rdyo_set(controller)))
         return;
-    if (head->state == ContainsData)
+    while (head && (head->state == ContainsData))
     {
-        head->state = TransferInProgress;
-        dmc_start_data_output_transfer(controller, head->address, head->count, FALSE);
+        if (head->address == 0)         /* Control Packet doesn't go to the host */
+        {
+            dmc_buffer_queue_release_head(controller->transmit_queue);
+            head = dmc_buffer_queue_head(controller->transmit_queue);
+        }
+        else
+        {
+            head->state = TransferInProgress;
+            dmc_start_data_output_transfer(controller, head->address, head->count, FALSE);
+        }
     }
 }
 
@@ -1979,8 +2101,9 @@ void dmc_process_input_transfer_completion(CTLR *controller)
 {
     if (dmc_is_dmc(controller))
     {
-        if (!dmc_is_rqi_set(controller))
-        {
+        if (dmc_is_run_set(controller) && 
+            (!dmc_is_rqi_set(controller)))
+        {       /* Time to decode input command arguments */
             uint16 sel4 = *controller->csrs->sel4;
             uint16 sel6 = *controller->csrs->sel6;
             controller->transfer_type = dmc_get_input_transfer_type(controller);
@@ -2013,6 +2136,14 @@ void dmc_process_input_transfer_completion(CTLR *controller)
                     dmc_buffer_send_transmit_buffers(controller);
                     controller->transmit_buffer_input_transfers_completed++;
                 }
+            }
+            else if (controller->transfer_type == TYPE_CNTLI)
+            {
+                sim_debug(DBG_INF, controller->device, "Control In Command Received\n");
+                dmc_set_modem_dtr(controller);
+                controller->transfer_state = Idle;
+                controller->link.state = IStart;
+                return;
             }
             else if (controller->transfer_type == TYPE_HALT)
             {
@@ -2069,6 +2200,33 @@ void dmc_process_input_transfer_completion(CTLR *controller)
     }
 }
 
+void dmc_send_ddcmp_start(CTLR *controller)
+{
+    BUFFER *buffer = dmc_buffer_queue_allocate(controller->transmit_queue);
+
+    buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
+    buffer->count = DDCMP_HEADER_SIZE;
+    ddcmp_build_start_packet (buffer->transfer_buffer);
+}
+
+void dmc_send_ddcmp_start_ack(CTLR *controller)
+{
+    BUFFER *buffer = dmc_buffer_queue_allocate(controller->transmit_queue);
+
+    buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
+    buffer->count = DDCMP_HEADER_SIZE;
+    ddcmp_build_start_ack_packet (buffer->transfer_buffer);
+}
+
+void dmc_send_ddcmp_ack(CTLR *controller)
+{
+    BUFFER *buffer = dmc_buffer_queue_allocate(controller->transmit_queue);
+
+    buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
+    buffer->count = DDCMP_HEADER_SIZE;
+    ddcmp_build_ack_packet (buffer->transfer_buffer, controller->ReceiveSeq, DDCMP_FLAG_SELECT);
+}
+
 void dmc_process_command(CTLR *controller)
 {
     if (dmc_is_master_clear_set(controller))
@@ -2099,18 +2257,37 @@ void dmc_process_command(CTLR *controller)
         return;
     }
     if (dmc_is_dmc (controller) &&
-        *controller->csrs->sel0 & ROMI_MASK &&
-        *controller->csrs->sel6 == DSPDSR)
-    /* DMC-11 or DMR-11, see if ROMI bit is set.  If so, if SEL6 is
-        0x22b3 (read line status instruction), set the DTR bit in SEL2.  */
-    {
-        dmc_setreg (controller, 2, 0x800, DBG_RGC);
+        (*controller->csrs->sel0 & ROMI_MASK) &&
+        (!dmc_is_run_set(controller)) &&
+        (*controller->csrs->sel0 & STEPUP_MASK))
+    {       /* DMC-11 or DMR-11, with RUN off and step and ROMI bits set.  */
+        switch (*controller->csrs->sel6)
+        {
+        case DSPDSR:    /* 0x22b3 (read line status instruction), set the DTR bit in SEL2.  */
+            dmc_setreg (controller, 2, 0x800, DBG_RGC);
+            break;
+        case DROPDTR:   /* 0xa40b (drop DTR instruction) - VMS Driver uses this  */
+            dmc_clr_modem_dtr (controller);
+            break;
+        case UINST_CNF: /* 0x2296 (get configuration switches) - VMS Driver uses this  */
+            dmc_setreg (controller, 6, 0x0006, DBG_RGC);
+            break;
+        default:
+            {
+                sim_debug(DBG_WRN, controller->device, "dmc_process_command(). Unknown Microcode instruction 0x%04x", *controller->csrs->sel6);
+            }
+        }
+        *controller->csrs->sel0 &= ~STEPUP_MASK;
+        controller->transfer_state = Idle;
     }
     else
     {
-        dmc_start_control_output_transfer(controller);
-        dmc_start_transfer_transmit_buffer(controller);
-        dmc_start_transfer_receive_buffer(controller);
+        if (dmc_is_run_set(controller))
+        {
+            dmc_start_control_output_transfer(controller);
+            dmc_start_transfer_transmit_buffer(controller);
+            dmc_start_transfer_receive_buffer(controller);
+        }
     }
 }
 
@@ -2171,11 +2348,12 @@ t_stat dmc_wr(int32 data, int32 PA, int32 access)
         dmc_setreg(controller, PA, (oldValue & ~mask) | (data & mask), DBG_REG);
     }
 
-    if (dmc_is_attached(controller->unit) && (dmc_getsel(reg) == 0 || dmc_getsel(reg) == 1))
+    if (dmc_is_attached(controller->unit) && 
+        (dmc_getsel(reg) == 0 || dmc_getsel(reg) == 1)) /* writes to SEL0 and SEL2 are actionable */
     {
         if (0 == controller->dmc_wr_delay)      /* Not waiting? */
         {
-            controller->dmc_wr_delay = 20;      /* Wait a bit before actding on the changed register */
+            controller->dmc_wr_delay = 10;      /* Wait a bit before acting on the changed register */
             sim_activate_abs (controller->unit, controller->dmc_wr_delay);
         }
     }
@@ -2325,6 +2503,7 @@ t_stat dmc_reset (DEVICE *dptr)
                 dmc_clroutint(controller);
                 for (j=0; j<dptr->numunits-1; j++)
                     sim_cancel (&dptr->units[j]); /* stop poll */
+                dmc_process_master_clear(controller);
             }
         }
         sim_activate_after (dptr->units+dptr->numunits-1, DMC_CONNECT_POLL*1000000);/* start poll */
