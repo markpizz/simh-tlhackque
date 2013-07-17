@@ -64,7 +64,7 @@ while (@ARGV) {
     }
     last if( $ARGV[0] !~ /^-/ );
 
-    printf STDERR << 'USAGE_';
+    printf STDERR << "USAGE_";
 Usage:
 $prg -u -dev devname -func rtn infile outfile
 
