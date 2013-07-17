@@ -97,6 +97,10 @@ USAGE_
     exit (0);
 }
 
+unless( defined $rtn ) {
+    die "The help function must be specified with -func or -dev; -help for usage\n";
+}
+
 if( @ARGV ) {
     $ifn = shift;
 }
