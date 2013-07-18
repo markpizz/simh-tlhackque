@@ -144,13 +144,14 @@ extern int32 tmr_poll;                                  /* instructions per tick
 #define RUN_MASK            0x8000
 
     /* SEL2 */
-#define DMP_IN_IO_MASK 0x0004
+#define DMP_IN_IO_MASK      0x0004
 #define DMP_TYPE_INPUT_MASK 0x0007
-#define TYPE_OUTPUT_MASK 0x0003
-#define OUT_IO_MASK 0x0004
-#define DMC_RDYO_MASK 0x0080
-#define DMC_IEO_MASK 0x0040
-#define DMP_RDYI_MASK 0x0010
+#define TYPE_OUTPUT_MASK    0x0003
+#define OUT_IO_MASK         0x0004
+#define DMC_RDYO_MASK       0x0080
+#define DMC_IEO_MASK        0x0040
+#define DMP_RDYI_MASK       0x0010
+#define DMP_22BIT_MASK      0x0008
 
 /* BSEL6 */
 #define HALT_COMP_MASK  0x0200
@@ -367,6 +368,10 @@ int dmc_is_rqi_set(CTLR *controller);
 int dmc_is_rdyi_set(CTLR *controller);
 int dmc_is_iei_set(CTLR *controller);
 int dmc_is_ieo_set(CTLR *controller);
+uint32 dmc_get_addr(CTLR *controller);
+void dmc_set_addr(CTLR *controller, uint32 addr);
+uint16 dmc_get_count(CTLR *controller);
+void dmc_set_count(CTLR *controller, uint16 count);
 uint8 dmc_get_modem(CTLR *controller);
 void dmc_set_modem_dtr(CTLR *controller);
 void dmc_clr_modem_dtr(CTLR *controller);
@@ -1423,6 +1428,56 @@ void dmc_set_rdyo(CTLR *controller)
     dmc_setoutint(controller);
 }
 
+uint32 dmc_get_addr(CTLR *controller)
+{
+    if (dmc_is_dmc(controller) || (!(*controller->csrs->sel2 & DMP_22BIT_MASK)))
+    {
+        return ((uint32)dmc_getreg(controller, 4, DBG_RGC))  | ((((uint32)dmc_getreg(controller, 6, DBG_RGC) & 0xc000)) << 2);
+    }
+    else
+    {
+        return ((uint32)dmc_getreg(controller, 4, DBG_RGC))  | (((uint32)dmc_getreg(controller, 6, DBG_RGC) & 0x3FF) << 16);
+    }
+}
+
+void dmc_set_addr(CTLR *controller, uint32 addr)
+{
+    if (dmc_is_dmc(controller) || (!(*controller->csrs->sel2 & DMP_22BIT_MASK)))
+    {
+        dmc_setreg(controller, 4, addr & 0xFFFF, DBG_RGC);
+        dmc_setreg(controller, 6, ((addr >> 2) << 14) | (*controller->csrs->sel6 & 0x3FFF) , DBG_RGC);
+    }
+    else
+    {
+        dmc_setreg(controller, 4, addr & 0xFFFF, DBG_RGC);
+        dmc_setreg(controller, 6, ((addr >> 16) & 0x3F), DBG_RGC);
+    }
+}
+
+uint16 dmc_get_count(CTLR *controller)
+{
+    if (dmc_is_dmc(controller) || (!(*controller->csrs->sel2 & DMP_22BIT_MASK)))
+    {
+        return dmc_getreg(controller, 6, DBG_RGC) & 0x3FFF;
+    }
+    else
+    {
+        return dmc_getreg(controller, 010, DBG_RGC) & 0x3FFF;
+    }
+}
+
+void dmc_set_count(CTLR *controller, uint16 count)
+{
+    if (dmc_is_dmc(controller) || (!(*controller->csrs->sel2 & DMP_22BIT_MASK)))
+    {
+        dmc_setreg(controller, 6, (*controller->csrs->sel6 & 0xc000) | (0x3FFF & count), DBG_RGC);
+    }
+    else
+    {
+        dmc_setreg(controller, 010, (*controller->csrs->sel10 & 0xc000) | (0x3FFF & count), DBG_RGC);
+    }
+}
+
 uint8 dmc_get_modem(CTLR *controller)
 {
 int32 modem_bits;
@@ -2110,14 +2165,14 @@ void dmc_process_input_transfer_completion(CTLR *controller)
             dmc_clear_rdyi(controller);
             if (controller->transfer_type == TYPE_BASEI)
             {
-                *controller->baseaddr = ((sel6 >> 14) << 16) | sel4;
-                *controller->basesize = sel6 & 0x3FFF;
+                *controller->baseaddr = dmc_get_addr(controller);
+                *controller->basesize = dmc_get_count(controller);
                 sim_debug(DBG_INF, controller->device, "Completing Base In input transfer, base address=0x%08x count=%d\n", *controller->baseaddr, *controller->basesize);
             }
             else if (controller->transfer_type == TYPE_BACCI)
             {
-                uint32 addr = ((sel6 >> 14) << 16) | sel4;
-                uint16 count = sel6 & 0x3FFF;
+                uint32 addr = dmc_get_addr(controller);
+                uint16 count = dmc_get_count(controller);
                 controller->transfer_in_io = dmc_is_in_io_set(controller);
                 if (controller->state != Running)
                 {
