@@ -735,7 +735,8 @@ else update_lpcs (CSA_DONE);                            /* intr and done */
 if ((fnc == FNC_PR) && ferror (lp20_unit.fileref)) {
     perror ("LP I/O error");
     clearerr (uptr->fileref);
-    return SCPE_IOERR;
+    lp20_detach(uptr);
+    return SCPE_OK;
     }
 return SCPE_OK;
 }
@@ -762,7 +763,7 @@ if (lppdat == 012)                                      /* LF? adv carriage */
 if (lppdat == 014)                                      /* FF? top of form */
     return lp20_davfu (DV_TOF);
 if (lppdat == 015)                                      /* CR? reset col cntr */
-    lpcolc = -1;
+    return lp20_adv (0, FALSE);
 else if (lppdat == 011) {                               /* TAB? simulate */
     lppdat = ' ';                                       /* with spaces */
     if (lpcolc >= 128) {
@@ -789,6 +790,17 @@ static t_bool lp20_adv (int32 cnt, t_bool dvuadv)
 int32 i;
 int stoppc = FALSE;
 
+/* All motion, even 0 line slew, flushes print buffer
+ * Output 0 line slew as bare <CR> to allow overprinting.
+ * n line slew will output as <CR><LF>..<LF>
+ * Normal lines will output as <CR><LF>
+ */
+
+if (lpcolc) {
+    fputc ('\r', lp20_unit.fileref);
+    lpcolc = 0;
+}
+
 if (cnt == 0)
     return TRUE;
 
@@ -801,7 +813,6 @@ if (lpcsb & CSB_DVOF)
  * odd page and stop on the odd; seeing a second TOF.  
  */
 
-lpcolc = 0;                                             /* reset col cntr */
 for (i = 0; i < cnt; i++) {                             /* print 'n' newlines; each can complete a page */
     fputc ('\n', lp20_unit.fileref);
     if (dvuadv) {                                       /* update DAVFU ptr */
@@ -835,10 +846,10 @@ for (i = 0; i < dvlnt; i++) {                           /* search DAVFU */
     if (dvptr >= dvlnt)                                 /* wrap at end */
         dvptr = 0;
     if (davfu[dvptr] & (1 << cnt)) {                    /* channel stop set? */
-        if (cnt)                                        /* ~TOF, adv */
+        if (cnt)                                        /* !TOF channel, adv */
             return lp20_adv (i + 1, FALSE);
-        if (lpcolc)                                     /* TOF, need newline? */
-            lp20_adv (1, FALSE);
+        if (lpcolc)                                     /* TOF, need to flush line? */
+            lp20_adv (0, FALSE);
         fputc ('\f', lp20_unit.fileref);                /* print form feed */
         lp20_unit.pos = ftell (lp20_unit.fileref);
         lppagc = (lppagc - 1) & PAGC_MASK;              /* decr page cntr */
@@ -850,6 +861,7 @@ for (i = 0; i < dvlnt; i++) {                           /* search DAVFU */
             }
         }
     }                                                   /* end for */
+lp20_adv (0, FALSE);
 change_rdy (0,CSA_DVON);                                /* Code to channel with no channel stop */
 return FALSE;
 }
