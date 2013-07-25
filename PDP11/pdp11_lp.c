@@ -48,6 +48,9 @@
 #include "pdp11_defs.h"
 #endif
 
+#define PDFLPT_REPLACE_STDIO
+#include "sim_pdflpt.h"
+
 #define LPTCSR_IMP      (CSR_ERR + CSR_DONE + CSR_IE)   /* implemented */
 #define LPTCSR_RW       (CSR_IE)                        /* read/write */
 
@@ -210,6 +213,8 @@ fprintf (st, "Line Printer (LPT)\n\n");
 fprintf (st, "The line printer (LPT) writes data to a disk file.  The POS register specifies\n");
 fprintf (st, "the number of the next data item to be written.  Thus, by changing POS, the\n");
 fprintf (st, "user can backspace or advance the printer.\n");
+fprintf (st, "If the disk file is named .pdf, the output will be in PDF format on greenbar paper.\n");
+fprintf (st, "In this case, POS will not work.  The PDF output is customizable; see the general documentation.\n");
 fprint_set_help (st, dptr);
 fprint_show_help (st, dptr);
 fprint_reg_help (st, dptr);
