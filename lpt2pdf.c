@@ -2669,6 +2669,7 @@ static void pdf_free (PDF *pdf) {
     free (pdf->formbuf);
     free (pdf->trail);
     free (pdf->xref);
+    free (pdf->parsebuf);
     free (pdf->pagebuf);
     free (pdf->lzwbuf);
 
