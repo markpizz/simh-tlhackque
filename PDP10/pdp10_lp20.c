@@ -54,6 +54,7 @@
 */
 
 #include "pdp10_defs.h"
+#include "sim_pdflpt.h"
 
 /* Time (seconds) of idleness before data flushed to attached file. */
 #ifndef LP20_IDLE_TIME
@@ -71,6 +72,8 @@
 #define UNIT_DUMMY      (1 << UNIT_V_UF)
 #define LP_WIDTH        132                             /* printer width */
 #define DEFAULT_LPI       6                             /* default lines-per-inch of LPT */
+#define LPI_SET         0x8000                          /* Set by OPR or VFU */
+
 /* DAVFU RAM */
 
 #define DV_SIZE         143                             /* DAVFU size */
@@ -79,7 +82,7 @@
 #define DV_BOF          11                              /* bottom of form channel */
 #define DV_MAX          11                              /* max channel number */
 #define MIN_VFU_LEN     2                               /* minimum VFU length (in inches) */
-#define VFU_LEN_VALID(lines, lpi) ((lines) >= (lpi * MIN_VFU_LEN))
+#define VFU_LEN_VALID(lines, lpi) ((lines) >= ((lpi & ~LPI_SET) * MIN_VFU_LEN))
 
 /* Translation RAM */
 
@@ -650,10 +653,18 @@ for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
         if ((lpcbuf >= 0354) && (lpcbuf <= 0356)) { /* start DVU load? */
             dvlnt = 0;                              /* reset lnt */
             dvld = 2;                               /* Load is active, even */
-            if (lpcbuf == 0354)
-                lpi = 6;
-            else if (lpcbuf == 0355)
-                lpi = 8;
+            if (lpcbuf == 0354) {
+                lpi = LPI_SET | 6;
+                if (pdflpt_getmode(uptr) == PDFLPT_IS_PDF) {
+                    pdflpt_puts (uptr, "\x9B" "1z");
+                    }
+                }
+            else if (lpcbuf == 0355) {
+                lpi = LPI_SET | 8;
+                 if (pdflpt_getmode(uptr) == PDFLPT_IS_PDF) {
+                    pdflpt_puts (uptr, "\x9B" "2z");
+                    }
+               }
             }
         else if (lpcbuf == 0357) {                  /* stop DVU load? */
             dvptr = 0;                              /* reset ptr */
@@ -732,11 +743,10 @@ lpbc = (lpbc + i) & BC_MASK;
 if (lpbc)                                               /* intr, but not done */
     update_lpcs (CSA_MBZ);
 else update_lpcs (CSA_DONE);                            /* intr and done */
-if ((fnc == FNC_PR) && ferror (lp20_unit.fileref)) {
+if ((fnc == FNC_PR) && pdflpt_error(&lp20_unit)) {
     perror ("LP I/O error");
-    clearerr (uptr->fileref);
-    lp20_detach(uptr);
-    return SCPE_OK;
+    pdflpt_clearerr(&lp20_unit);
+    return SCPE_IOERR;
     }
 return SCPE_OK;
 }
@@ -779,8 +789,8 @@ else {
         r = lp20_adv (1, TRUE);                         /* adv carriage */
     }
 for (i = 0; i < rpt; i++)
-    fputc (lppdat, lp20_unit.fileref); 
-lp20_unit.pos = ftell (lp20_unit.fileref);
+    pdflpt_putc (&lp20_unit, lppdat); 
+lp20_unit.pos = pdflpt_where (&lp20_unit, NULL);
 lpcolc = lpcolc + rpt;
 return r;
 }
@@ -797,7 +807,7 @@ int stoppc = FALSE;
  */
 
 if (lpcolc) {
-    fputc ('\r', lp20_unit.fileref);
+    pdflpt_putc (&lp20_unit, '\r');
     lpcolc = 0;
 }
 
@@ -814,7 +824,7 @@ if (lpcsb & CSB_DVOF)
  */
 
 for (i = 0; i < cnt; i++) {                             /* print 'n' newlines; each can complete a page */
-    fputc ('\n', lp20_unit.fileref);
+    pdflpt_putc (&lp20_unit, '\n');
     if (dvuadv) {                                       /* update DAVFU ptr */
         dvptr = (dvptr + cnt) % dvlnt;
         if (davfu[dvptr] & (1 << DV_TOF)) {              /* at top of form? */
@@ -826,7 +836,7 @@ for (i = 0; i < cnt; i++) {                             /* print 'n' newlines; e
             } /* At TOF */
         } /* update pointer */
     }
-lp20_unit.pos = ftell (lp20_unit.fileref);
+lp20_unit.pos = pdflpt_where (&lp20_unit, NULL);
 if (stoppc)                                            /* Crossed one or more TOFs? */
     return FALSE;
 
@@ -850,8 +860,8 @@ for (i = 0; i < dvlnt; i++) {                           /* search DAVFU */
             return lp20_adv (i + 1, FALSE);
         if (lpcolc)                                     /* TOF, need to flush line? */
             lp20_adv (0, FALSE);
-        fputc ('\f', lp20_unit.fileref);                /* print form feed */
-        lp20_unit.pos = ftell (lp20_unit.fileref);
+        pdflpt_putc (&lp20_unit, '\f');                 /* print form feed */
+        lp20_unit.pos = pdflpt_where (&lp20_unit, NULL);
         lppagc = (lppagc - 1) & PAGC_MASK;              /* decr page cntr */
         if (lppagc != 0)
             return TRUE;
@@ -958,7 +968,7 @@ lprdat = lppdat = lpcbuf = lpcsum = 0;
 lp20_irq = 0;                                           /* clear int req */
 sim_cancel (&lp20_unit);                                /* deactivate unit */
 if (sim_is_active ((UNIT *)lp20_unit.up7)) {
-    fflush (lp20_unit.fileref);
+    pdflpt_flush (&lp20_unit);
     sim_cancel ((UNIT *)lp20_unit.up7);
     }
 update_lpcs (0);                                        /* update status */
@@ -969,11 +979,7 @@ static t_stat lp20_attach (UNIT *uptr, char *cptr)
 {
 t_stat reason;
     
-reason = attach_unit (uptr, cptr);                      /* attach file */
-if (reason == SCPE_OK) {
-    sim_fseek (uptr->fileref, 0, SEEK_END);
-    uptr->pos = (t_addr)sim_ftell (uptr->fileref);
-    }
+reason = pdflpt_attach (uptr, cptr);                       /* attach file */
 if (lpcsa & CSA_DVON) {
     int i;
     for (i = 0; i < dvlnt; i++) {                       /* Align VFU with new file */
@@ -983,6 +989,9 @@ if (lpcsa & CSA_DVON) {
         }
     if (!(davfu[dvptr] & (1 << DV_TOF)))                /* No TOP channel  -> bad VFU */
         change_rdy (0, CSA_DVON);
+    if ((lpi & LPI_SET) && (pdflpt_getmode(uptr) == PDFLPT_IS_PDF)) {
+        pdflpt_puts (uptr, ((lpi & ~LPI_SET) == 8)? "\x9B" "2z": "\x9B" "1z");
+        }
 }
 if (lpcsa & CSA_ONL)                                    /* just file chg? */
     return reason;
@@ -999,10 +1008,10 @@ t_stat reason;
 if (!(uptr->flags & UNIT_ATT))                          /* attached? */
     return SCPE_OK;
 if (sim_is_active ((UNIT *)lp20_unit.up7)) {
-    fflush (lp20_unit.fileref);
+    pdflpt_flush (&lp20_unit);
     sim_cancel ((UNIT *)lp20_unit.up7);
 }
-reason = detach_unit (uptr);
+reason = pdflpt_detach (uptr);
 sim_cancel (&lp20_unit);
 lpcsa = lpcsa & ~CSA_GO;
 update_lpcs (CSA_MBZ);
@@ -1029,7 +1038,7 @@ if (--uptr->u4 > 0) {
     return SCPE_OK;
 }
 uptr = (UNIT *)uptr->up7;
-fflush (uptr->fileref);
+pdflpt_flush (uptr);
 return SCPE_OK;
 }
 
@@ -1167,7 +1176,7 @@ else
     fprintf (st, "DAVFU");
 
 if (lpcsa & CSA_DVON)
-    fprintf (st, " loaded: %u lines, %.1f in", dvlnt, (((double)dvlnt)/lpi));
+    fprintf (st, " loaded: %u lines, %.1f in", dvlnt, (((double)dvlnt)/(lpi & ~LPI_SET)));
 else
     fprintf (st, " not ready");
 
@@ -1184,9 +1193,9 @@ if (uptr->flags & UNIT_ATT)
 if (!cptr || !*cptr)
     newlpi = DEFAULT_LPI;
 else if (!strcmp (cptr, "6") || !strcmp (cptr, "6-LPI"))
-    newlpi = 6;
+    newlpi = LPI_SET | 6;
 else if (!strcmp (cptr, "8") || !strcmp (cptr, "8-LPI"))
-    newlpi = 8;
+    newlpi = LPI_SET | 8;
 else
     return SCPE_ARG;
 
@@ -1194,12 +1203,15 @@ if ((lpcsa & CSA_DVON) && !VFU_LEN_VALID(dvlnt, newlpi))
     return SCPE_ARG;
 
 lpi = newlpi;
+if ((lpi & LPI_SET) && (pdflpt_getmode(uptr) == PDFLPT_IS_PDF)) { /* Provide LPI if explicitly set */
+    pdflpt_puts (uptr, ((lpi & ~LPI_SET) == 8)? "\x9B" "2z": "\x9B" "1z");
+    }
 return SCPE_OK;
 }
 
 static t_stat lp20_show_lpi (FILE *st, UNIT *up, int32 v, void *dp)
 {
-fprintf (st, "%u LPI", lpi);
+fprintf (st, "%u LPI", lpi & ~ LPI_SET);
 
 return SCPE_OK;
 }
@@ -1327,7 +1339,9 @@ fprintf (st,
          "SET LP20 TOPOFFORM advances the paper to the top of the next page by slewing to VFU channel 0, as\n"
          "does the TOP OF FORM button on a physical printer.\n"
          "The DAVFU and translation RAMs survive RESET unless RESET -P is used.  SET LP20 CLEARVFU is\n"
-         "provided to clear them independently.\n");
+         "provided to clear them independently.\n\n"
+        "If the disk file is named .pdf, the output will be in PDF format on greenbar paper.\n"
+        "The PDF output is customizable; see the general documentation.\n");
 
 return SCPE_OK;
 }
