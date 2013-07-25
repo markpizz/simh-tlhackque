@@ -952,7 +952,7 @@ static t_stat kmc_writeCsr (int32 data, int32 PA, int32 access) {
 
         if ((sel0 & SEL0_RUN)) {
             if ((sel0 & SEL0_RQI) && !(sel2 & SEL2_RDO))
-                sel2 |= SEL2_RDI;
+                sel2 = (sel2 & 0xFF00) | SEL2_RDI; /* Clear command bits too */
             kmc_updints(k);
 	    }
         break;
@@ -971,7 +971,7 @@ static t_stat kmc_writeCsr (int32 data, int32 PA, int32 access) {
             if ((sel2 & SEL2_RDO) && (!(data & SEL2_RDO))) {
                 sel2 = data;                    /* RDO clearing, RDI can't be set */
                 if (sel0 & SEL0_RQI) {
-                    sel2 |= SEL2_RDI;
+                    sel2 = (sel2 & 0xFF00) | SEL2_RDI;
                     kmc_updints(k);
                 } else
                     kmc_processCompletions(k);
@@ -980,7 +980,7 @@ static t_stat kmc_writeCsr (int32 data, int32 PA, int32 access) {
                     sel2 = data;                /* RDI clearing,  RDO can't be set */
                     kmc_dispatchInputCmd(k);    /* Can set RDO */
                     if ((sel0 & SEL0_RQI) && !(sel2 & SEL2_RDO))
-                        sel2 |= SEL2_RDI;
+                        sel2 = (sel2 & 0xFF00) | SEL2_RDI;
                     kmc_updints(k);
                 } else {
                     sel2 = data;
@@ -1775,6 +1775,14 @@ static void kmc_startUcode (uint32 k) {
  * The host must request ownership of the CSRs by setting RQI.
  * If enabled, it gets an interrupt when RDI sets, allowing it
  * to write the command.  RDI and RDO are mutually exclusive.
+ *
+ * The microcode sets RDI by writing the entire BSEL2 with just RDI.
+ * This works because RDO can not be set at the same time as RDI.
+ * 
+ * Mark P found that VMS drivers rely on this and BIS the command code.
+ * The COM IOP-DUP manual does say that all bits of BSEL2 are
+ * cleared on completion of a command.  However, an output command could
+ * leave other bits on.
  *
  * Input commands are processed by the KMC when the host
  * clears RDI.  Upon completion of a command, 'all bits of bsel2
