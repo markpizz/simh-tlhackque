@@ -144,7 +144,9 @@
  */
 
 #include <stdarg.h>
+#ifndef INT64_C
 #include <stdint.h>
+#endif
 #include <stdarg.h>
 #include <stdlib.h>
 
