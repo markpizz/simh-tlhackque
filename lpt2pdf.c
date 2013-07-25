@@ -55,6 +55,8 @@
 #ifdef _WIN32
 #include <Windows.h>
 #include <io.h>
+#else
+#include <unistd.h> /* ftruncate */
 #endif
 
 #define PDF_BUILD_

@@ -124,7 +124,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         if (reason != PDF_OK) {
             if (!sim_quiet) {
                 if (reason == PDF_E_NOT_PDF) {
-                    printf ("%s: is not a PDF file\n");
+                    printf ("%s: is not a PDF file\n", cptr);
                 }
             }
             return SCPE_OPENERR;
