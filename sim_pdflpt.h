@@ -128,7 +128,12 @@
 #ifndef SIM_PDFLPT_H_
 #define SIM_PDFLPT_H_  0
 
-#include <lpt2pdf.h>
+#include "sim_defs.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include "lpt2pdf.h"
 
 /* Replacements for attach_unit and detach_unit that handle PDF magic.
  * These defer to the standard routines if pdf output is not selected.

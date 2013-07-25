@@ -144,6 +144,9 @@
  */
 
 #include <stdarg.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdlib.h>
 
 #define PDF_OK (0)
 
