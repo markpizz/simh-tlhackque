@@ -659,8 +659,13 @@ LDFLAGS := $(OS_LDFLAGS) $(NETWORK_LDFLAGS) $(LDFLAGS_O)
 BIN = BIN/
 SIM = scp.c sim_console.c sim_fio.c sim_timer.c sim_sock.c \
 	sim_tmxr.c sim_ether.c sim_tape.c sim_disk.c sim_serial.c \
-	sim_video.c
+	sim_video.c sim_pdflpt.c lpt2pdf.c
 
+# Tools
+TOOLSD =
+TXT2CBN = ${PDP11D}/txt2cbn.c
+LPT2PDF = ${TOOLSD}lpt2pdf.c
+TOOLS_OPT = -DPDF_MAIN
 
 #
 # Emulator source files and compile time options
@@ -994,7 +999,7 @@ ALL = pdp1 pdp4 pdp7 pdp8 pdp9 pdp15 pdp11 pdp10 \
 	vax microvax3900 microvax1 rtvax1000 microvax2 vax730 vax750 vax780 vax8600 \
 	nova eclipse hp2100 i1401 i1620 s3 altair altairz80 gri \
 	i7094 ibm1130 id16 id32 sds lgp h316 \
-	swtp6800mp-a swtp6800mp-a2 tx-0 ssem
+	swtp6800mp-a swtp6800mp-a2 tx-0 ssem tools
 
 all : ${ALL}
 
@@ -1255,4 +1260,15 @@ ssem : ${BIN}ssem${EXE}
 ${BIN}ssem${EXE} : ${SSEM} ${SIM}
 	${MKDIRBIN}
 	${CC} ${SSEM} ${SIM} ${SSEM_OPT} $(CC_OUTSPEC) ${LDFLAGS}
+
+
+tools : ${BIN}lpt2pdf${EXE} ${BIN}txt2cbn${EXE}
+
+${BIN}lpt2pdf${EXE} : ${LPT2PDF}
+	${MKDIRBIN}
+	${CC} ${TOOLS_OPT} ${LPT2PDF} ${CC_OUTSPEC}
+
+${BIN}txt2cbn${EXE} : ${TXT2CBN}
+	${MKDIRBIN}
+	${CC} ${TOOLS_OPT} ${TXT2CBN} ${CC_OUTSPEC}
 
