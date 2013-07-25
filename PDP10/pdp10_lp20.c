@@ -50,7 +50,7 @@
    LP2SER.MAC TOPS-10 Device driver
    LPKSDV.MAC TOPS-20 Device driver
    LP20.MAC   TOPS-10/20 VFU/RAM utility
-   LPTSPL/LPTSUB.MAC TOPS-10/20 GALAXY spooler
+   LPTSPL/LPTSUB.MAC TOPS-10/20 GALAXY spoolre
 */
 
 #include "pdp10_defs.h"
