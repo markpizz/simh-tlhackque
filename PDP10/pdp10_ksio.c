@@ -290,7 +290,7 @@ return ReadIO (ea);                                     /* RDIO, IORD */
 
 void io713 (d10 val, a10 ea)
 {
-WriteIO (ea, val & M_WORD, WRITE);                     /* WRIO, IOWR */
+WriteIO (ea, val, WRITE);                     /* WRIO, IOWR */
 return;
 }
 
@@ -302,7 +302,6 @@ void io714 (d10 val, a10 ea)
 {
 d10 temp;
 
-val = val & M_WORD;
 if (Q_ITS)                                              /* IOWRI */
     WriteIO (IO_UBA3 | ea, val, WRITE);
 else {
@@ -321,7 +320,6 @@ void io715 (d10 val, a10 ea)
 {
 d10 temp;
 
-val = val & M_WORD;
 if (Q_ITS)                                              /* IOWRQ */
     WriteIO (IO_UBA1 | ea, val, WRITE);
 else {
@@ -488,6 +486,9 @@ DIB *dibp;
 for (i = 0; (dibp = dib_tab[i]); i++ ) {
     if ((pa >= dibp->ba) &&
        (pa < (dibp->ba + dibp->lnt))) {
+        if ((dibp->flags & DIB_M_REGSIZE) == DIB_REG16BIT) {
+            data &= M_WORD;
+            }
         dibp->wr (data, ba, access);
         pi_eval ();
         return SCPE_OK;
@@ -1198,7 +1199,7 @@ if (seg) {                                      /* Unaligned head */
         ubcs[1] = ubcs[1] | UBCS_TMO;           /* UBA timeout */
         return bc;                              /* return bc */
         }
-    M[pa10] = (M[pa10] & M_WORD1) | ((d10) (*buf++)); /* V_WORD1 */
+    M[pa10] = (M[pa10] & M_WORD1) | ((d10) (M_WORD18 & *buf++)); /* V_WORD1 */
     pa10++;
 
     if ((bc -= seg) == 0)
@@ -1222,7 +1223,7 @@ if (seg > 0) {
                 }
             cp = np;
             }
-        M[pa10++] = (((d10)(buf[0])) << V_WORD0) | buf[1];/* V_WORD1 */
+        M[pa10++] = (((d10)(M_WORD18 & buf[0])) << V_WORD0) | (M_WORD18 & buf[1]);/* V_WORD1 */
         buf += 2;
         }
     } /* Body */
@@ -1240,9 +1241,9 @@ if (bc) {
             }
         }
     if (ubm & UMAP_RRV )                        /* Read reverse preserves RH */
-        M[pa10] = (M[pa10] & M_WORD0) | (((d10)(buf[0])) << V_WORD0);
+        M[pa10] = (M[pa10] & M_WORD0) | (((d10)(M_WORD18 & buf[0])) << V_WORD0);
     else
-        M[pa10] = ((d10)(buf[0])) << V_WORD0;
+        M[pa10] = ((d10)(M_WORD18 & buf[0])) << V_WORD0;
 }
 
 return 0;
