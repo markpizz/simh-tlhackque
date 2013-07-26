@@ -7079,7 +7079,7 @@ if (sim_deb && (dptr->dctrl & dbits)) {
 
 /* Set unterminated flag for next time */
 
-    debug_unterm = (len && (buf[len-1]=='\n')) ? 0 : 1;
+    debug_unterm = len ? ((buf[len-1]=='\n')) ? 0 : 1) : debug_unterm;
     if (buf != stackbuf)
         free (buf);
     }
