@@ -615,6 +615,10 @@ struct pdp_dib {
     int32               vec;                            /* value */
     int32               (*ack[VEC_DEVMAX])(void);       /* ack routines */
     uint32              ulnt;                           /* IO length per unit */
+    uint32              flags;                          /* Special flags */
+#define DIB_M_REGSIZE   03                              /* Device register size */
+#define DIB_REG16BIT     00
+#define DIB_REG18BIT     01
 };
 
 typedef struct pdp_dib DIB;
