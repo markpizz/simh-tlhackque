@@ -7072,7 +7072,7 @@ if (sim_deb && (dptr->dctrl & dbits)) {
         if (debug_unterm)
             fprintf (sim_deb, "%.*s", i-j, &buf[j]);
         else                                        /* print prefix when required */
-            fprintf (sim_deb, "DBG(%.0f)%s> %s %s: %.*s", debug_prefix, i-j, &buf[j]);
+            fprintf (sim_deb, "%s%.*s", debug_prefix, i-j, &buf[j]);
         }
 
 /* Set unterminated flag for next time */
