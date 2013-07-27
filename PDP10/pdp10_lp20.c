@@ -53,6 +53,7 @@
    LPTSPL/LPTSUB.MAC TOPS-10/20 GALAXY spoolre
 */
 
+#include <ctype.h>
 #include "pdp10_defs.h"
 #include "sim_pdflpt.h"
 
