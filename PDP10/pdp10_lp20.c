@@ -56,11 +56,6 @@
 #include "pdp10_defs.h"
 #include "sim_pdflpt.h"
 
-/* Time (seconds) of idleness before data flushed to attached file. */
-#ifndef LP20_IDLE_TIME
-#define LP20_IDLE_TIME (10)
-#endif
-
 /* The LP20 has the following CSR assignments:
  * Unit No. 1: 775400, Vector: 754
  * Unit No. 2: 775420, Vector: 750
@@ -200,8 +195,6 @@ static t_stat lp20_rd (int32 *data, int32 pa, int32 access);
 static t_stat lp20_wr (int32 data, int32 pa, int32 access);
 static int32 lp20_inta (void);
 static t_stat lp20_svc (UNIT *uptr);
-static t_stat idle_svc (UNIT *uptr);
-static void set_flush_timer (UNIT *uptr);
 static t_stat lp20_reset (DEVICE *dptr);
 static t_stat lp20_init (DEVICE *dptr);
 static t_stat lp20_attach (UNIT *uptr, char *ptr);
@@ -343,14 +336,8 @@ static DIB lp20_dib = {
  * product'.  It's not implemented in this emulation.
  */
 
-static UNIT lp20_idle;
 static UNIT lp20_unit = {
     UDATA (&lp20_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT,
-           0, 0, 0, 0, &lp20_idle,
-    };
-static UNIT lp20_idle = {
-    UDATA (&idle_svc, UNIT_DIS, 0), 1000000, LP20_IDLE_TIME,
-           0, 0, 0, &lp20_unit,
     };
 
 static REG lp20_reg[] = {
@@ -733,10 +720,6 @@ for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
         break;
         }                                               /* end case function */
     }                                                   /* end for */
-if (lpcolc == 0)
-    set_flush_timer (&lp20_unit);
-else
-    sim_cancel ((UNIT *)lp20_unit.up7);
 lpba = ba & 0177777;
 lpcsa = (lpcsa & ~CSA_UAE) | ((ba >> (16 - CSA_V_UAE)) & CSA_UAE);
 lpbc = (lpbc + i) & BC_MASK;
@@ -967,10 +950,7 @@ lpba = lpbc = lppagc = lpcolc = 0;                      /* clear registers */
 lprdat = lppdat = lpcbuf = lpcsum = 0;
 lp20_irq = 0;                                           /* clear int req */
 sim_cancel (&lp20_unit);                                /* deactivate unit */
-if (sim_is_active ((UNIT *)lp20_unit.up7)) {
-    pdflpt_flush (&lp20_unit);
-    sim_cancel ((UNIT *)lp20_unit.up7);
-    }
+pdflpt_reset (&lp20_unit);                              /* inactivate flush timer */
 update_lpcs (0);                                        /* update status */
 return SCPE_OK;
 }
@@ -1007,39 +987,12 @@ t_stat reason;
 
 if (!(uptr->flags & UNIT_ATT))                          /* attached? */
     return SCPE_OK;
-if (sim_is_active ((UNIT *)lp20_unit.up7)) {
-    pdflpt_flush (&lp20_unit);
-    sim_cancel ((UNIT *)lp20_unit.up7);
-}
+
 reason = pdflpt_detach (uptr);
 sim_cancel (&lp20_unit);
 lpcsa = lpcsa & ~CSA_GO;
 update_lpcs (CSA_MBZ);
 return reason;
-}
-
-/* Set a timer after which, if idle, the IO buffer will be flushed.
- * This allows simulator users to see their output.
- * The timeout is in seconds; this is problematic with sim_activate timers.
- * So u3 contains the number of seconds desired, and u4 the number to go.
- */
-static void set_flush_timer (UNIT *uptr) {
-uptr = (UNIT *)uptr->up7;
-uptr->u4 = uptr->u3;
-uptr->u5 = (int32)time(NULL);
-sim_cancel(uptr);
-sim_activate_after (uptr, uptr->wait);
-}
-
-static t_stat idle_svc (UNIT *uptr)
-{
-if (--uptr->u4 > 0) {
-    sim_activate_after (uptr, uptr->wait);
-    return SCPE_OK;
-}
-uptr = (UNIT *)uptr->up7;
-pdflpt_flush (uptr);
-return SCPE_OK;
 }
 
 static t_stat lp20_set_vfu_type (UNIT *uptr, int32 val, char *cptr, void *desc)

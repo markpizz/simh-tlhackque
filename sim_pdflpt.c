@@ -34,38 +34,153 @@
 #include <sim_defs.h>
 #include <sim_pdflpt.h>
 
+#define DIM(x) (sizeof (x) / sizeof ((x)[0]))
+
+/* Time (seconds) of idleness before data flushed to attached file. */
+
+#ifndef PDFLPT_IDLE_TIME
+#define PDFLPT_IDLE_TIME (10)
+#endif
+
 /* Context beyond the UNIT */
 
 typedef struct {
     PDF_HANDLE pdfh;
-    uint32 flags;
+    uint32 uflags;
     void  (*io_flush)(UNIT *up);
+    t_stat (*reset) (DEVICE *dp);
+    UNIT idle_unit;/* Used for idle detection and additional context
+                    * Usage of device-specific context:
+                    * u3 - requested idle timeout.
+                    * u4 - time remaining on idle detection
+                    * u5 - printer column number
+                    * up7 - pointer to (real) UNIT
+                    * up8 - pointer to PCTX
+                    */
     size_t bc;
     char buffer[256];
 } PCTX;
 
-/* Establish PDF context, and if first use, hook the
- * io_flush function and save the unit flags.
+/* Internal functions */
+
+static t_stat reset (DEVICE *dptr);
+static t_stat idle_svc (UNIT *uptr);
+static void set_idle_timer (UNIT *uptr);
+
+/* Create and initialize pdf context
+ * Only called by SETCTX macro, following.
+ * Initialization modifies the SimH data structures for
+ * the unit and the device to allow sim_pdflpt to manage it.
+ *
+ * Even in text mode, sim_pdflpt detects when a printer goes
+ * idle, and checkpoints pdf or flushed buffers for other files.
+ *
+ * The UNIT's io_flush function is intercepted to ensure that this
+ * also happens when the simulator pauses, and that the default
+ * actions are not applied to pdf files.
+ *
+ * The DEVICE's reset function is intercepted to ensure that the
+ * idle detection timer for each unit is stopped when the device
+ * is reset.
+ */
+
+static void createctx (UNIT *uptr) {
+    PCTX *ctx;
+    DEVICE *dptr;
+
+    if (uptr->up8) {
+        return;                                 /* Should never be called if initialized */
+    }
+
+    uptr->up8 =
+        ctx = (PCTX *) calloc (1, sizeof (PCTX));
+    if (!ctx)
+        return;
+
+    /* Record non-pdf device flags */
+    ctx->uflags = uptr->flags;
+
+    /* Hook io_flush function */
+
+    ctx->io_flush = uptr->io_flush;
+    uptr->io_flush = &pdflpt_flush;
+
+    /* Hook device reset function */
+
+    dptr = find_dev_from_unit (uptr);
+    if (dptr != NULL) {
+        ctx->reset = dptr->reset;
+        dptr->reset = &reset;
+    }
+
+    /* Initialize the idle unit */
+
+    ctx->idle_unit.action = &idle_svc;
+    ctx->idle_unit.flags = UNIT_DIS;
+    ctx->idle_unit.wait = 1*1000*1000;
+    ctx->idle_unit.u3 = PDFLPT_IDLE_TIME;
+    ctx->idle_unit.up7 = uptr;
+    ctx->idle_unit.up8 = ctx;
+
+    return;
+}
+
+/* Establish PDF context, and if first use, initialize
+ * the context.  Returns to caller with the specified
+ * error code if a context can't be allocated.  If the
+ * caller returns void, specify LPTVOID as the error code.
  */
 
 #define pdfctx ((PCTX *)uptr->up8)
 #define LPTVOID
 #define SETCTX(nomem) {                                 \
     if (!pdfctx) {                                      \
-        uptr->up8 = (PCTX *) calloc (1, sizeof (PCTX)); \
+        createctx (uptr);                               \
         if (!pdfctx)                                    \
             return nomem;                               \
-        pdfctx->flags = uptr->flags;                    \
-        pdfctx->io_flush = uptr->io_flush;              \
-        uptr->io_flush = &pdflpt_flush;                 \
     } }
 
 #define pdf (pdfctx->pdfh)
+#define idle_unit pdfctx->idle_unit
 
 /* attach_unit replacement
  * drop-in, except that the user may qualify the filename with parameters.
  * see the description in sim_pdflpt.h.
  */
+
+/* Define all the parameter keywords and their types. */
+
+#define SET(_key, _code, _type) { #_key, PDF_##_code, AT_##_type },
+#define XSET(_key, _code, _type)
+typedef struct {
+    const char *const keyword;
+    int arg;
+    int atype;
+#define AT_STRING  1
+#define AT_QSTRING 2
+#define AT_NUMBER  3
+#define AT_INTEGER 4
+} ARG;
+static const ARG argtable[] = {
+    SET (BAR-HEIGHT,    BAR_HEIGHT,     NUMBER)
+    SET (BOTTOM-MARGIN, BOTTOM_MARGIN,  NUMBER)
+    SET (COLUMNS,       COLS,           INTEGER)
+    SET (CPI,           CPI,            NUMBER)
+    SET (FONT,          TEXT_FONT,      QSTRING)
+    SET (FORM,          FORM_TYPE,      STRING)
+    SET (IMAGE,         FORM_IMAGE,     QSTRING)
+    SET (LENGTH,        PAGE_LENGTH,    NUMBER)
+   XSET (LFONT,         LABEL_FONT,     QSTRING)
+    SET (NUMBER-WIDTH,  LNO_WIDTH,      NUMBER)
+    SET (LPI,           LPI,            INTEGER)
+   XSET (NFONT,         LNO_FONT,       QSTRING)
+   XSET (REQUIRE,       FILE_REQUIRE,   STRING)
+    SET (SIDE-MARGIN,   SIDE_MARGIN,    NUMBER)
+    SET (TITLE,         TITLE,          QSTRING)
+    SET (TOF-OFFSET,    TOF_OFFSET,     INTEGER)
+    SET (TOP-MARGIN,    TOP_MARGIN,     NUMBER)
+    SET (WIDTH,         PAGE_WIDTH,     NUMBER)
+};
 
 t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     DEVICE *dptr;
@@ -73,7 +188,6 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     char *p, *fn;
     char gbuf[CBUFSIZE], vbuf[CBUFSIZE];
     size_t page, line;
-
 
     if (uptr->flags & UNIT_DIS)
         return SCPE_UDIS;
@@ -93,7 +207,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     p = match_ext (cptr, "PDF");
     if (!p) {
-        if (pdfctx->flags & UNIT_SEQ) {
+        if (pdfctx->uflags & UNIT_SEQ) {
             uptr->flags |= UNIT_SEQ;
         }
         reason = attach_unit (uptr, cptr);
@@ -151,6 +265,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         break;
     default:
         pdf_close (pdf);
+        pdf = NULL;
         return SCPE_ARG;
     }
 
@@ -159,105 +274,117 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
             pdf_perror (pdf, fn);
         }
         pdf_close (pdf);
+        pdf = NULL;
         return SCPE_ARG;
     }
 
-    /* Go back thru the attributes and apply any to the handle */
+    /* Go back thru the attributes and apply to the handle */
 
     while (cptr < fn ) {
-        double arg;
+        size_t k;
+
+        reason = SCPE_ARG;
 
         cptr = get_glyph (cptr, gbuf, '=');
-        if (!strncmp (gbuf, "FONT", strlen (gbuf)) ||
-            !strncmp (gbuf, "TITLE", strlen (gbuf)) ||
-            !strncmp (gbuf, "IMAGE", strlen (gbuf))) {
-            cptr = get_glyph_quoted (cptr, vbuf, 0);
-        } else {
-            cptr = get_glyph (cptr, vbuf, 0);
-        }
 
-        /* Special cases first.  Keywords: */
-        if (!strcmp (gbuf, "FORM")) {
-            reason = pdf_set (pdf, PDF_FORM_TYPE, vbuf);
-            if (reason != PDF_OK) {
-                pdf_close (pdf);
-                pdf = NULL;
-                if (!sim_quiet) {
-                    pdf_perror(pdf, vbuf);
+        for (k = 0; k < DIM (argtable); k++) {
+            double arg;
+            long iarg;
+            char *ep;
+
+            if (strncmp (gbuf, argtable[k].keyword, strlen (gbuf))) {
+                continue;
+            }
+            reason = PDF_OK;
+            if (strlen (argtable[k].keyword) != strlen (gbuf)) {
+                size_t kk;
+                for (kk = k+1; kk < DIM (argtable); kk++) {
+                    if (!strncmp (gbuf, argtable[kk].keyword, strlen (gbuf))) {
+                        if (!sim_quiet) {
+                            printf ("Ambiguous keyword: %s\n", gbuf);
+                        }
+                        reason = SCPE_ARG;
+                        break;
+                    }
                 }
+                if (reason != PDF_OK) {
+                    break;
+                }
+            }
+            p = vbuf;
+            if (argtable[k].atype == AT_QSTRING) {
+                cptr = get_glyph_quoted (cptr, vbuf, 0);
+                if (*p == '"' || *p == '\'') {
+                    if (p[strlen (p)-1] == *p) {
+                        *p++;
+                        p[strlen (p)-1] = '\0';
+                    }
+                }
+            } else {
+                cptr = get_glyph (cptr, vbuf, 0);
+            }
+
+            switch (argtable[k].atype) {
+            case AT_QSTRING:
+            case AT_STRING:
+                reason = pdf_set (pdf, argtable[k].arg, p);
+                break;
+
+            case AT_INTEGER:
+                iarg = strtol (vbuf, &ep, 10);
+                if (!*vbuf || *ep || ep == vbuf) {
+                    if (!sim_quiet) {
+                        printf ("Not an integer for %s value: %s\n",
+                                 argtable[k].keyword, ep);
+                    }
+                    reason= SCPE_ARG;
+                    break;
+                }
+                arg = (double) iarg;
+                reason = pdf_set (pdf, argtable[k].arg, arg);
+                break;
+
+            case AT_NUMBER:
+                arg = strtod (vbuf, &ep);
+                if (*ep) {
+                    if (!strcmp (ep, "CM")) {
+                        arg /= 2.54;
+                    } else {
+                        if (!strcmp (ep, "MM")) {
+                            arg /= 25.4;
+                        } else if (strcmp (ep, "IN")) {
+                            if (!sim_quiet) {
+                                printf ("Unknown qualifier for %s value: %s\n",
+                                                 argtable[k].keyword,  ep);
+                                reason = SCPE_ARG;
+                                break;
+                            }
+                        }
+                    }
+                }
+                reason = pdf_set (pdf, argtable[k].arg, arg);
+                break;
+
+            default:
                 return SCPE_ARG;
-            }
-            continue;
-        }
-        /* Filename */
-        if (!strcmp (gbuf, "IMAGE")) {
-            reason = pdf_set (pdf, PDF_FORM_IMAGE, vbuf);
-            continue;
-        }
-        /* Text font */
-        if (!strcmp (gbuf, "FONT")) {
-            reason = pdf_set (pdf, PDF_TEXT_FONT, vbuf);
-            continue;
-        }
-         /* document title */
-        if (!strcmp (gbuf, "TITLE")) {
-            reason = pdf_set (pdf, PDF_TITLE, vbuf);
-            continue;
-        }
-        /* The rest are numeric */
-        arg = strtod (vbuf, &p);
-        if (p == vbuf) {
-            pdf_close (pdf);
-            pdf = NULL;
-            return SCPE_ARG;
-        }
-        if (!strcmp (p, "cm")) {
-            arg /= 2.54;
-        } else {
-            if (!strcmp (p, "mm")) {
-                arg /= 25.4;
-            } else if (*p && strcmp (p, "in")) {
-                pdf_close (pdf);
-                pdf = NULL;
-               return SCPE_ARG;
-            }
-        }
-        if (!strncmp (gbuf, "TOP-MARGIN", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_TOP_MARGIN, arg);
-        } else if (!strncmp (gbuf, "BOTTOM-MARGIN", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_BOTTOM_MARGIN, arg);
-        } else if (!strncmp (gbuf, "SIDE-MARGIN", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_SIDE_MARGIN, arg);
-        } else if (!strncmp (gbuf, "NUMBER-WIDTH", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_LNO_WIDTH, arg);
-        } else if (!strncmp (gbuf, "CPI", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_CPI, arg);
-        } else if (!strncmp (gbuf, "LPI", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_LPI, arg);
-        } else if (!strncmp (gbuf, "WIDTH", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_PAGE_WIDTH, arg);
-        } else if (!strncmp (gbuf, "LENGTH", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_PAGE_LENGTH, arg);
-        } else if (!strncmp (gbuf, "COLUMNS", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_COLS, arg);
-        } else if (!strncmp (gbuf, "TOF-OFFSET", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_TOF_OFFSET, arg);
-        } else if (!strncmp (gbuf, "BAR-HEIGHT", strlen (gbuf))) {
-            reason = pdf_set (pdf, PDF_BAR_HEIGHT, arg);
-        } else {
-            pdf_close (pdf);
-            pdf = NULL;
-            return SCPE_ARG;
-        }
+            } /* switch (argtype) */
+            break;
+        } /* for (argtable) */
         if (reason != SCPE_OK) {
             if (!sim_quiet) {
-                pdf_perror (pdf, gbuf);
+                if ( k < DIM (argtable)) {
+                    if (pdf_error (pdf) != PDF_OK) {
+                        pdf_perror (pdf, gbuf);
+                    }
+                } else {
+                    printf ("Unknown parameter %s\n", gbuf);
+                }
             }
             pdf_close (pdf);
+            pdf = NULL;
             return SCPE_ARG;
         }
-        continue;
-    }
+    } /* while (cptr < fn) */
 
     /* Check for composite errors */
 
@@ -267,6 +394,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
             pdf_perror (pdf, gbuf);
         }
         pdf_close (pdf);
+        pdf = NULL;
         return SCPE_ARG;
     }
 
@@ -274,7 +402,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     pdf_clearerr (pdf);
 
-    /* Why does attach_unit not use strlen(name) +1 rather than CBUFSIZE? */
+    /* Why does attach_unit use CBUFSIZE rather than strlen(name) +1? */
     uptr->filename = (char *) calloc (CBUFSIZE, sizeof (char));
     if (uptr->filename == NULL) {
         pdf_close (pdf);
@@ -326,7 +454,9 @@ t_stat pdflpt_detach (UNIT *uptr) {
 
     SETCTX (SCPE_MEM);
 
-    if (pdf == NULL ) {
+    pdflpt_reset (uptr);
+
+    if (!pdf) {
         return detach_unit (uptr);
     }
 
@@ -353,21 +483,18 @@ t_stat pdflpt_detach (UNIT *uptr) {
     pdf_where (pdf, &page, NULL);
 
     r = pdf_close (pdf);
+    pdf = NULL;
 
     if (r != PDF_OK) {
         if (!sim_quiet) {
             pdf_perror (pdf, uptr->filename);
         }
         r = SCPE_NOATT;
-    } else if (pdflpt_getmode (uptr) == PDFLPT_IS_PDF) {
-        if (!sim_quiet) {
-            printf ( "Closed %s, on page %u\n", uptr->filename, page );
-        }
+    } else if (!sim_quiet) {
+        printf ( "Closed %s, on page %u\n", uptr->filename, page );
     }
 
-    pdf = NULL;
-
-    if (pdfctx->flags & UNIT_SEQ) {
+    if (pdfctx->uflags & UNIT_SEQ) {
         uptr->flags |= UNIT_SEQ;
     }
     uptr->flags = uptr->flags & ~(UNIT_ATT | UNIT_RO);
@@ -411,7 +538,15 @@ int pdflpt_putc (UNIT *uptr, int c) {
     int r;
 
     SETCTX (EOF);
-    
+
+    if (c == '\015' || c == '\012' || c == '\014') {
+        idle_unit.u5 = 0;
+        set_idle_timer (uptr);
+    } else {
+        idle_unit.u5++;
+        sim_cancel (&idle_unit);
+    }
+
     if (!pdf) {
         return fputc (c, uptr->fileref);
     }
@@ -432,9 +567,25 @@ int pdflpt_putc (UNIT *uptr, int c) {
 
 int pdflpt_puts (UNIT *uptr, const char *s) {
     int r;
+    const char *p = s;
 
     SETCTX (-1);
-    
+
+    while (*p) {
+        char c = *p++;
+
+        if (c == '\015' || c == '\012' || c == '\014') {
+            idle_unit.u5 = 0;
+        } else {
+            idle_unit.u5++;
+        }
+    }
+    if (idle_unit.u5 == 0) {
+        set_idle_timer (&idle_unit);
+    } else {
+        sim_cancel (&idle_unit);
+    }
+
     if (!pdf) {
         return fputs (s, uptr->fileref);
     }
@@ -457,8 +608,30 @@ int pdflpt_puts (UNIT *uptr, const char *s) {
 
 size_t pdflpt_write (UNIT *uptr, void *ptr, size_t size, size_t nmemb) {
     size_t n;
+    const char *p = (const char *)ptr;
 
     SETCTX (0);
+
+    n = size * nmemb;
+
+    while (n--) {
+        char c = *p++;
+
+        if (c == '\015' || c == '\012' || c == '\014') {
+            idle_unit.u5 = 0;
+        } else {
+            idle_unit.u5++;
+        }
+    }
+    if (idle_unit.u5 == 0) {
+        set_idle_timer (&idle_unit);
+    } else {
+        sim_cancel (&idle_unit);
+    }
+
+    if (!pdf) {
+        return fwrite (ptr, size, nmemb, uptr->fileref);
+    }
 
     if (pdfctx->bc) {
         pdf_print (pdf, pdfctx->buffer, pdfctx->bc);
@@ -593,4 +766,110 @@ void pdflpt_clearerr (UNIT *uptr) {
         pdf_clearerr (pdf);
     }
     return;
+}
+
+/* Reset hook
+ * Cancels idle timer.
+ */
+
+static t_stat reset (DEVICE *dptr) {
+    t_stat (*reset) (DEVICE *dp) = NULL;
+    UNIT *uptr;
+    uint32 n;
+
+    for (n = 0, uptr = dptr->units; n < dptr->numunits; n++, uptr++) {
+        if (pdfctx) {
+            pdflpt_reset (uptr);
+            if (pdfctx->reset) {
+                reset = pdfctx->reset;
+            }
+        }
+    }
+    if (reset) {
+        return reset (dptr);
+    }
+
+    return SCPE_OK;
+}
+
+/* Reset function for any device that can't be hooked because
+ * its DEVICE can't be found from its unit pointer.  This should
+ * be rare.  Called internally from the reset hook.
+ */
+
+void pdflpt_reset (UNIT *uptr) {
+    SETCTX (LPTVOID);
+
+    if (sim_is_active (&idle_unit)) {
+        pdflpt_flush (uptr);
+        sim_cancel (&idle_unit);
+    }
+
+    return;
+}
+
+/*  pdflpt_set_idle_timeout
+ *  Optional command action to modify idle timer.
+ *  Not clear why one LPT might want a different value,
+ *  but just in case.
+ *
+ */
+
+t_stat pdflpt_set_idle_timeout (UNIT *uptr, int32 val, char *cptr, void *desc) {
+    uint32 timeout;
+    t_stat r;
+
+    SETCTX (SCPE_MEM);
+
+    if (cptr == NULL || !*cptr) {
+        idle_unit.u3 = PDFLPT_IDLE_TIME;
+        return SCPE_OK;
+    }
+
+    timeout = (uint32) get_uint (cptr, 10, UINT_MAX, &r);
+    if (r != SCPE_OK) {
+        return r;
+    }
+    if (r == 0) {
+        return SCPE_ARG;
+    }
+    idle_unit.u3 = timeout;
+
+    return SCPE_OK;
+}
+
+/* Set idle timer
+ *
+ * To allow for long idle times, the unit is scheduled once/sec, and
+ * counts down the requested time (u3) in time remaining (u4).
+ */
+
+static void set_idle_timer (UNIT *uptr) {
+    UNIT *iuptr;
+
+    SETCTX (LPTVOID);
+
+    iuptr = &idle_unit;
+
+    iuptr->u4 = iuptr->u3;
+    sim_cancel(iuptr);
+    sim_activate_after (iuptr, iuptr->wait);
+
+    return;
+}
+
+/* Service function for idle_unit.
+ * Counts down time to idle, and flushes buffers if
+ * it expires.
+ */
+
+static t_stat idle_svc (UNIT *uptr) {
+
+    if (--uptr->u4 > 0) {
+        sim_activate_after (uptr, uptr->wait);
+        return SCPE_OK;
+    }
+
+    pdflpt_flush ((UNIT *)uptr->up7);
+    return SCPE_OK;
 }

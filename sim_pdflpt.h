@@ -65,9 +65,18 @@
  *
  * Unlike text files, .PDF files can not be "tail"ed while being written.  DETACH is the
  * only way to get a consistent, readable file.  ATTACH wil render it unreadable
- * (by PDF readers).  If you use pdflpt_flush, the file will be in a consistent state
- * until the next output.  However, (if you're lucky) your OS will have an update
+ * (by PDF readers).  The file is automaticaly checkpointed a short time after the 
+ * printer becomes idle.  However, (if you're lucky) your OS will have an update
  * lock on it to prevent the reader from getting confused.
+ *
+ * Devices using sim_pdflpt automatically seek to EOF on attach, and flush their
+ * file buffers buffer flush when the device is inactive, even when writing text
+ * files.  "Inactive" means that the device is at column 0 (has just output a <CR>,
+ * <LF> or <FF> and an idle timer has expired.  The timer is defaulted to 10
+ * seconds, but pdflpt_set_idle_timeout can be used as a SET command action
+ * function if it is necessary to provide user control of the value.  Minimum is 1
+ * second.
+ * 
  */
 
 /* Updating your device:
@@ -84,8 +93,10 @@
  *        fprintf (st, "The PDF output is customizable; see the general documentation.\n");
  *    You also need to add sim_pdflpt.c and lpt2pdf.c to your machine's Makefile (or equivalent).
  *
- *    This method assumes that the only use of <stdio.h> functions is for writing to your device; that the
- *    device doesn't uses fprintf (note how HELP does), and that the unit pointer has the default name "uptr".
+ *    This method requires that the only use of <stdio.h> functions is for writing to your device; that the
+ *    device doesn't uses fprintf (note how HELP does), and that the unit pointer has the default name "uptr"
+ *    and is in scope where the IO functions are used.  It also requires that the unit have attach AND detach
+ *    functions that call attach_unit and detach_unit respectively.
  *
  * B) Advanced method:
  *    If you have the time, your code will be more maintainable if you use this method (redefining standard
@@ -97,12 +108,14 @@
  *    Make sure that sim_pdflpt.c and lpt2pdf.c are in your Makefile or equivalent.
  *
  *    point your device ATTACH & DETACH functions to pdflpt_attach/pdflpt_detach.  (If they are more
- *    involved than attach_unit and detach_unit, replace the calls in the custom functions.)
+ *    involved than attach_unit and detach_unit, replace the calls in the custom functions.)  The
+ *    device MUST have BOTH attach and detach functions.
  *
  *    Find the functions that write to the output file, and replace them with the
  *    corresponding call(s) to pdflpt_putc, pdflpt_puts and/or pdflpt_write.  If there is an opportunity
  *    to output more than one character per call (pdflpt_puts or pdflpt_write), it is advisable
- *    to use it.  The PDF API is optimized for handling longer amounts of output.
+ *    to use it.  The PDF API is optimized for handling longer amounts of output.  It will internally
+ *    buffer calls to pdflpt_fputc, but not to pdflpt_puts or pdflpt_write.
  *
  *    Replace any calls to update the file position (typically, unit.pos = ftell (unit.fileref)
  *    with a call to pdflpt_where.  Be aware that the result is NOT seekable in PDF output.
@@ -111,15 +124,15 @@
  *    fseek() is unnecessary - but if you need it for some reason, call pdflpt_getmode and skip it for
  *    PDF files.  pdflpt_attach will position non-PDF files at EOF for you.
  *
+ *    If you call sim_cancel to deactivate a unit other than in the device reset function
+ *    or attach function, (e.g. in a device init caused by a register write), you may need
+ *    to call pdflpt_reset to stop the idle timer.
+ *
  *    Update the device help.
  *
  *    If you don't do anything special with errors (e.g. you just reflect them as SCPE_IOERR),
  *    you're done.  If you do, look at the error functions.  The error codes are defined in
  *    lpt2pdf.h.
- *
- *    If your printer is expected to stay attached for a long time, you may want to consider setting a
- *    timer to call pdflpt_flush when the printer has been idle for a while.  See pdp10_lp20 for a sample
- *    of this technique.
  *
  * - And, of course whichever method you choose, test!
  */
@@ -135,8 +148,9 @@
 #include "lpt2pdf.h"
 #include "sim_defs.h"
 
+
 /* Replacements for attach_unit and detach_unit that handle PDF magic.
- * These defer to the standard routines if pdf output is not selected.
+ * These defer to the standard functions if pdf output is not selected.
  */
 
 /* Attach function for LPTs
@@ -216,7 +230,7 @@ const char *const *pdflpt_get_fontlist ( size_t *length );
 
 /* Replacements for fputc, fputs and fwrite that handle PDF magic
  * 
- * These have the same semantics as the <stdio.h> and <string.h> routines
+ * These have the same semantics as the <stdio.h> and <string.h> functions
  * that they are named after, except that you supply a UNIT pointer rather
  * than a FILE pointer.  Also, for consistency with the rest of simh, the
  * UNIT pointer is always the first argument.
@@ -244,7 +258,7 @@ t_addr pdflpt_where (UNIT *uptr, size_t *line);
 
 /* Error library
  * 
- * These replace the corresponding standard routines, but handle PDF stream
+ * These replace the corresponding standard functions, but handle PDF stream
  * error codes as well as the system error codes. (That strerror() supports.)
  */
 
@@ -266,6 +280,12 @@ void pdflpt_clearerr (UNIT *uptr);
  */
 
 void pdflpt_flush (UNIT *uptr);
+
+/* If a device can not be found from its unit pointer, the reset
+ * function should call pdflpt_reset to stop the idle timer.
+ */
+
+void pdflpt_reset (UNIT *uptr);
 
 /* Obtain a snapshot of an active file.  (Creates a consistent copy in a new file.)
  * The copy may not be complete as the last page may not have been rendered.
