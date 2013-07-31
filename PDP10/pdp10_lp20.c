@@ -302,41 +302,6 @@ static DIB lp20_dib = {
     1, IVCL (LP20), VEC_LP20, { &lp20_inta }
     };
 
-/* Actual device timing varies depending on the printer.
- * Printers used with the LP20 include both drum and band printers.
- * Nominal speeds ranged from 200 LPM to 1250 LPM.  Besides speed,
- * the major variants were: Optical vs DAVFU, 64 vs. 96 character
- * band/drum, and scientific vs. EDP fonts.  Scientific used slashed
- * Z and 0; EDP did not.  All supported 132 colum output at a pitch
- * of 10 CPI.  Some had operator switch-selectable vertical pitches
- * for either 6 or 8 LPI.  Paper and ribbon are hit by a hammer onto
- * the rotating drum when the desired character is in front of the
- * hammer.  Thus, a line that contains all the characters on a drum
- * would take one full revolution to print, plus paper motion time.
- * (Assuming no overstrikes.)  At 100 RPM, this translates to 16.7 ms
- * printing + 41 ms motion for the LP05. The math works out to 1,040
- * LPM, but the rated speeds account for slew in the margins and some
- * overstrikes (most commonly underline.)  One could construct data
- * patterns that overlapped some paper motion with unused character
- * time on the drum.  So the LP10, with 14 ms line advance could
- * print the alphabet using 1/2 a rotation and move the paper in the
- * other half - about 50% faster than rated speed.  Bands move the
- * characters horizontally (similar to chain/train printers), but
- * the basic timing constraints are similar.
- *
- * Timing for several printers: a/b is 64/96 character set value.
- *                 LP05         LP07     LP10      LP14
- * Line advance:  41 ms        12.5 ms  14 ms       20 ms
- * Slew:          20 ips       60 ips   35 ips     22.5 @8LPi/30 @6
- * Drum Rotation: 1000/600 RPM band     1800/1200 1280/857
- * Rated LPM:     230/300      1220/905 1250/925  890/650
- * Weight lb/kg   340/154       800/363  800/363  420/191
- *
- * There is a variant that was designed to drive an LA180 with either
- * a 7 or 8 bit parallel interface.  The prints label it 'not a standard
- * product'.  It's not implemented in this emulation.
- */
-
 static UNIT lp20_unit = {
     UDATA (&lp20_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT,
     };
@@ -396,7 +361,7 @@ DEVICE lp20_dev = {
     NULL, NULL, &lp20_reset,
     NULL, &lp20_attach, &lp20_detach,
     &lp20_dib, DEV_DISABLE | DEV_UBUS, 0,
-    NULL, NULL, NULL, &lp20_help, NULL, NULL, &lp20_description,
+    NULL, NULL, NULL, &lp20_help, &pdflpt_attach_help, NULL, &lp20_description,
     };
 
 /* Line printer routines
@@ -1258,47 +1223,161 @@ return SCPE_OK;
 static t_stat lp20_help (FILE *st, struct sim_device *dptr,
                             struct sim_unit *uptr, int32 flag, char *cptr)
 {
-fprintf (st, 
-         "The LP20 DMA line printer controller is a UNIBUS device developed by the 36-bit product line.\n"
-         "The controller is used in the KS10, in PDP-11 based remote stations and in the KL10 console.\n"
-         "Several models of line printer can be (and were) attached to the LP20; with the long lines\n"
-         "option, up to 100 feet from the controller.  Each LP20 controls one line printer.\n\n"
-         "Besides DMA, the LP20 incorporates a translation RAM that can handle case translation and more\n"
-         "sophisticated processing, such as representing control characters as ^x and FORTRAN carriage\n"
-         "control.  In the former case, special characters are flagged for OS attention with an interrupt.\n"
-         "But FORTRAN carriage control can be handled entirely by the hardware.  The RAM is loaded by\n"
-         "the host procesor.  The LP20 supports printers with the traditional paper tape VFU, which is \n"
-         "used to define vertical motion.  It also suports the DAVFU, (direct access) which is the electronic\n"
-         "equivalent of the optical tape.  The DAVFU is more convenient for operators, as the print spooler\n"
-         "changes it automatically to match the forms.  The traditional paper tape was read for every line\n"
-         "printed.  Later printers read the tape at power-up (or change) and cached the data in on-board RAM.\n"
-         "This reduced wear on the tape (and the operator), and provides an example of hardware emulating hardware.\n\n"
-         "Emulator specifics:\n"
-         "The emulator can be configured with either a optical or a DAVFU.  When the optical VFU is configured\n"
-         "a default tape is provided, which is setup for a 66 line page with a 60 line printable area, and\n"
-         "the DEC standard channels punched.  (These correspond to FORTRAN carriage control.)\n\n"
-         "A custom optical tape can be configured with the SET lp20 VFUTYPE=OPTICAL=filename command.  This will\n"
-         "load an ASCII file into the VFU, which has the following format:\n"
-         "    #. ; ! at the beginning of a line are comments, and ignored.\n"
-         "    line: n,m,o\n"
-         "       These lines indicate the channels to be punched in each line.  That is, that the paper\n"
-         "       motion will stop when a \"move to channel n\" command is received.\n"
-         "       The line number is decimal, between 0 and the page length -1.\n"
-         "       The channel number can be between 1 and 12 - although most printers supported only 1-8\n"
-         "    Channel 0 is the TOP OF FORM channel, and must be punched in at least one line.\n\n"
-         "    Channel 12 is the BOTTOM OF FORM channel. Some printers use this to allow completion of the\n"
-         "               last page when PAPER OUT is detected.  Paper out sensors tended to alert early.\n"
-         " SET LP20 VFUTYPE=DAVFU (the default) configures the LP20 for a printer with a DAVFU.\n"
-         "\n"
-         "SET LP20 TOPOFFORM advances the paper to the top of the next page by slewing to VFU channel 0, as\n"
-         "does the TOP OF FORM button on a physical printer.\n"
-         "The DAVFU and translation RAMs survive RESET unless RESET -P is used.  SET LP20 CLEARVFU is\n"
-         "provided to clear them independently.\n\n"
-        "If the disk file is named .pdf, the output will be in PDF format on greenbar paper.\n"
-        "The PDF output is customizable; see the general documentation.\n");
-
-return SCPE_OK;
+    static const char text[] = {
+" The LP20 DMA line printer controller is a UNIBUS device developed by DEC\'s\n"
+" 36-bit product line.  The controller is used in the KS10, in PDP-11\n"
+" based remote stations and in the KL10 console.  Several models of line\n"
+" printer can be (and were) attached to the LP20; with the long lines\n"
+" option, up to 100 feet from the controller.  Each LP20 controls one line\n"
+" printer.\n"
+"\n"
+" Besides DMA, the LP20 incorporates a translation RAM that can\n"
+" handle case translation and more sophisticated processing, such as\n"
+" representing control characters as ^X and FORTRAN carriage control.\n"
+" %1H\n"
+" It also suports the DAVFU, (direct access) which is the electronic equivalent\n"
+" of the optical tape.  The DAVFU is more convenient for operators, as the \n"
+" print spooler changes it automatically to match the forms. Optical VFUs\n"
+" are also supported.\n"
+"1 Hardware Description\n"
+" Only a single model of the LP20 was offically released.  However,\n"
+" it is usually bundled with a line printer, so there are a number of part\n"
+" numbers that contain the LP20.\n"
+" \n"
+" There is a variant that was designed to drive an LA180 with either a 7\n"
+" or 8 bit parallel interface.  The prints label it 'not a standard\n"
+" product'.  It is not implemented in this emulation.\n"
+" \n"
+" Actual device timing varies depending on the printer.\n"
+" \n"
+" Printers used with the LP20 include both drum and band printers.\n"
+" Nominal speeds ranged from 200 LPM to 1250 LPM.\n"
+" \n"
+" Besides speed, the major variants were: Optical vs DAVFU, 64 vs. 96\n"
+" character band/drum, and scientific vs. EDP fonts.\n"
+" \n"
+" Scientific fonts use slashed Z and 0; EDP does not.\n"
+" \n"
+" All supported 132 colum output at a pitch of 10 CPI.\n"
+" \n"
+" Some had operator switch-selectable vertical pitches for either 6 or 8\n"
+" LPI.\n"
+"2 Mechanical characteristics\n"
+" Paper and ribbon are hit by a hammer onto the rotating drum when the\n"
+" desired character is in front of the hammer.  Thus, a line that contains\n"
+" all the characters on a drum would take one full revolution to print,\n"
+" plus paper motion time.  (Assuming no overstrikes.)  At 100 RPM, this\n"
+" translates to 16.7 ms printing + 41 ms motion for the LP05. The math\n"
+" works out to 1,040 LPM, but the rated speeds account for slew in the\n"
+" margins and some overstrikes (most commonly underline.)\n"
+" \n"
+" One could construct data patterns that overlapped some paper motion with\n"
+" unused character time on the drum.  So the LP10, with 14 ms line advance\n"
+" could print the alphabet using 1/2 a rotation and move the paper in the\n"
+" other half - about 50%% faster than rated speed.  Bands move the\n"
+" characters horizontally (similar to chain/train printers), but the basic\n"
+" timing constraints are similar.\n"
+" \n"
+" Timing for several printers: a/b is 64/96 character set value.\n"
+"++++LP05         LP07     LP10      LP14\n"
+" Line advance:  41 ms        12.5 ms  14 ms       20 ms\n"
+" Slew:          20 ips       60 ips   35 ips     22.5 @8LPi/30 @6\n"
+" Drum Rotation: 1000/600 RPM band     1800/1200 1280/857\n"
+" Rated LPM:     230/300      1220/905 1250/925  890/650\n"
+" Weight lb/kg   340/154       800/363  800/363  420/191\n"
+" \n"
+"2 Vertical Forms Unit\n"
+" The Vertical Forms Unit (VFU) controls forms positioning.  Technically\n"
+" part of the printer, it is emulated with the LP20.  Two types of VFU\n"
+" are supported by the hardware, and both are emulated.\n"
+" \n"
+" Optical VFUs use photocells to read the holes punched in a paper tape.\n"
+" This is the traditional design.  It requires the operator to change\n"
+" the paper tape when forms are changed, an the tapes are subject to\n"
+" mechanical damage.  The traditional paper tape was read for every line\n"
+" printed.  Later printers read the tape at power-up (or change) and\n"
+" cached the data in on-board RAM.  This reduced wear on the tape (and\n"
+" the operator), and provides an example of hardware emulating hardware.\n"
+" \n"
+" Direct Access VFUs (electronic VFUs) simulate the paper tape with RAM,\n"
+" allowing the print spooler to automatically load them when forms are\n"
+" changed.\n"
+" \n"
+" The LP20 also has a translation RAM, which is related to (but not\n"
+" part of) the VFU.  The translation RAM allows mapping any 8-bit\n"
+" character to any character in the printer, or any paper motion\n"
+" command to the printer.  In addition, the translation RAM drives\n"
+" a 2-state state machine, allowing it to implment FORTRAN carriage\n"
+" control or other simple 'escape sequences' entirely in hardware.\n"
+" It also allows any character code to halt printing and interrupt\n"
+" the processor.  This can be used to map non-printing codes to\n"
+" multi-character graphics.  (E.g. control-A to ^A).\n"
+" \n"
+" The RAM is loaded by the host procesor, and typically is associated\n"
+" with a form.\n"
+" \n"
+"2 $Registers\n"
+"1 Configuration\n"
+" \n"
+"2 VFU Configuration\n"
+" The emulator can be configured with either a optical or a DAVFU.  \n"
+"+ SET %D VFUTYPE=DAVFU\n"
+"+ SET %D VFUTYPE=OPTICAL\n"
+"+ SET %D VFUTYPE=tapefile\n"
+" \n"
+" The DAVFU contents can be viewed with the\n"
+"+SHOW %D VFU\n"
+" command.  The DAVFU is controlled entirely by the host\n"
+" and requires no operator attention.\n"
+" \n"
+" When the optical VFU is configured a default tape is\n"
+" provided, which is setup for a 66 line page with a 60 line printable\n"
+" area, and the DEC standard channels punched.  (These correspond to\n"
+" FORTRAN carriage control.)  \n"
+" \n"
+" A custom optical tape can also be configured.\n"
+"3 Optical VFU file format\n"
+" A custom tape for the optical VFU has the following format.\n"
+" \n"
+" Generally, each line of the file represents one line of the form.\n"
+"+#. ; ! at the beginning of a line are comments, and ignored.\n"
+"+line: n,m,o\n"
+"++These lines indicate the channels to be punched in each line.  \n"
+"++That is, that the paper motion will stop when a \"move to channel n\"\n"
+"++command is received.\n"
+"++The line number is decimal, between 0 and the page length -1.\n"
+"++The channel number can be between 1 and 12 - although most printers \n"
+"++supported only channels 1-8\n"
+" \n"
+" Channel 0 is the TOP OF FORM channel, and must be punched in at least\n"
+" one line.\n"
+" \n"
+" Channel 12 is the BOTTOM OF FORM channel. Some printers use this to allow\n"
+" completion of the last page when PAPER OUT is detected.  Paper out sensors\n"
+" tended to alert early.\n"
+"2 $Set commands\n"
+"2 $Show commands\n"
+"1 Operation\n"
+" These commands allow the operator to interact with the simulated printer\n"
+" \n"
+" SET LP20 TOPOFFORM\n"
+"+advances the paper to the top of the next page by\n"
+"+slewing to VFU channel 0, as does the TOP OF FORM button on a physical\n"
+"+printer.\n"
+" \n"
+" The DAVFU and translation RAMs survive RESET unless RESET -P is used. \n"
+" SET LP20 VFUCLEAR\n"
+"+Clears both the VFU and translation RAM.  Since both are controlled by the\n"
+"+host, this is only useful for debugging.\n"
+"\n"
+" SET %D LPI=6-LPI | 8-LPI\n"
+"+sets the printer's vertical pitch.  This is currently ignored, but may be\n"
+"+implemeneted in the future.  Note that a DAVFU tape can set the vertical\n"
+"+pitch as well.\n"
+    };
+    return scp_help (st, dptr, uptr, flag, text, cptr, pdflpt_helptext);
 }
+
 static char *lp20_description (DEVICE *dptr)
 {
     return "DMA Line Printer controller";

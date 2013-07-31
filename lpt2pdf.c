@@ -39,6 +39,8 @@
  * assumptions are made about the structure to simplify this code.
  */
 
+#define LPT2PDF_VERSION "1.0-002"
+
 #include <ctype.h>
 #include <errno.h>
 #include <setjmp.h>
@@ -55,12 +57,25 @@
 #ifdef _WIN32
 #include <Windows.h>
 #include <io.h>
+#include <share.h>
 #else
 #include <unistd.h> /* ftruncate */
+#ifndef VMS
+#include <sys/file.h>
+#define USE_FLOCK
+#endif
 #endif
 
 #define PDF_BUILD_
 #include "lpt2pdf.h"
+
+/* Bufer size for moving "large" amounts of data, e.g. file contents.
+ * Can be tuned per OS/Filesystem type.
+ */
+
+#ifndef COPY_BUFSIZE
+#define COPY_BUFSIZE (8192)
+#endif
 
 /* Colors:
  *
@@ -107,7 +122,6 @@ static const COLORS colors[] = {
 #define    PDF_YELLOWBAR   (4)
     {RGB_YELLOW_LINE,  RGB_YELLOW_BAR,  RGB_YELLOW_TEXT, "YELLOWBAR", },
 };
-#define    PDF_JPEG       (99) /* Internal use */
 
 #define DIM(x) (sizeof (x) / sizeof ((x)[0]))
 
@@ -172,44 +186,51 @@ static void errout (void ) {
 
 typedef long t_fpos;        /* File position */
 
-/* Context for all operations.
+/* PDF is the context for all operations.
  * Presented to the caller as a PDF_HANDLE, but
- * intentionally opaque.  First section has defaults,
- * second section is simply cleared.  General principle is
- * that there are no fixed sizes, no global state, and
- * memory, once allocated is reused as much as possible.
- * Dynamic structures grow until pdf_close().
+ * intentionally opaque.  
+ *
+ * SETP contains those parameters set (or settable) by the
+ * caller.  These can be rolled to a new file.
+ *
+ * General principle is that there are no fixed sizes,
+ * no global state, and memory, once allocated is reused
+ * as much as possible. Dynamic structures grow until pdf_close().
  *
  * update pdf_free() with any new dynamic memory pointers.
  */
 
 typedef struct {
-    char key[3];            /* Handle validator */
+    double top;             /* Top margin, in (offset of first bar) */
+    double bot;             /* Bottom margin, in (space after last bar) */
+    double margin;          /* Horizontal margin, in (tractor feed) */
+    double lno;             /* Width of line number, in column */
+    double cpi;             /* Note: LA120 had several fractional cpi */
+    unsigned int lpi;
+    double wid;             /* Sheet width, in */
+    double len;             /* Sheet length, in */
+    unsigned int cols;      /* Print columns */
+    char *font;             /* Name of text font */
+    char *nfont;            /* Name of number font */
+    char *nbold;            /* Name of label font */
     unsigned int frequire;  /* File requirements */
 #define PDF_FILE_NEW     (0)/*  File must be empty */
 #define PDF_FILE_APPEND  (1)/*  File can be appended (if PDF) */
 #define PDF_FILE_REPLACE (2)/*  Non-empty file's contents are replaced */
-    double cpi;             /* Note: LA120 had several fractional cpi */
-    unsigned int lpi;
-    unsigned int newlpi;
-    unsigned int cols;      /* Print columns */
-    double wid;             /* Sheet width, in */
-    double len;             /* Sheet length, in */
-    char *font;             /* Name of text font */
-    char *nfont;            /* Name of number font */
-    char *nbold;            /* Name of label font */
     char *title;            /* Document title string */
-    double top;             /* Top margin, in (offset of first bar) */
     unsigned int tof;       /* Top Of Form line, logical line 1 (e.g of CC tape) */
-    double bot;             /* Bottom margin, in (space after last bar) */
-    double margin;          /* Horizonatal margin, in (tractor feed) */
-    double lno;             /* Width of line number, in column */
     unsigned int formtype;  /* Type of background/form */
+    char *formfile;         /* File containing form image */
     double barh;            /* Height of form bar */
+} SETP;
+
+typedef struct {
+    char key[3];            /* Handle validator */
+    SETP p;                 /* User-settable parameters */
+    unsigned int newlpi;
 
     /* Below this point initialized to zero */
     int errnum;             /* Last error */
-    char *formfile;         /* File containing form image */
     FILE *pdf;              /* Output file handle */
     unsigned int escstate;  /* Escape sequence parser */
 #define ESC_IDLE     (0)
@@ -299,24 +320,27 @@ typedef struct {
 
 static const PDF defaults = {
     {'P', 'D', 'F'},
-    PDF_FILE_NEW,
-    10,
-    6,
-    6,
-    132,
-    14.875,
-    11.000,
-    "Courier",
-    "Times-Roman",
-    "Times-Bold",
-    "Lineprinter data",
-    1.00,
-    ~1u,
-    0.500,
-    0.470,
-    0.100,
-    PDF_GREENBAR,
-    0.500,
+    {   /* SETP defaults */
+        1.00,                    /* top */
+        0.500,                   /* bot */
+        0.470,                   /* margin */
+        0.100,                   /* lno */
+        10,                      /* cpi */
+        6,                       /* lpi */
+        14.875,                  /* wid */
+        11.000,                  /* len */
+        132,                     /* cols */
+        "Courier",               /* font */
+        "Times-Roman",           /* nfont */
+        "Times-Bold",            /* nbold */
+        PDF_FILE_NEW,            /* frequire */
+        "Lineprinter data",      /* title */
+        ~1u,                     /* tof */
+        PDF_GREENBAR,            /* formtype */
+        NULL,                    /* formfile */
+        0.500,                   /* barh */
+    },
+    6,                           /* lpi */
 };
 
 #define ps ((PDF *)pdf)
@@ -324,8 +348,13 @@ static const PDF defaults = {
 /* Points/inch */
 #define PT (72)
 
+/* PDF architectural constants */
+#define PDF_C_LINELEN (255)    /* Maximum line length (lines not in a stream object's data) */
+#define PDF_C_HEADER "%PDF-1.4\n%\0302\0245\0302\0261\0303\0253\n"
+
 /* Forward references */
 
+static int dupstrs (PDF *pdf);
 static int dupstr (PDF *pdf, char **ptr);
 static int pdfset ( PDF *pdf, int arg, va_list ap);
 static int checkfont (const char *newfont);
@@ -362,7 +391,7 @@ static int xstrcasecmp (const char *s1, const char *s2);
 
 /* Coordinate transformations */
 
-#define yp(y) ((pdf->len - (y)) * PT) /* In from top -> page coord */
+#define yp(y) ((pdf->p.len - (y)) * PT) /* In from top -> page coord */
 #define xp(x) ((x) * PT)              /* In to page coord */
 #define CircleK (0.551784)            /* Constant for approximating circles */
 
@@ -446,7 +475,7 @@ static const ARG argtable [] = {
     SET (cpi,     CPI,            NUMBER,  10,          (Specifies the characters per inch (horizontal pitch).  Fractional pitch is supported.))
     SET (font,    TEXT_FONT,      STRING,  Courier,     (Specifies the name of the font to use for rendering the input data.  Accepted are:%F))
     SET (form,    FORM_TYPE,      STRING,  greenbar,    (Specifies the form background to be applied. One of:%fPlain is white page.))
-    SET (image,   FORM_IMAGE,     STRING,  <none>,      (Specifies a .jpg image to be used as the form background\nIt will be scaled to fill the area within the margins.\n))
+    SET (image,   FORM_IMAGE,     STRING,  <none>,      (Specifies a .jpg image to be used as the form background\nIt will be scaled to fill the area within the margins.\nIt is rendered over the form; for just the image, use -form Plain.))
     SET (length,  PAGE_LENGTH,    NUMBER,  11.000in,    (Specifies the length of the page in inches, inclusive of all margins))
     SET (lfont,   LABEL_FONT,     STRING,  Times-Bold,  (Specifies the name of the font used to render labels on the form))
     SET (lno,     LNO_WIDTH,      NUMBER,  0.100in,     (Specifies the width of the line number column on the form; 0 to omit cols.))
@@ -498,7 +527,7 @@ int main (int argc, char **argv, char **env) {
 
     pdf = pdf_open (outfile);
     if (!pdf) {
-        pdf_perror (pdf, outfile);
+        pdf_perror (NULL, outfile);
         exit (2);
     }
 
@@ -589,7 +618,7 @@ int main (int argc, char **argv, char **env) {
                 } else {
                     FILE *fh = fopen (argv[i], "r" );
                     if (!fh) {
-                        pdf_perror (pdf, argv[i]);
+                        pdf_perror (NULL, argv[i]);
                         exit (1);
                     }
                     do_file (pdf, fh, argv[i]);
@@ -601,12 +630,14 @@ int main (int argc, char **argv, char **env) {
 
     r = pdf_close (pdf);
     if (r) {
-        pdf_perror (pdf, "pdf_close failed");
+        pdf_perror (NULL, "pdf_close failed");
         exit (4);
     }
 
     exit (0);
 }
+
+/* Process an input file */
 
 static void do_file (PDF_HANDLE pdf, FILE *fh, const char *filename) {
     int c;
@@ -629,7 +660,7 @@ static void do_file (PDF_HANDLE pdf, FILE *fh, const char *filename) {
         fprintf (stderr, "Read %lu characters from %s\n", bc, filename);
     }
     if (ferror (fh)) {
-        pdf_perror (pdf, "Error reading input");
+        pdf_perror (NULL, "Error reading input");
     }
     if (pdf_where (pdf, &page, &line)) {
         pdf_perror (pdf, "Error getting position");
@@ -640,6 +671,8 @@ static void do_file (PDF_HANDLE pdf, FILE *fh, const char *filename) {
     fprintf (stderr, "End of %s, at page %u line %u\n", filename, page, line);
     return;
 }
+
+/* Utility usage */
 
 static int usage (const ARG *argtable, size_t nargs) {
     size_t i;
@@ -659,6 +692,8 @@ of random access in update mode.  A pipe will not work.\n\n\
 Any output file must be seekable, generally a disk\n\
 \n\
 Options, naturally are optional:\n");
+
+    /* List options & their help from the table */
 
     for (i = 0; i < nargs; i++, argtable++) {
         char c;
@@ -751,8 +786,8 @@ static void print_hlplist (FILE *file, const char *const *list, int adjcase) {
  */
 
 PDF_HANDLE pdf_open (const char *filename) {
-    int fd;
     PDF *pdf;
+    int r;
     const char *p;
 
     if (!filename) {
@@ -766,7 +801,7 @@ PDF_HANDLE pdf_open (const char *filename) {
         int islc = islower (p[1]);
         for (fn = p + 1;
 #if defined (VMS)
-                        (*fn && (*fn != ';');
+                       (*fn && (*fn != ';'));
 #else
                         *fn;
 #endif
@@ -788,59 +823,155 @@ PDF_HANDLE pdf_open (const char *filename) {
     }
     memcpy (pdf, &defaults, sizeof (PDF));
 
-    if (dupstr (pdf, &pdf->font) ||
-        dupstr (pdf, &pdf->nfont) ||
-        dupstr (pdf, &pdf->nbold) ||
-        dupstr (pdf, &pdf->title) ||
-        dupstr (pdf, &pdf->formfile)) {
+    if ((r = dupstrs (ps)) != PDF_OK) {
+        free (pdf);
+        errno = r;
         return NULL;
     }
 
-    /* Open for read/write, creating if non-existent but not truncating if exists.
-     * This can't be done without a race condition with fopen.  So,
-     * system-dependent code follows.
-     */
-#ifdef _WIN32
-    fd = _open (filename, _O_BINARY|_O_CREAT|_O_RDWR, _S_IREAD | _S_IWRITE);
-#else
-    fd = open (filename, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR |
-                                           S_IRGRP | S_IWGRP |
-                                           S_IROTH | S_IWOTH
-    #ifdef VMS
-                       , "ALQ=32", "DEQ=4096",
-                         "MBF=6", "MBC=127", "FOP=cbt,tef",
-                         "ROP=rah,wbh", "CTX=stm"
-    #endif
-            );
-#endif
-    if (fd == -1) {
-        pdf_free (pdf);
-        return NULL;
-    }
-
-#ifdef _WIN32
-    pdf->pdf = _fdopen (fd, "rb+");
-#else
-    pdf->pdf = fdopen (fd, "rb+");
-#endif
+    pdf->pdf = pdf_open_exclusive (filename, "rb+");
     if (!pdf->pdf) {
+        r = errno;
         pdf_free (pdf);
+        errno = r;
         return NULL;
     }
 
     return (void *)pdf;    
 }
 
-/* Helper to copy constant strings to dynamic memory
- * Used so default strings aren't a special case if they are
- * replaced - they can just be free()'d.
+/* Open a new file based on an existing handle.
+ * Does not close existing handle.  Any errors closing the existing
+ * handle are reported in *status.
  */
 
+PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename) {
+    PDF *newpdf;
+    int r;
+
+    newpdf = (PDF *) pdf_open (filename);
+    if (!newpdf) {
+        return NULL;
+    }
+
+    /* Copy all pdf_set parameters from old handle to new */
+
+    memcpy (&newpdf->p, &ps->p, sizeof (ps->p));
+    newpdf->newlpi = newpdf->p.lpi;
+
+    if ((r = dupstrs (newpdf)) != PDF_OK) {
+        fclose (newpdf->pdf);
+        free (newpdf);
+        errno = r;
+        return NULL;
+    }
+    newpdf->flags = ps->flags & (PDF_ACTIVE | PDF_UNCOMPRESSED);
+
+    return (PDF_HANDLE)newpdf;
+}
+
+/* Open a new file for output with an exclusive lock.
+ *
+ * Shared with sim_pdflpt, not a formal part of the API.
+ *
+ * Open for read/write, creating if non-existent but not truncating if exists.
+ * This can't be done without a race condition with fopen.  So,
+ * system-dependent code follows.  Open for exclusive access if possible to allow
+ * file watchers to know when the file is complete, and to prevent complaints about
+ * file "corruption" due to the file being incomplete.
+ */
+ 
+FILE *pdf_open_exclusive (const char *filename, const char *mode) {
+    int fd;
+    FILE *fh;
+
+#ifdef _WIN32
+    fd = _sopen (filename, _O_BINARY|_O_CREAT|_O_RDWR, _SH_DENYRW, _S_IREAD | _S_IWRITE);
+#else
+    fd = open (filename, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR |
+                                           S_IRGRP | S_IWGRP |
+                                           S_IROTH | S_IWOTH
+    #ifdef VMS
+                       , "alq=32", "deq=4096",
+                         "mbf=6", "mbc=127", "fop=cbt,tef",
+                         "rop=rah,wbh", "shr=nil", "ctx=stm"
+    #endif
+        );
+#endif
+    if (fd == -1) {
+        return NULL;
+    }
+#ifdef USE_FLOCK
+    if (flock (fd, LOCK_EX | LOCK_NB) == -1) {
+        close (fd);
+        return NULL;
+    }
+#endif
+
+#ifdef _WIN32
+    fh = _fdopen (fd, mode);
+#else
+    fh = fdopen (fd, mode);
+#endif
+    if (!fh) {
+        close (fd);
+    }
+
+    return fh;
+}
+
+/* Helper to copy constant strings to dynamic memory
+ * Used so default strings aren't a special case if they are
+ * replaced - they can just be free()'d.  Also used when
+ * copying parameters to a new file.
+ */
+
+static int dupstrs (PDF *pdf) {
+    int r;
+
+    if ((r = dupstr (pdf, &pdf->p.font)) != PDF_OK) {
+        return r;
+    }
+    if ((r = dupstr (pdf, &pdf->p.nfont)) != PDF_OK) {
+        free (pdf->p.font);
+        pdf->p.font = NULL;
+        return r;
+    }
+    if ((r = dupstr (pdf, &pdf->p.nbold)) != PDF_OK) {
+        free (pdf->p.font);
+        pdf->p.font = NULL;
+        free (pdf->p.nfont);
+        pdf->p.nfont = NULL;
+        return r;
+    }
+    if ((r = dupstr (pdf, &pdf->p.title)) != PDF_OK) {
+        free (pdf->p.font);
+        pdf->p.font = NULL;
+        free (pdf->p.nfont);
+        pdf->p.nfont = NULL;
+        free (pdf->p.nbold);
+        pdf->p.nbold = NULL;
+        return r;
+    }
+    if ((r = dupstr (pdf, &pdf->p.formfile)) != PDF_OK) {
+        free (pdf->p.font);
+        pdf->p.font = NULL;
+        free (pdf->p.nfont);
+        pdf->p.nfont = NULL;
+        free (pdf->p.nbold);
+        pdf->p.nbold = NULL;
+        free (pdf->p.title);
+        pdf->p.title = NULL;
+        return r;
+    }
+    return r;
+}
+ 
 static int dupstr (PDF *pdf, char **ptr) {
     char *p;
 
     if (!*ptr) {
-        return 0;
+        return PDF_OK;
     }
 
     p = (char *) malloc (strlen (*ptr) +1);
@@ -851,7 +982,7 @@ static int dupstr (PDF *pdf, char **ptr) {
     strcpy (p, *ptr);
     *ptr = p;
 
-    return 0;
+    return PDF_OK;
 }
 
 /* Set parameters.
@@ -903,10 +1034,10 @@ int pdf_print (PDF_HANDLE pdf, const char *string, size_t length) {
 
     if (!(ps->flags & PDF_WRITTEN)) {
 #define pdf ps
-        pdf->lpp = (long) (pdf->len * pdf->lpi);
+        pdf->lpp = (long) (pdf->p.len * pdf->p.lpi);
 
-        if (pdf->tof == ~1u) {
-            pdf->tof = ((unsigned int) (pdf->top * pdf->lpi));
+        if (pdf->p.tof == ~1u) {
+            pdf->p.tof = ((unsigned int) (pdf->p.top * pdf->p.lpi));
         }
 
         /* Some more checks - make sure there is a reasonable printable area.
@@ -915,31 +1046,31 @@ int pdf_print (PDF_HANDLE pdf, const char *string, size_t length) {
          */
 
         /* Min printable area 2.0 in high. Note that top/bot don't prevent printing. */
-        if ( ((int)(pdf->len)) < 2.0 ) {
+        if ( ((int)(pdf->p.len)) < 2.0 ) {
             ABORT (E(INCON_GEO));
         }
 
         /* Min printable area 3.0 in wide */
-        if ( ((int)(pdf->wid - (2*(pdf->margin + pdf->lno)))) < 3.0 ) {
+        if ( ((int)(pdf->p.wid - (2*(pdf->p.margin + pdf->p.lno)))) < 3.0 ) {
             ABORT (E(INCON_GEO));
         }
 
         /* Selected cols must fit in printable width */
-        if ( ((int)(pdf->wid - (2*(pdf->margin + pdf->lno)))) < (int)(pdf->cols / pdf->cpi) ) {
+        if ( ((int)(pdf->p.wid - (2*(pdf->p.margin + pdf->p.lno)))) < (int)(pdf->p.cols / pdf->p.cpi) ) {
             ABORT (E(INCON_GEO));
         }
 
         /* Printable height must have room for 4 lines */
-        if ( (pdf->len * pdf->lpi) < 4 ) {
+        if ( (pdf->p.len * pdf->p.lpi) < 4 ) {
             ABORT (E(INCON_GEO));
         }
 
         /* TOF offset can't be more than a page. */
-        if ( pdf->tof > (pdf->len * pdf->lpi)) {
+        if ( pdf->p.tof > (pdf->p.len * pdf->p.lpi)) {
             ABORT (E(INCON_GEO));
         }
         /* Bar height must be at least one line */
-        if (pdf->formtype != PDF_JPEG && pdf->barh < 1.0 / (double)pdf->lpi) {
+        if (pdf->p.formtype != PDF_PLAIN && pdf->p.barh < 1.0 / (double)pdf->p.lpi) {
             ABORT (E(INCON_GEO));
         }
 #undef pdf
@@ -1022,19 +1153,19 @@ int pdf_print (PDF_HANDLE pdf, const char *string, size_t length) {
 
         if (c == '\f') {
             if (ps->line == 0) {
-                ps->line = ps->tof +1;
+                ps->line = ps->p.tof +1;
             }
             FLUSH_LBUF;
             wrpage (ps);
             continue;
         } 
-        if (ps->line > ps->lpp + ps->tof) {
+        if (ps->line > ps->lpp + ps->p.tof) {
             FLUSH_LBUF;
             wrpage (ps);
         }
         if (c == '\n') {
             if (ps->line == 0) {
-                ps->line = ps->tof +1;
+                ps->line = ps->p.tof +1;
             }
             FLUSH_LBUF;
             ps->line++;
@@ -1042,7 +1173,7 @@ int pdf_print (PDF_HANDLE pdf, const char *string, size_t length) {
         }
         /* Ordinary data.  If first on page, set line to TOF. */
         if (ps->line == 0) {
-            ps->line = ps->tof +1;
+            ps->line = ps->p.tof +1;
         }
 
         lbuf[nc++] = c;
@@ -1070,7 +1201,7 @@ int pdf_where (PDF_HANDLE pdf, size_t *page, size_t *line) {
     p = ps->page +1;
     l = ps->line;
     if (l == 0) {
-        l = ps->tof +1;
+        l = ps->p.tof +1;
     }
     if (l > ps->lpp) {
         l -= (ps->lpp -1);
@@ -1085,6 +1216,18 @@ int pdf_where (PDF_HANDLE pdf, size_t *page, size_t *line) {
         *line = l;
     }
     return PDF_OK;
+}
+
+/* Determine if file is empty
+ */
+
+int pdf_is_empty (PDF_HANDLE pdf) {
+    valarg (ps);
+
+    if (ps->prevpc || ps->page || ps->line) {
+        return 0;
+    }
+    return 1;
 }
 
 /* Get list of known font names */
@@ -1174,7 +1317,6 @@ int pdf_checkpoint (PDF_HANDLE pdf) {
 int pdf_snapshot (PDF_HANDLE pdf, const char *filename) {
     FILE *fh;
     t_fpos fpos;
-#define SNAP_BUFSIZE  (8192)
     unsigned char *buffer;
     size_t n;
     int r;
@@ -1186,7 +1328,7 @@ int pdf_snapshot (PDF_HANDLE pdf, const char *filename) {
         return r;
     }
 
-    if ((buffer = (unsigned char *) malloc (SNAP_BUFSIZE)) == NULL) {
+    if ((buffer = (unsigned char *) malloc (COPY_BUFSIZE)) == NULL) {
         return errno;
     }
 
@@ -1206,7 +1348,7 @@ int pdf_snapshot (PDF_HANDLE pdf, const char *filename) {
 
     fseek (ps->pdf, 0, SEEK_SET);
 
-    while ((n = fread (buffer, 1, SNAP_BUFSIZE, ps->pdf)) > 0) {
+    while ((n = fread (buffer, 1, COPY_BUFSIZE, ps->pdf)) > 0) {
         size_t w;
 
         if ((w = fwrite (buffer, n, 1, fh)) != 1) {
@@ -1358,7 +1500,7 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
     char **font = NULL;
     char *oldf;
     PDF oldvals;
-    char tbuf[2048];
+    char tbuf[PDF_C_LINELEN -2]; /* Title is in () */
     int r = PDF_OK;
     size_t i;
     FILE *fh;
@@ -1372,14 +1514,14 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
         svalue = va_arg (ap, const char *);
         REJECT_NULL
         if (!xstrcasecmp (svalue, "NEW")) {
-            pdf->frequire = PDF_FILE_NEW;
+            pdf->p.frequire = PDF_FILE_NEW;
         } else if (!xstrcasecmp (svalue, "APPEND")) {
-            pdf->frequire = PDF_FILE_APPEND;
+            pdf->p.frequire = PDF_FILE_APPEND;
         } else if (!xstrcasecmp (svalue, "REPLACE")) {
-            pdf->frequire = PDF_FILE_REPLACE;
+            pdf->p.frequire = PDF_FILE_REPLACE;
 #if 0
         } else if (!xstrcasecmp (svalue, "AUTO")) {
-            pdf->frequire = PDF_FILE_AUTO;
+            pdf->p.frequire = PDF_FILE_AUTO;
 #endif
         } else {
             return E(BAD_SET);
@@ -1391,7 +1533,7 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
         REJECT_NULL
         for (i = 0; i < DIM (colors); i++) {
             if (!xstrcasecmp (svalue, colors[i].name)) {
-                pdf->formtype = i;
+                pdf->p.formtype = i;
                 return PDF_OK;
             }
         }
@@ -1399,19 +1541,19 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
 
     case PDF_TEXT_FONT:
         svalue = va_arg (ap, const char *);
-        font = &pdf->font;
+        font = &pdf->p.font;
         r = checkfont (svalue);
         break;
 
     case PDF_LNO_FONT:
         svalue = va_arg (ap, const char *);
-        font = &pdf->font;
+        font = &pdf->p.font;
         r = checkfont (svalue);
         break;
 
     case PDF_LABEL_FONT:
         svalue = va_arg (ap, const char *);
-        font = &pdf->font;
+        font = &pdf->p.font;
         r = checkfont (svalue);
         break;
 
@@ -1422,14 +1564,13 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
             return errno;
         }
         fclose (fh);
-        font = &pdf->formfile;
-        pdf->formtype = PDF_JPEG;
+        font = &pdf->p.formfile;
         break;
 
     case PDF_TITLE:
         svalue = va_arg (ap, const char *);
         REJECT_NULL
-        font = &pdf->title;
+        font = &pdf->p.title;
         oldf = tbuf;
 
         for (r = 0; svalue[r] && r < sizeof (tbuf) -2; r++) {
@@ -1488,68 +1629,68 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
         return PDF_OK;
 
     case PDF_TOP_MARGIN:
-        pdf->top = dvalue;
+        pdf->p.top = dvalue;
         break;
 
     case PDF_TOF_OFFSET:
-        pdf->tof = ivalue;
+        pdf->p.tof = ivalue;
         break;
 
     case PDF_BOTTOM_MARGIN:
-        pdf->bot = dvalue;
+        pdf->p.bot = dvalue;
         break;
 
     case PDF_SIDE_MARGIN:
         if (dvalue < 0.350) {
             ABORT (E(INVAL));
         }
-        pdf->margin = dvalue;
+        pdf->p.margin = dvalue;
         break;
 
     case PDF_LNO_WIDTH:
         if (dvalue && dvalue < 0.1) {
             ABORT (E(INVAL));
         }
-        pdf->lno = dvalue;
+        pdf->p.lno = dvalue;
         break;
 
     case PDF_BAR_HEIGHT:
         if (dvalue < 0.0) {
             ABORT (E(INVAL));
         }
-        pdf->barh = dvalue;
+        pdf->p.barh = dvalue;
         break;
 
     case PDF_CPI:
         if (dvalue < 1.0 || dvalue > 20.0) {
             ABORT (E(INVAL));
         }
-        pdf->cpi = dvalue;
+        pdf->p.cpi = dvalue;
         return PDF_OK;
 
     case PDF_LPI:
         if (dvalue != 6.0 && dvalue != 8.0) {
             ABORT (E(INVAL));
         }
-        pdf->lpi = ivalue;
+        pdf->p.lpi = ivalue;
         return PDF_OK;
 
     case PDF_PAGE_WIDTH:
         if (dvalue < 3.0) {
             ABORT (E(INVAL));
         }
-        pdf->wid = dvalue;
+        pdf->p.wid = dvalue;
         break;
 
     case PDF_PAGE_LENGTH:
         if (dvalue < 2.0) {
             ABORT (E(INVAL));
         }
-        pdf->len = dvalue;
+        pdf->p.len = dvalue;
         break;
 
     case PDF_COLS:
-        pdf->cols = ivalue;
+        pdf->p.cols = ivalue;
         break;
 
     default:
@@ -1587,7 +1728,7 @@ static void pdfinit (PDF *pdf) {
         ABORT (errno);
     }
 
-    if (pdf->frequire == PDF_FILE_APPEND) {
+    if (pdf->p.frequire == PDF_FILE_APPEND) {
         r = checkupdate (pdf);
         if (r == PDF_OK) {
             return;
@@ -1601,7 +1742,7 @@ static void pdfinit (PDF *pdf) {
             ABORT (errno);
         }
         if (ftell (pdf->pdf)) {
-            if (pdf->frequire == PDF_FILE_NEW) {
+            if (pdf->p.frequire == PDF_FILE_NEW) {
                 ABORT (E(NOT_EMPTY));
             }
             /* Existing, overwrite (PDF_FILE_REPLACE) */
@@ -1939,7 +2080,7 @@ static void wrhdr (PDF *pdf) {
          * After that, resuming from checkpoint.  File is already positioned.
          */
         if (!pdf->checkpp) {
-            if (fputs ("%PDF-1.4\n%\0302\0245\0302\0261\0303\0253\n", pdf->pdf) == EOF) {
+            if (fputs (PDF_C_HEADER, pdf->pdf) == EOF) {
                ABORT (E(IO_ERROR));
             }
         }
@@ -1970,7 +2111,7 @@ static void wrhdr (PDF *pdf) {
     pdf->anchorpp = ftell (pdf->pdf);
     fprintf (pdf->pdf, "%10.10s 0 R %s\nendobj\n\n", "", q);
 
-    /* When resuming from chckpoint, restore position for next page */
+    /* When resuming from checkpoint, restore position for next page */
 
     if (pdf->checkpp) {
         fseek (pdf->pdf, pdf->checkpp, SEEK_SET);
@@ -1991,8 +2132,8 @@ static void wrhdr (PDF *pdf) {
  */
 
 static void wrpage (PDF *pdf) {
-    double lm = xp( pdf->margin ) +
-        xp( ((pdf->wid - (pdf->margin *2)) - (pdf->cols/pdf->cpi))/2 );
+    double lm = xp( pdf->p.margin ) +
+        xp( ((pdf->p.wid - (pdf->p.margin *2)) - (pdf->p.cols/pdf->p.cpi))/2 );
 
     unsigned int obj, l;
 
@@ -2015,12 +2156,12 @@ static void wrpage (PDF *pdf) {
     wrstmf (pdf, PAGEBUF,
         " q 0 Tr %s rg BT /F1 %u Tf 1 0 0 1 %f %f Tm  %u TL %u Tc %u Tz %u %u Td",
              RGB_BLACK,
-             PT/pdf->lpi,
+             PT/pdf->p.lpi,
              lm, 0.0,
-             (unsigned int)( PT/pdf->lpi ),
+             (unsigned int)( PT/pdf->p.lpi ),
              0,
              100,
-             0, (unsigned int)( (pdf->len * PT) +2) );
+             0, (unsigned int)( (pdf->p.len * PT) +2) );
 
     for (l = 0; l < pdf->line && l < pdf->nlines; l++) {
         short *c = pdf->lines[l];
@@ -2083,8 +2224,8 @@ static void wrpage (PDF *pdf) {
      * Swap them with the the (now empty) lines at the top of the new page.
      * If they have been written, set the line accordingly.
      */
-    if (pdf->tof < pdf->nlines) {
-        for (l = 0; l < pdf->tof; l++) {
+    if (pdf->p.tof < pdf->nlines) {
+        for (l = 0; l < pdf->p.tof; l++) {
             unsigned int el = pdf->lpp + l;
 
             if (el >= pdf->nlines) {
@@ -2107,7 +2248,7 @@ static void wrpage (PDF *pdf) {
                 pdf->linesize[el] = ln;
 
                 if (pdf->linelen[l]) {
-                    pdf->line = pdf->tof +1;
+                    pdf->line = pdf->p.tof +1;
                 }
             }
         }
@@ -2142,21 +2283,21 @@ static void wrpage (PDF *pdf) {
 /* Setup form */
 
 static void setform (PDF *pdf) {
-    double tb = yp( pdf->top );                /* Top border */
-    double li = xp( pdf->margin );             /* Left inner (line) */
-    double ri = xp( pdf->wid - pdf->margin );  /* Right inner */
-    double lo = li - xp( pdf->lno );           /* Left outer */
+    double tb = yp( pdf->p.top );                /* Top border */
+    double li = xp( pdf->p.margin );             /* Left inner (line) */
+    double ri = xp( pdf->p.wid - pdf->p.margin );/* Right inner */
+    double lo = li - xp( pdf->p.lno );           /* Left outer */
     double p;
     unsigned int l;
-    const COLORS *color = &colors[(pdf->formtype == PDF_JPEG)?
-                                    PDF_PLAIN: pdf->formtype];
+    const COLORS *color = &colors[pdf->p.formtype];
 
     /* Setup items common to all pages */
 
     /* Holes */
     wrstmf (pdf, FORMBUF, 
         " q 1 w %s rg %s RG", RGB_HOLE_FILL, RGB_HOLE_LINE);
-/* These constants define the standard tractor feed requirements.
+
+/* These constants define the standard tractor feed dimensions.
  * There is no reason to make them user-accessible.
  */
 #define HOLE_DIA  (0.1575)
@@ -2164,32 +2305,41 @@ static void setform (PDF *pdf) {
 #define HOLE_HPOS (0.236)   /* Horizontal distance of center from edge */
 #define HOLE_VOFS (0.250)   /* Vertical offset of first & last holes from edge */
 
-    for( p = HOLE_VOFS; p <= (pdf->len - HOLE_VOFS); p += HOLE_VSP ) {
+    for( p = HOLE_VOFS; p <= (pdf->p.len - HOLE_VOFS); p += HOLE_VSP ) {
         circle (pdf, xp(HOLE_HPOS),            yp(p), xp(HOLE_DIA/2) );
-        circle (pdf, xp(pdf->wid - HOLE_HPOS), yp(p), xp(HOLE_DIA/2) );
+        circle (pdf, xp(pdf->p.wid - HOLE_HPOS), yp(p), xp(HOLE_DIA/2) );
     }
     wrstm (pdf, FORMBUF, QS(" B Q"));
 
     /* Customizable content */
 
-    if (pdf->formtype != PDF_PLAIN) {
-        wrstm (pdf, FORMBUF, QS(" q "));
+    if (pdf->p.formtype != PDF_PLAIN || pdf->p.formfile) {
+        wrstm (pdf, FORMBUF, QS(" q"));
 
-        switch (pdf->formtype) {
-        case PDF_JPEG:
-            imageform (pdf);
+        switch (pdf->p.formtype) {
+        case PDF_PLAIN:
             break;
+
         default:
             barform (pdf);
             break;
         }
 
+        /* Apply image over any form.
+         * The image will be merged with the form, effectively
+         * darkening the form where they overlap.
+         */
+
+        if (pdf->p.formfile) {
+            imageform (pdf);
+        }
+
         wrstm (pdf, FORMBUF, QS(" Q"));
     }
 
-    /* Line numbers - apply after any enclosing paths */
+    /* Line numbers */
 
-    if (pdf->lno) {
+    if (pdf->p.lno) {
         wrstmf (pdf, FORMBUF, 
             " q 1 w BT 0 Tr %s rg"
             " /F3 %u Tf 55 Tz 1 0 0 1 %f %f Tm %u TL (6)' /F2 %u Tf",
@@ -2199,7 +2349,7 @@ static void setform (PDF *pdf) {
              PT/6,
              PT/6
              );
-        for (l = 1; l <= ((pdf->len - (pdf->top+pdf->bot)) * 6); l++) { /* 6 LPI labels */
+        for (l = 1; l <= ((pdf->p.len - (pdf->p.top+pdf->p.bot)) * 6); l++) { /* 6 LPI labels */
             wrstmf (pdf, FORMBUF, " (%2u)'", l);
         }
 
@@ -2210,7 +2360,7 @@ static void setform (PDF *pdf) {
                  PT/8,
                  PT/8
                  );
-        for (l = 1; l <= ((pdf->len - (pdf->top+pdf->bot)) * 8); l++) { /* 8 LPI labels */
+        for (l = 1; l <= ((pdf->p.len - (pdf->p.top+pdf->p.bot)) * 8); l++) { /* 8 LPI labels */
             wrstmf (pdf, FORMBUF, " (%2u)'", l);
         }
 
@@ -2224,27 +2374,26 @@ static void setform (PDF *pdf) {
  */
 
 static void barform (PDF *pdf) {
-    double tb = yp( pdf->top );                /* Top border */
-    double bb = yp( pdf->len - pdf->bot );     /* Bottom border */
+    double tb = yp( pdf->p.top );                /* Top border */
+    double bb = yp( pdf->p.len - pdf->p.bot );   /* Bottom border */
 
-    double li = xp( pdf->margin );             /* Left inner */
-    double ri = xp( pdf->wid - pdf->margin );  /* Right inner */
+    double li = xp( pdf->p.margin );             /* Left inner */
+    double ri = xp( pdf->p.wid - pdf->p.margin );/* Right inner */
 
-    double lnw = xp ( pdf->lno );              /* Line number col width */
+    double lnw = xp ( pdf->p.lno );              /* Line number col width */
 
-    double lo = li - xp( pdf->lno );           /* Left inner */
-    double ro = ri + xp( pdf->lno );           /* Right inner */
+    double lo = li - xp( pdf->p.lno );           /* Left inner */
+    double ro = ri + xp( pdf->p.lno );           /* Right inner */
 
-    double cbr = lnw / 2;                      /* Corner border radius */
+    double cbr = lnw / 2;                        /* Corner border radius */
     double k   = CircleK * cbr;
 
     unsigned int bars, b;
-    const COLORS *color = &colors[(pdf->formtype == PDF_JPEG)?
-                                    PDF_PLAIN: pdf->formtype];
+    const COLORS *color = &colors[pdf->p.formtype];
 
     /* Draw outline clockwise as a closed path */
     wrstmf (pdf, FORMBUF,
-            "1 w %s RG %s rg %f %f m %f %f %f %f %f %f c %f %f l"
+            " 1 w %s RG %s rg %f %f m %f %f %f %f %f %f c %f %f l"
             " %f %f %f %f %f %f c %f %f l %f %f %f %f %f %f c"
             " %f %f l %f %f %f %f %f %f c h",
             color->line, RGB_WHITE,            /* Line, leave inside white */
@@ -2258,7 +2407,7 @@ static void barform (PDF *pdf) {
             lo+cbr-k, bb, lo, bb+cbr-k, lo, bb+cbr
         );
     /* Inner lines */
-    if (pdf->lno) {
+    if (pdf->p.lno) {
         wrstmf (pdf, FORMBUF, " %f %f m %f %f l %f %f m %f %f l",
                 li, tb,                        /* Left top */
                 li, bb,                        /* Left inside */
@@ -2269,11 +2418,11 @@ static void barform (PDF *pdf) {
     wrstmf (pdf, FORMBUF, " B %s rg %s RG", color->bar, color->line);
 
     /* Bars */
-    bars = (unsigned int) (((pdf->len - (pdf->top+pdf->bot)) / pdf->barh) +0.5);
+    bars = (unsigned int) (((pdf->p.len - (pdf->p.top+pdf->p.bot)) / pdf->p.barh) +0.5);
 
     for (b = 0; b < bars; b++) {
-        double bart = tb - (b * (pdf->barh * PT));
-        double barb = bart - (pdf->barh *PT);
+        double bart = tb - (b * (pdf->p.barh * PT));
+        double barb = bart - (pdf->p.barh *PT);
 
         if( !(b & 1) ) {
             wrstmf (pdf, FORMBUF, " %f %f %f %f re",
@@ -2286,7 +2435,8 @@ static void barform (PDF *pdf) {
 }
 
 /* Generate body for an image-based form
- * This will also write an XObject with the image data.
+ * This will also write an XObject with the image data and any rendering
+ * objects.
  */
 
 static void imageform (PDF *pdf) {
@@ -2295,13 +2445,18 @@ static void imageform (PDF *pdf) {
     FILE *fh;
     int c;
     double imgwid, imghgt, pw, sh, scale, vpos;
-    unsigned char buf[17];
+    size_t n;
+    unsigned char *buf;
+    char *jbuf;
+    size_t jbsize, jbused;
 
-    if (pdf->flags & PDF_INIT) { /* Can't change image after init */
-        return;
+    if (!(fh = fopen (pdf->p.formfile, "rb"))) {
+        ABORT (errno);
     }
 
-    if (!(fh = fopen (pdf->formfile, "rb"))) {
+    buf = (unsigned char *) malloc (COPY_BUFSIZE);
+    if (!buf) {
+        fclose (fh);
         ABORT (errno);
     }
 
@@ -2310,11 +2465,13 @@ static void imageform (PDF *pdf) {
 
     if (fread (buf, 4, 1, fh) != 1) {
         fclose (fh);
+        free (buf);
         ABORT (E(BAD_JPEG));
     }
     if (!(buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF &&
           (buf[3] & ~0x01) == 0xE0)) {
         fclose (fh);
+        free (buf);
         ABORT (E(BAD_JPEG));
     }
     c = buf[3];
@@ -2323,12 +2480,14 @@ static void imageform (PDF *pdf) {
     while (1) {
         if (c == 0xDA) {
             fclose (fh);
+            free (buf);
             ABORT (E(BAD_JPEG));
         }
         while (1) {
             c = fgetc (fh);
             if (c == EOF) {
                 fclose (fh);
+                free (buf);
                 ABORT (E(BAD_JPEG));
             }
             if (c == 0xFF)
@@ -2338,6 +2497,7 @@ static void imageform (PDF *pdf) {
             c = fgetc (fh);
             if (c == EOF) {
                 fclose (fh);
+                free (buf);
                 ABORT (E(BAD_JPEG));
             }
             if (c != 0xFF)
@@ -2346,6 +2506,7 @@ static void imageform (PDF *pdf) {
         if (c >= 0xC0 && c <= 0xC3) {
             if (fread (buf, 7, 1, fh) != 1) {
                 fclose (fh);
+                free (buf);
                 ABORT (E(BAD_JPEG));
             }
             imgwid = (double) ((buf[5] << 8) | buf[6]);
@@ -2354,11 +2515,13 @@ static void imageform (PDF *pdf) {
         }
         if (fread (buf, 2, 1, fh) != 1 ) {
             fclose (fh);
+            free (buf);
             ABORT (E(BAD_JPEG));
         }
         len = (buf[0] << 8) | buf[1];
         if (len < 2) {
             fclose (fh);
+            free (buf);
             ABORT (E(BAD_JPEG));
         }
         fseek (fh, len -2, SEEK_CUR);
@@ -2377,37 +2540,71 @@ static void imageform (PDF *pdf) {
 
     if (errno || ferror (fh)) {
         fclose (fh);
+        free (buf);
         ABORT (E(BAD_JPEG));
     }
 
     pdf -> formobj =
         obj = addobj(pdf);
-    fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
-        " /Width %u /Height %u /Length %lu /Filter /DCTDecode"
-        " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
-        obj, ((unsigned int)imgwid), ((unsigned int)imghgt), fs);
 
-    while ((c = fgetc (fh)) != EOF) {
-        fputc (c, pdf->pdf);
+    /* Form images seem to be compressible, presumably due to the
+     * large amount of constant background.
+     */
+    jbuf = NULL;
+    jbsize = 0;
+    jbused = 0;
+
+    while ((n = fread (buf, 1, COPY_BUFSIZE, fh)) > 0) {
+        wrstm (pdf, &jbuf, &jbsize, &jbused, (char *) buf, n);
     }
+
+    if ((pdf->flags & PDF_UNCOMPRESSED) || encstm (pdf, jbuf, jbused)) {
+        fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
+                 " /Width %u /Height %u /Length %lu /Filter /DCTDecode"
+                 " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
+                 obj, ((unsigned int)imgwid), ((unsigned int)imghgt), jbused);
+        fwrite (jbuf, jbused, 1, pdf->pdf);
+    } else {
+        /* Close to PDF_C_LINELEN */
+        fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
+                 " /Width %u /Height %u /Length %lu /DL %u"
+                 " /Filter [ /LZWDecode /DCTDecode ]"
+                 " /DecodeParams [ << /EarlyChange 0 >> null ]"
+                 " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
+                 obj, ((unsigned int)imgwid), ((unsigned int)imghgt),
+                 pdf->lzwused, jbused);
+        fwrite (pdf->lzwbuf, pdf->lzwused, 1, pdf->pdf);
+    }
+    free (jbuf);
+    free (buf);
 
     if (ferror (fh) || fclose (fh) == EOF) {
         ABORT (E(OTHER_IO_ERROR));
     }
     fprintf (pdf->pdf, "\nendstream\nendobj\n\n");
 
+    /* Add a graphics state dictionary for rendering the image.
+     * The page renderer knows that it is the image object +1.
+     */
+    obj = addobj (pdf);
+    fprintf (pdf->pdf, "%u 0 obj\n<< /Type /ExtGState"
+             " /BM /Multiply >>\nendobj\n\n", obj);
+
     /* Scale to usable page width and center vertically.
+     * Allow for inner line width.
      * Add to the per-page form data.
      */
 
-    pw = pdf->wid-(2*(pdf->margin + pdf->lno));
+    pw = pdf->p.wid-(2*(pdf->p.margin +(1/PT)));
     scale = pw / imgwid;
     sh = imghgt * scale * PT;
-    vpos = ((pdf->len *PT) - sh)/2;
-    wrstmf (pdf, FORMBUF, " %f 0 0 %f %f %f cm /form Do",
-        xp(pw), sh, xp(pdf->margin+pdf->lno), vpos);
+    vpos = ((pdf->p.len *PT) - sh)/2;
+    wrstmf (pdf, FORMBUF, " q /igs gs %f 0 0 %f %f %f cm /form Do Q",
+            xp(pw)-2, sh, xp(pdf->p.margin) +1, vpos);
 
     pdf->pbase = obj +1;
+
+    return;
 }
 
 /* The work of close.
@@ -2465,9 +2662,9 @@ static int pdfclose (PDF *pdf, int checkpoint) {
     }
 
     if (pdf->line && !(pdf->flags & PDF_WRITTEN) && (pdf->flags & PDF_INIT)) {
-        /* If a checkpoint held a partial page, the headers have not been written
-         * if there was not subsequent output.
-         * In this case, the headers and the partial page are written here.
+        /* If a checkpoint held a partial page, the headers have only been written
+         * if there was subsequent output.
+         * If there was none, the headers and the partial page are written here.
          */
         wrhdr (pdf);
         if (!pdf->formlen) {
@@ -2497,35 +2694,41 @@ static int pdfclose (PDF *pdf, int checkpoint) {
              " << /Type /Pages /Kids [", plist);
     
     for(p = 0; p < pdf->page; p++) {
+        if (p && ((p % (PDF_C_LINELEN / 15)) == 0)) {
+            fputc ('\n', pdf->pdf);
+        }
         fprintf (pdf->pdf," %u 0 R",
                  (plist + 1 + 1 + p));
     }
-    fprintf (pdf->pdf, "] /Count %u /Parent %010u 0 R >>\nendobj\n\n",
+    fprintf (pdf->pdf, "]\n /Count %u /Parent %010u 0 R >>\nendobj\n\n",
                         pdf->page, anchor);
 
-    /* Font directory object */
+    /* Font dictionary object */
 
     (void) addobj (pdf);
     fprintf (pdf->pdf, "%u 0 obj\n"
              " << /F1 << /Type /Font /Subtype /Type1 /BaseFont /%s >>"
              " /F2 << /Type /Font /Subtype /Type1 /BaseFont /%s >>"
              " /F3 << /Type /Font /Subtype /Type1 /BaseFont /%s >> >>\n"
-             "endobj\n\n", plist+1, pdf->font, pdf->nfont, pdf->nbold);
+             "endobj\n\n", plist+1, pdf->p.font, pdf->p.nfont, pdf->p.nbold);
 
     /* Each page leaf object */
 
     for( p = 0; p < pdf->page; p++) {
         unsigned int obj = addobj (pdf);
 
+        /* These are close to PDF_C_LINELEN */
+
         fprintf (pdf->pdf, "%u 0 obj\n"
                  " << /Type /Page /Parent %u 0 R /Resources << /Font %u 0 R"
                  " /ProcSet [/PDF /Text /ImageC /ImageI /ImageB]",
                  obj, plist, plist +1);
-        if (pdf->formobj) {
+        if (pdf->formobj) { /* Form image resources */
             fprintf (pdf->pdf, " /XObject << /form %u 0 R >>", pdf->formobj);
+            fprintf (pdf->pdf, " /ExtGState << /igs %u 0 R >>", pdf->formobj +1);
         }
         fprintf (pdf->pdf, " >> /MediaBox [0 0 %f %f] /Contents %u 0 R >>\n"
-                 "endobj\n\n", pdf->wid * PT, pdf->len * PT,
+                 "endobj\n\n", pdf->p.wid * PT, pdf->p.len * PT,
                  pdf->pbase + p );
     }
 
@@ -2548,12 +2751,12 @@ static int pdfclose (PDF *pdf, int checkpoint) {
     cat = addobj (pdf);
     fprintf (pdf->pdf, "%u 0 obj\n"
              "  << /Type /Catalog /Pages %u 0 R"
-             " /PageLayout /SinglePage"
+             " /PageLayout /SinglePage\n"
              " /ViewerPreferences << ", cat, aobj);
-    fputs ((pdf->wid > pdf->len)?
+    fputs ((pdf->p.wid > pdf->p.len)?
             " /Duplex /DuplexFlipLongEdge":
             " /Duplex /DuplexFlipShortEdge", pdf->pdf);
-    if (strcmp (pdf->title, defaults.title)) {
+    if (strcmp (pdf->p.title, defaults.p.title)) {
         fputs (
             " /DisplayDocTitle true", pdf->pdf);
     }
@@ -2569,11 +2772,11 @@ static int pdfclose (PDF *pdf, int checkpoint) {
 
     iobj = addobj (pdf);
     sprintf (ibuf, "%u 0 obj\n"
-             "  << /Title (%s) /Creator (Midnight Engineering)"
+             "  << /Title \n(%s)\n /Creator (Midnight Engineering)"
              " /Subject (Preserving the history of computing)"
-             " /Producer (LPTPDF Version 1.0)"
+             " /Producer (LPTPDF Version " LPT2PDF_VERSION ")"
              " /CreationDate (D:%s) /ModDate (D:%s) >>\n"
-             "endobj\n\n", iobj, pdf->title,
+             "endobj\n\n", iobj, pdf->p.title,
              ((pdf->flags & PDF_UPDATING)? pdf->ctime: tbuf), tbuf);
 
     SHA1Input (&pdf->sha1, (uint8_t *)ibuf, strlen (ibuf));
@@ -2661,11 +2864,11 @@ static void pdf_free (PDF *pdf) {
     }
     free (pdf->linelen);
     free (pdf->linesize);
-    free (pdf->font);
-    free (pdf->nfont);
-    free (pdf->nbold);
-    free (pdf->title);
-    free (pdf->formfile);
+    free (pdf->p.font);
+    free (pdf->p.nfont);
+    free (pdf->p.nbold);
+    free (pdf->p.title);
+    free (pdf->p.formfile);
     free (pdf->formbuf);
     free (pdf->trail);
     free (pdf->xref);

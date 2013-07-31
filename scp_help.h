@@ -41,6 +41,8 @@
  *
  * Lines beginning with whitespace are displayed as part of the current topic, except:
  *   * The leading white space is replaced by a standard indentation of 4 spaces.
+ *     Additional indentation, where appropriate, can be obtained with '+', 4 spaces each.
+ *
  *   * The following % escapes are recognized:
  *     * %D    - Inserts the name of the device     (e.g. "DTA").
  *     * %U    - Inserts the name of the unit       (e.g. "DTA0").
@@ -48,7 +50,12 @@
  *     * %#s   - Inserts the string suppled in the "#"th optional argument to the help
  *               routine.  # starts with 1.  Any embedded newlines will cause following
  *               text to be indented.
- *     * %%     - Inserts a literal %.
+ *     * %#H   - Appends the #th optional argument to the help text.  Use to add common
+ *               help to device specific help.  The text is placed AFTER the current help
+ *               string, and after any previous %H inclusions.  Parameter numbers restart
+ *               with the new string, following the last parameter used by the previous tree.
+ *     * %%    - Inserts a literal %.
+ *     * %+    - Inserts a literal +.
  *      - Any other escape is reserved and will cause an exception.  However, the goal
  *        is to provide help, not a general formatting facility.  Use sprintf to a
  *        local buffer, and pass that as a string if more general formatting is required.
@@ -139,25 +146,32 @@
  *   calls scp_help.  Most of the arguments are the same as those of the device help routine.
  *
  *  t_stat scp_help (FILE *st, struct sim_device *dptr,
- *                   struct sim_unit *uptr, const char *help, char *cptr, ...)
+ *                   struct sim_unit *uptr, int flag, const char *help, char *cptr, ...)
  *
  *  If you need to pass the variable argument list from another routine, use:
  * 
  *  t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
- *                    struct sim_unit *uptr, const char *help, char *cptr, va_list ap)
+ *                    struct sim_unit *uptr, int flag, const char *help, char *cptr, va_list ap)
  *
  *  To obtain the help from an external file (Note this reads the entire file into memory):
  *  t_stat scp_helpFromFile (FILE *st, struct sim_device *dptr,
- *                            struct sim_unit *uptr, const char *helpfile, char *cptr, ...)
+ *                            struct sim_unit *uptr, int flag, const char *helpfile, char *cptr, ...)
  *  and for va_list:
  *  t_stat scp_vhelpFromFile (FILE *st, struct sim_device *dptr,
- *                            struct sim_unit *uptr, const char *helpfile, char *cptr, va_list ap) {
+ *                            struct sim_unit *uptr, int flag, const char *helpfile, char *cptr, va_list ap) {
  *
  * dptr and uptr are only used if the %D and/or %U escapes are encountered.
  * help is the help text; helpfile is the help file name.
  *
+ * flag is usually the flag from the help command dispatch.  SCP_HELP_FLAT is set in non-interactive
+ * environments.  When this flag, or DEV_FLATHELP in DEVICE.flags is set, the entire help text
+ * will be flattened and displayed in outline form.
+ *
  * Help files are easier to edit, but can become separated from the SimH executable.  Finding them
- * at runtime can also be a challenge.  SimH tries...
+ * at runtime can also be a challenge.  SimH tries...but the project standard is to embed help
+ * as strings in the device.  (It may be easier to develop help as a file before converting it
+ * to a string.)
+ *
  * Lines beginning with ';' will be ignored.
  * 
  * Here is a worked-out example:

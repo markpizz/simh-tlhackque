@@ -32,6 +32,9 @@
 */
 
 #include <sim_defs.h>
+#include <sim_tmxr.h>
+#include <sim_console.h>
+
 #include <sim_pdflpt.h>
 
 #define DIM(x) (sizeof (x) / sizeof ((x)[0]))
@@ -42,13 +45,82 @@
 #define PDFLPT_IDLE_TIME (10)
 #endif
 
+/* Template and limit for generating spool file names.
+ * Names will be 1 - SPOOL_FN_MAX.
+ * SPOOL_FN is inserted before the file extension,
+ * and must be wide enough to accomodate SPOOL_FN_MAX.
+ */
+#ifdef VMS
+#define SPOOL_FN "_%05u"
+#else
+#define SPOOL_FN ".%05u"
+#endif
+#define SPOOL_FN_MAX (99999)
+
+/* Hard errors when generating a spool file name */
+
+static const int noretry[] = {
+    PDF_E_BAD_FILENAME,
+#ifdef ENOMEM
+    ENOMEM,
+#endif
+#ifdef EDQUOT
+    EDQUOT,
+#endif
+#ifdef EFAULT
+    EFAULT,
+#endif
+#ifdef EINVAL
+    EINVAL,
+#endif
+#ifdef EIO
+    EIO,
+#endif
+#ifdef EISDIR
+    EISDIR,
+#endif
+#ifdef ELOOP
+    ELOOP,
+#endif
+#ifdef EMEDIUMTYPE
+    EMEDIUMTYPE,
+#endif
+#ifdef EMFILE
+    EMFILE,
+#endif
+#ifdef EMLINK
+    EMLINK,
+#endif
+#ifdef ENAMETOOLONG
+    ENAMETOOLONG,
+#endif
+#ifdef ENFILE
+    ENFILE,
+#endif
+#ifdef ENODEV
+    ENODEV,
+#endif
+#ifdef ENOSPC
+    ENOSPC,
+#endif
+#ifdef ENXIO
+    ENXIO,
+#endif
+#ifdef EROFS
+    EROFS,
+#endif
+};
+
 /* Context beyond the UNIT */
 
 typedef struct {
     PDF_HANDLE pdfh;
     uint32 uflags;
+    uint32 udflags;
     void  (*io_flush)(UNIT *up);
     t_stat (*reset) (DEVICE *dp);
+    char *fntemplate;
+    uint32 fileseq;
     UNIT idle_unit;/* Used for idle detection and additional context
                     * Usage of device-specific context:
                     * u3 - requested idle timeout.
@@ -63,6 +135,10 @@ typedef struct {
 
 /* Internal functions */
 
+static t_stat spool_file (UNIT *uptr, TMLN *lp);
+static t_bool retryable_error (int error);
+static t_bool setup_template (PCTX *ctx, const char *filename, const char *ext);
+static void next_spoolname (PCTX *ctx, char *newname, size_t size);
 static t_stat reset (DEVICE *dptr);
 static t_stat idle_svc (UNIT *uptr);
 static void set_idle_timer (UNIT *uptr);
@@ -99,6 +175,7 @@ static void createctx (UNIT *uptr) {
 
     /* Record non-pdf device flags */
     ctx->uflags = uptr->flags;
+    ctx->udflags = uptr->dynflags;
 
     /* Hook io_flush function */
 
@@ -111,6 +188,12 @@ static void createctx (UNIT *uptr) {
     if (dptr != NULL) {
         ctx->reset = dptr->reset;
         dptr->reset = &reset;
+        if (!dptr->help) {
+            dptr->help = pdflpt_help;
+        }
+        if (!dptr->attach_help) {
+            dptr->attach_help = pdflpt_attach_help;
+        }
     }
 
     /* Initialize the idle unit */
@@ -185,9 +268,9 @@ static const ARG argtable[] = {
 t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     DEVICE *dptr;
     t_stat reason;
-    char *p, *fn;
+    char *p, *fn, *ext;
     char gbuf[CBUFSIZE], vbuf[CBUFSIZE];
-    size_t page, line;
+    size_t page, line, fnsize = CBUFSIZE;
 
     if (uptr->flags & UNIT_DIS)
         return SCPE_UDIS;
@@ -205,18 +288,64 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     pdf = NULL;
 
-    p = match_ext (cptr, "PDF");
-    if (!p) {
+    ext = match_ext (cptr, "PDF");
+    if (!ext) {
         if (pdfctx->uflags & UNIT_SEQ) {
             uptr->flags |= UNIT_SEQ;
         }
-        reason = attach_unit (uptr, cptr);
+        if (!(pdfctx->udflags & UNIT_NO_FIO)) {
+            uptr->dynflags &= ~UNIT_NO_FIO;
+        }
+        if (sim_switches & SWMASK ('S')) {
+            ext = strrchr (cptr, '.');
+            if (!ext) {
+                ext = cptr + strlen (cptr);
+            }
+            if (!setup_template (pdfctx, cptr, ext)) {
+                return SCPE_MEM;
+            }
+            reason = SCPE_OPENERR;
+
+            do {
+                uptr->fileref = pdf_open_exclusive (cptr, "rb+");
+                if (uptr->fileref == NULL ) {
+                    if (!retryable_error (errno)) {
+                        if (!sim_quiet) {
+                            perror (cptr);
+                        }
+                        break;
+                    }
+                } else {
+                    fseek (uptr->fileref, 0, SEEK_END);
+                    if (ftell (uptr->fileref) == 0) {
+                        reason = SCPE_OK;
+                        uptr->filename = (char *) calloc (CBUFSIZE, sizeof (char)); 
+                        strcpy (uptr->filename, cptr);
+                        uptr->flags |= UNIT_ATT;
+                        break;
+                    }
+                    fclose (uptr->fileref);
+                }
+                next_spoolname (pdfctx, cptr, fnsize);
+            } while (pdfctx->fileseq < SPOOL_FN_MAX);
+        } else {
+            free (pdfctx->fntemplate);
+            pdfctx->fntemplate = NULL;
+            reason = attach_unit (uptr, cptr);
+        }
+
         if (reason == SCPE_OK) {
             sim_fseek (uptr->fileref, 0, SEEK_END);
             uptr->pos = (t_addr)sim_ftell (uptr->fileref);
+
+            if (pdfctx->fntemplate) {
+                reason = sim_con_register_printer (uptr, &spool_file);
+            } else {
+                reason = sim_con_register_printer (uptr, NULL);
+            }
         }
         return reason;
-    }
+    } /* Non-PDF setup */
 
     if (sim_switches & SIM_SW_REST) {
         return SCPE_NOATT;
@@ -232,6 +361,22 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     if (!*fn) {
         return SCPE_OPENERR;
     }
+    fnsize -= fn - cptr;
+
+    /* Setup template for spooling if requested */
+
+    if (sim_switches & SWMASK ('S')) {
+        /* Only spool to existing files if they are empty */
+
+        sim_switches |= SWMASK ('R');
+
+        if (!setup_template (pdfctx, fn, ext)) {
+            return SCPE_MEM;
+        }
+    } else {
+        free (pdfctx->fntemplate);
+        pdfctx->fntemplate = NULL;
+    }
 
     if (sim_switches & SWMASK ('E')) {
         reason = pdf_file (cptr);
@@ -245,11 +390,29 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         }
     }
 
-    pdf = pdf_open (fn);
+    /* Open file.
+     * If spooling and an error, try the next sequential file in case
+     * the specified base filename is in use.
+     */
+
+    do {
+        pdf = pdf_open (fn);
+        if (pdf || !pdfctx->fntemplate) {
+            break;
+        }
+        if (!retryable_error (errno)) {
+            if (!sim_quiet) {
+                pdflpt_perror (NULL, fn);
+            }
+            return SCPE_OPENERR;
+        }
+        next_spoolname (pdfctx, fn, fnsize);
+    } while (pdfctx->fileseq < SPOOL_FN_MAX);
+
     if (!pdf) {
         return SCPE_OPENERR;
     }
-
+    
     switch (sim_switches & (SWMASK('E') | SWMASK('N') | SWMASK('R'))) {
     case SWMASK('N'):
         reason = pdf_set (pdf, PDF_FILE_REQUIRE, "REPLACE"); /* Overwrite existing */
@@ -266,6 +429,9 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     default:
         pdf_close (pdf);
         pdf = NULL;
+        if (!sim_quiet) {
+            printf ("Invalid combination of switches\n");
+        }
         return SCPE_ARG;
     }
 
@@ -390,19 +556,47 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     reason = pdf_print (pdf, "", 0);
     if (reason != SCPE_OK) {
-        if (!sim_quiet) {
-            pdf_perror (pdf, gbuf);
+        /* If setting up a spooled file, retry if possible */
+
+        if (sim_switches & SWMASK ('S') && retryable_error (reason)) {
+            size_t n;
+
+            for (n = 1; n <= SPOOL_FN_MAX; n++) {
+                PDF_HANDLE newpdf;
+
+                next_spoolname (pdfctx, fn, fnsize);
+
+                newpdf = pdf_newfile (pdf, fn);
+                if (newpdf) {
+                    reason = pdf_print (newpdf, "", 0);
+                    if (reason == SCPE_OK) {
+                        pdf_close (pdf);
+                        pdf = newpdf;
+                        break;
+                    }
+                    pdf_close (newpdf);
+                } else {
+                    reason = errno;
+                }
+                if (!retryable_error (reason)) {
+                    break;
+                }
+            }
         }
-        pdf_close (pdf);
-        pdf = NULL;
-        return SCPE_ARG;
+        if (reason != SCPE_OK) {
+            if (!sim_quiet) {
+                pdf_perror (pdf, fn);
+            }
+            pdf_close (pdf);
+            pdf = NULL;
+            return SCPE_ARG;
+        }
     }
 
     /* Give I/O a clean start */
 
     pdf_clearerr (pdf);
 
-    /* Why does attach_unit use CBUFSIZE rather than strlen(name) +1? */
     uptr->filename = (char *) calloc (CBUFSIZE, sizeof (char));
     if (uptr->filename == NULL) {
         pdf_close (pdf);
@@ -414,7 +608,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     pdf_where (pdf, &page, &line);
 
     if (!sim_quiet) {
-        if (dptr->numunits >1) {
+        if (dptr->numunits > 1) {
             printf ("%s%u Ready at page %u line %u of %s\n",
                     dptr->name, uptr - dptr->units, page, line,
                     uptr->filename);
@@ -427,17 +621,28 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     pdfctx->bc = 0;
 
+    if (pdfctx->fntemplate) {
+        reason = sim_con_register_printer (uptr, &spool_file);
+    } else {
+        reason = sim_con_register_printer (uptr, NULL);
+    }
+
     /* Declare this not a SEQUENTIAL unit so scp won't do random seeks. */
 
     uptr->flags &= ~UNIT_SEQ;
+
+    /* Prevent SCP interference with file position, contents */
+
+    uptr->dynflags |= UNIT_NO_FIO;
+
     uptr->flags = uptr->flags | UNIT_ATT;
 
-    /* PDF files can't be written to randomly, expose page number
+    /* PDF files can't be written to randomly. Expose page number
      * to show progress (but save/restore won't work.(
      */
     uptr->pos = page;
 
-    return SCPE_OK;
+    return reason;
 }
 
 /* detach_unit replacement
@@ -455,6 +660,8 @@ t_stat pdflpt_detach (UNIT *uptr) {
     SETCTX (SCPE_MEM);
 
     pdflpt_reset (uptr);
+
+    sim_con_register_printer (uptr, NULL);
 
     if (!pdf) {
         return detach_unit (uptr);
@@ -494,14 +701,232 @@ t_stat pdflpt_detach (UNIT *uptr) {
         printf ( "Closed %s, on page %u\n", uptr->filename, page );
     }
 
+    free (pdfctx->fntemplate);
+    pdfctx->fntemplate = NULL;
+
     if (pdfctx->uflags & UNIT_SEQ) {
         uptr->flags |= UNIT_SEQ;
+    }
+    if (!(pdfctx->udflags & UNIT_NO_FIO)) {
+        uptr->dynflags &= ~UNIT_NO_FIO;
     }
     uptr->flags = uptr->flags & ~(UNIT_ATT | UNIT_RO);
     free (uptr->filename);
     uptr->filename = NULL;
 
     return SCPE_OK;
+}
+
+/* Spool callback
+ *  Called by the console print command to release the active file
+ *  and replace it with a new one.
+ *
+ *  For PDF files, the old file must remain open until a new one replaces
+ *  it.  This is because the old file's parameters are used to setup the new.
+ *
+ *  For other file types, the old file is closed and a new file is
+ *  attached.  
+ *
+ * If the file is empty (in the sense of no printable data - metadata does
+ * not count), the file is not closed and an error is returned to indicate
+ * that nothing was released.
+ */
+
+static t_stat spool_file (UNIT *uptr, TMLN *lp) {
+    DEVICE *dptr;
+    PDF_HANDLE newpdf = NULL;
+    size_t n, page, line;
+    int r;
+    char newname[CBUFSIZE];
+    char devname[CBUFSIZE];
+    t_bool pdf_mode;
+
+    SETCTX (SCPE_MEM);
+
+    if (!pdfctx->fntemplate || !(uptr->flags & UNIT_ATT)) {
+        return SCPE_EOF;
+    }
+
+    /* Unit is setup for spooling.
+     * Try to open a new file.
+     */
+
+    if ((dptr = find_dev_from_unit (uptr)) == NULL)
+        return SCPE_ARG;
+
+    if (dptr->numunits > 1) {
+        sprintf (devname, "%s%u ", dptr->name, uptr - dptr->units);
+    } else {
+        sprintf (devname, "%s ", dptr->name);
+    }
+
+    pdf_mode = pdflpt_getmode (uptr) == PDFLPT_IS_PDF;
+    if (pdf_mode) {
+        if (!pdfctx->bc && pdf_is_empty (pdf)) {
+            return SCPE_EOF;
+        }
+    } else {
+        if (uptr->pos == 0) {
+            return SCPE_EOF;
+        }
+        if (!sim_quiet) {
+            if (lp)
+                tmxr_linemsgf (lp, "%sClosing %s\n", devname, uptr->filename);
+            printf ("%sClosing %s\n", devname, uptr->filename);
+        }
+        if (fclose (uptr->fileref) == -1) {
+            r = SCPE_IOERR;
+        } else {
+            r = SCPE_OK;
+        }
+        uptr->fileref = NULL;
+
+        if (r != SCPE_OK) {
+            if (lp)
+                tmxr_linemsgf (lp, "%s%s\n", devname, sim_error_text (r));
+            printf ("%s%s\n", devname, sim_error_text (r));
+        }
+    }
+
+    for (n = 1; n <= SPOOL_FN_MAX; n++) {
+        next_spoolname (pdfctx, newname, sizeof (newname));
+
+        if (pdf_mode) {
+            newpdf = pdf_newfile (pdf, newname);
+            if (newpdf) {
+                break;
+            }
+        } else {
+           uptr->fileref = pdf_open_exclusive (newname, "rb+");
+           if (uptr->fileref != NULL) {
+               fseek (uptr->fileref, 0, SEEK_END);
+               if (ftell (uptr->fileref) == 0 ) {
+                   r = SCPE_OK;
+                   break;
+               }
+               fclose (uptr->fileref);
+               uptr->fileref = NULL;
+           }
+           continue;
+        }
+        if (!retryable_error (errno)) {
+            if (!sim_quiet) {
+                if (lp)
+                    tmxr_linemsgf (lp, "%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
+                printf ("%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
+            }
+            break;
+        }
+    }
+
+    if ((pdf_mode? !newpdf: (r != SCPE_OK))) {
+        if (!sim_quiet) {
+            if (lp)
+                tmxr_linemsgf (lp, "%sUnable to open new file\n", devname);
+            printf ("%sUnable to open new file\n", devname);
+        }
+        return SCPE_OPENERR;
+    }
+
+    if (!pdf_mode) {
+        strcpy (uptr->filename, newname);
+        sim_fseek (uptr->fileref, 0, SEEK_END);
+        uptr->pos = (t_addr)sim_ftell (uptr->fileref);
+
+        return SCPE_OK;
+    }
+
+    /* We have a new file open.  Close the old. */
+
+    if (pdfctx->bc) {
+        pdf_print (pdf, pdfctx->buffer, pdfctx->bc);
+        pdfctx->bc = 0;
+    }
+
+    pdf_where (pdf, &page, &line);
+
+    r = pdf_close (pdf);
+ 
+    if (r != PDF_OK) {
+        if (!sim_quiet) {
+            if (lp)
+                tmxr_linemsgf (lp, "%s%s: %s\n", devname, uptr->filename,
+                               pdf_strerror (pdf_error (pdf)));
+            printf ("%s%s: %s\n", devname, uptr->filename,
+                    pdf_strerror (pdf_error (pdf)));
+        }
+        r = SCPE_OPENERR;
+    } else if (!sim_quiet) {
+        if (lp)
+            tmxr_linemsgf (lp, "%sClosed %s, on page %u\n", devname, 
+                           uptr->filename, page );
+        printf ("%sClosed %s, on page %u\n", devname, 
+                uptr->filename, page );
+    }
+
+    pdf = newpdf;
+    strcpy (uptr->filename, newname);
+
+    if (!sim_quiet) {
+        if (lp)
+            tmxr_linemsgf (lp, "%sReady at page %u line %u of %s\n",
+                           devname, page, line, uptr->filename);
+        printf ("%sReady at page %u line %u of %s\n",
+                devname, page, line, uptr->filename);
+    }
+
+    return r;
+}
+
+/* Check for retryable error finding a spool file.
+ */
+
+static t_bool retryable_error (int error) {
+    size_t i;
+
+    /* These errors aren't worth retrying */
+    for (i = 0; i < DIM (noretry); i++) {
+        if (error == noretry[i]) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+/* Setup template from filename.
+ * Requires ext to be part of filename.
+ */
+static t_bool setup_template (PCTX *ctx, const char *filename, const char *ext) {
+    char *p;
+
+    p = (char *) realloc (ctx->fntemplate, (ext - filename) + sizeof (SPOOL_FN) + strlen (ext));
+    if (!p) {
+        return FALSE;
+    }
+
+    ctx->fntemplate = p;
+    strncpy (p, filename, ext - filename);
+    sprintf (p + (ext - filename), "%s%s",SPOOL_FN, ext);
+    ctx->fileseq = 0;
+
+    return TRUE;
+}
+
+/* Return the next spool file name to try
+ */
+static void next_spoolname (PCTX *ctx, char *newname, size_t size) {
+    /* Next file number is 1 .. SPOOL_FN_MAX */
+
+    ctx->fileseq %= SPOOL_FN_MAX;
+    ctx->fileseq++;
+
+#ifdef _MSC_VER
+    _snprintf (newname, size, ctx->fntemplate, ctx->fileseq);
+#else
+    snprintf (newname, size, ctx->fntemplate, ctx->fileseq);
+#endif
+    newname[size-1] = '\0';
+    return;
 }
 
 /* Query */
@@ -873,3 +1298,343 @@ static t_stat idle_svc (UNIT *uptr) {
     pdflpt_flush ((UNIT *)uptr->up7);
     return SCPE_OK;
 }
+
+/* Help for PDF-enabled printers */
+
+t_stat pdflpt_attach_help (FILE *st, struct sim_device *dptr,
+                                  struct sim_unit *uptr, int32 flag, char *cptr) {
+return scp_help (st, dptr, uptr, flag | SCP_HELP_ATTACH, pdflpt_attach_helptext, cptr,
+                 pdflpt_helptext);
+}
+
+t_stat pdflpt_help (FILE *st, struct sim_device *dptr,
+                           struct sim_unit *uptr, int32 flag, char *cptr) {
+    static const char helptext[] = {
+" The %D controller does not have device-specific help.\n"
+" However, the following generic topics may be of use."
+"%1H\n"     /* Include PDF help after this string */
+"\n"
+" Note that the %D does support printing to PDF files, see the\n"
+" \"PDF printing\" topic below.\n"
+"\n"
+" You are welcome to raise an issue on the SimH issue tracker\n"
+" if you are having difficulty with this device.\n"
+"\n"
+" See \"How to Contribute\" for the location of the SimH team.\n"
+"\n"
+" If you are able, please feel free to contribute help for this device.\n"
+"1 $Set commands\n"
+"1 $Show commands\n"
+"1 $Registers\n"
+"1 How to contribute\n"
+" The SimH development team can be reached at https://github.com/simh/simh.\n"
+" The file scp_help.h documents how to create help text in detail\n"
+"\n"
+" However, we would gratefully accept any knowledge that you have about\n"
+" the history and capabilities of the %D.\n"
+"\n"
+" Thank you for considering a contribution.\n"
+    };
+
+    return scp_help (st, dptr, uptr, flag, helptext, cptr,
+                     pdflpt_helptext);
+}
+
+/* Please keep these strings last in the file to facilitate editing. */
+
+const char pdflpt_attach_helptext[] = {
+" ATTACH %D connects its output to a file.\n"
+" %1H\n"
+" For ASCII output, use:\n"
+"+ATTACH -switches %D filename\n"
+" -n creates a new file, or truncates an existing file\n"
+" -e appends to an existing file, and generates an error if the file"
+"+does not exist\n"
+" The default is to append to a file if it exists, or create it if"
+"+it does not\n"
+"\n"
+" For PDF (Adobe Portable Document Format) output, use:\n"
+"+ATTACH %D filename.pdf\n"
+" The switches and options are detailed below\n"
+"\n"
+" Both output formats support spooling, which allows output to be\n"
+" released to an external process without stopping the simulation.\n"
+" That process can print the file to a physical printer, move it\n"
+" to a network location, e-mail it - or anything else.\n"
+" For details, see the Spooling section.\n"
+    };
+
+const char pdflpt_helptext[] = 
+"1 PDF printing\n"
+" The %D is able to print to Adobe Portable Document Format (PDF) files on\n"
+" simulated paper.\n"
+"\n"
+" The %D also supports writing files (PDF or ASCII) to a dedicated directory\n"
+" for spooling to a physical printer.  \n"
+"\n"
+" These capabilities are described in detail in the following topics.\n"
+"\n"
+"2 About PDF files\n"
+" Adobe's Portable Document Format - PDF - is a document format standardized\n"
+" by the ISO as ISO 32000-1:2008.  PDF is supported on the platforms that\n"
+" support SimH, and is widely used on the World-Wide Web.  It is also a\n"
+" standard format for archiving electronic documents.  Thus, it should be\n"
+" possible to render (view and/or print) PDF for the forseeable future.\n"
+"\n"
+" SimH generates a subset of PDF, and will only operate on files that it\n"
+" generates.\n"
+"\n"
+" A PDF file is similar to a file system, in that it contains indexes and\n"
+" other information about the file.  The file is not in a readable\n"
+" state while it is being written, as the file structure places this\n"
+" data at the end of the file.  If you abort SimH (or it crashes) while\n"
+" a PDF file is being written, the file may not be readable.\n"
+"\n"
+" SimH watches for periods of inactivity, and puts the file into a\n"
+" consistent state during these periods.\n"
+"\n"
+"2 Configuration\n"
+" The paper simulated in SimH PDF files is configured by the ATTACH command.\n"
+"\n"
+" Although there are many options, none are required; the defaults produce\n"
+" the U.S. standard 14.875 x 11 inch greenbar paper at 6 lines and 10 columns\n"
+" per inch.  Other colors, sizes and spacing are available.\n"
+"\n"
+" To select PDF output, the filename specified on the ATTACH command must\n"
+" end in .pdf (or .PDF).\n"
+"\n"
+" There are two kinds of options that may be specified.  Switches are\n"
+" the usual single-letter qualifiers preceeded by hypen following the\n"
+" word ATTACH.  Switches specify how the file to be attached.\n"
+"\n"
+" Parameters have the form keyword=value and precede the\n"
+" filename.  Parameters specify the format of the paper to be simulated.\n"
+"\n"
+" Thus, the syntax for ATTACH is:\n"
+"+ATTACH -switch -switch %D keyword=value keyword=\"value\" filename.pdf\n"
+" The filename can include a device and/or directory specifier.\n"
+"3 Switches\n"
+" -S SimH will generate ouput for spooling to a physical printer. See\n"
+"+the Spooling topic.\n"
+" -E The file must exist.  If it is not empty, it must be in .PDF format, and\n"
+"+new data will be appended.\n"
+" -N A new file is created.  If the file already exists, its contents are\n"
+"+replaced by new data.  Any old data is lost.\n"
+" -R If the file exists, it must be empty. If it does not, it will be created.\n"
+"\n"
+" The ATTACH command will fail if contradictory switches are specified, if appending\n"
+" to a non-PDF file is requested, if the constraints are not met, or if\n"
+" the file can't be created for any reason.\n"
+"\n"
+" If no switch is specified:\n"
+"+If the file exists, data wil be appended\n"
+"+If the file does not exist, it will be created.\n"
+"3 Parameters\n"
+" Although there are many parameters available, to achieve any given effect\n"
+" generally requires only a few.\n"
+"\n"
+" Parameters documented as a dimension in inches may be specified in cm or mm\n"
+" by appending \"mm\" or \"cm\" to the value.  E.g. 38.1cm is equivalent to\n"
+" 15.0in.  The \"in\" is optional.\n"
+"\n"
+" The parameters are described in groups.\n"
+"4 Form style\n"
+" All emulated paper is called a 'form'.  All forms are tractor-feed,\n"
+" and include the tractor feed holes.\n"
+"\n"
+" Several form styles are available.  These are:\n"
+"+Plain - Plain forms are a white page, optionally with line numbers.\n"
+"+Bar   - Bar forms contain alternating white and colored bars in the\n"
+"+++area of the form inside the margins.  The colors and height can be\n"
+"+++selected.\n"
+"+Image - Image forms can be any JPEG image, and thus can represent\n"
+"+++custom-printed forms such as checks or letterhead.  Images are\n"
+"+++usually printed on Plain forms, but can be printed over a bar form\n"
+"+++(typically as a logo.)\n"
+"\n"
+" Bar forms are specified with the form keyword:\n"
+" form=name\n"
+"+name is one of:\n"
+"++Greenbar\n"
+"++Bluebar\n"
+"++Graybar\n"
+"++Yellowbar\n"
+"++Plain\n"
+" Default: Greenbar\n"
+"\n"
+" The height of the bars is specifed with the bar-height keyword:\n"
+" bar-height=number\n"
+"+Specifies the height of the bars printed on bar forms.\n"
+"+Typical values are:\n"
+"++0.5in     - 3 print lines per bar at 6lpi, 4 lines at 8lpi\n"
+"++0.16667in - 1 line per bar at 6 lpi\n"
+"++0.125in   - 1 line per bar at 8 lpi\n"
+"++0.333in   - 2 lines per bar at 6 lpi\n"
+"++0.25in    - 2 lines per bar at 8 lpi\n"
+" Default: 0.5in\n"
+"\n"
+" Image forms are specifed with the image keyword:\n"
+" image=filename\n"
+"+If the filename contains spaces, uses quotes around the name.\n"
+"+The file must be a JPEG (JPG, not JPEG) file that will be used as a\n"
+"+custom background for each page.  This can be any .jpg image, but\n"
+"+is intended for scanned images of custom forms.\n"
+"\n"
+"+The image should have the same aspect ratio as the area within the\n"
+"+margins.  It will be stretched until it fits between the horizonta\n"
+"+margins.  It will be centered vertically.  Nothing is done if the\n"
+"+result doesn't fill or extends over the space between the top and\n"
+"+bottom margins.  When an image is used, it is rendered over the\n"
+"+form and under the text.  For just the image, specify the PLAIN\n"
+"+form.\n"
+" Default: none (no image)\n"
+"4 Printing area\n"
+" The format of the printing area is controlled by these parameters.\n"
+" The printing area is strictly between the left and right margins.\n"
+" It is normally between the top and bottom margins, but the software\n"
+" on the emulated machine may print in the top and bottom margins.\n"
+"\n"
+" TOF-OFFSET\n"
+"+Specifies how the form is positioned with respect to the top of page.\n"
+"+<FF> (form-feed), or for some printers, VFU alignment, moves the\n"
+"+print (head,drum,chain) the paper to a fixed line.  The TOF-OFFSET\n"
+"+specifies the line on the paper on which the first line will be printed.\n"
+"\n"
+"+This is analogous to what happens with a real printer.  The operator\n"
+"+presses Top-of-Form, and the printer goes to a fixed line.  Then the\n"
+"+operator places the paper on the (usually tractor) feed mechanism so\n"
+"+that output will be in the right place.  The TOF-OFFSET is the line\n"
+"+on the form that the operator would place under the print head.\n"
+" Default: The line after the top margin.  For 6LPI, this is line 7\n"
+"++with the default top margin.\n"
+"\n"
+" columns=integer\n"
+"+Specifies the number of columns per line.  This is used to center the\n"
+"+print area on the form.  This is analogous to sliding the tractors\n"
+"+left and right to center the form; however SimH does the math.\n"
+" Default: 132\n"
+"\n"
+" cpi=number\n"
+"+Specifies the character pitch in characters per inch.  \n"
+" Default: 10\n"
+"\n"
+" lpi=integer\n"
+"+Specifies the vertical pitch in lines per inch.  6 & 8\n"
+"+are currently supported.\n"
+" Default: 6\n"
+"\n"
+"4 Page Dimensions\n"
+" A page has a width, length and margins.  Use these parameters to specify\n"
+" any non-default values:\n"
+"\n"
+" width=number\n"
+"+Specifies the width of the paper, inclusive of all margins.\n"
+" Default: 14.875in\n"
+"\n"
+" length=number\n"
+"+Specifies the length of the paper, inclusive of all margins.\n"
+" Default: 11in\n"
+"\n"
+" top-margin=number\n"
+"+Specifies height of the top margin on the paper.  For 'bar' forms, this\n"
+"+is where the first bar starts.  For image forms, this is the top of\n"
+"+the image.\n"
+" Default: 1.0in\n"
+"\n"
+" bottom-margin=number\n"
+"+Specifies height of the bottom margin on the paper.  For 'bar' forms,\n"
+"+this is where the last bar ends.  For image forms, this is the bottom\n"
+"+of the image.\n"
+" Default: 0.5in\n"
+"\n"
+" side-margin=number\n"
+"+Specifies the width of the feed mechanism margin.  This is where the\n"
+"+tractor-feed holes are placed.\n"
+" Default: 0.47in\n"
+"\n"
+" number-width=number\n"
+"+Specifies the width of the column where line numbers are printed.\n"
+"+Specify 0 to omit the line numbers.\n"
+" Default: 0.1in\n"
+"4 Other parameters\n"
+" title=string\n"
+"+Specifies the title for the .PDF document.  This does NOT print on\n"
+"+the page, rather it is the title for the window that a PDF viewer\n"
+"+might present.\n"
+" Default: \"Lineprinter data\"\n"
+"\n"
+" font=string\n"
+"+Specifies the font used for lineprinter output on the page.  Only the\n"
+"+PDF built-in fonts may be used, and of those, only the monospaced fonts\n"
+"+make any sense.  There is little reason to change this.\n"
+"\n"
+"+The fonts are not embedded in the .PDF file (due to licensing concerns).\n"
+"+More options may be available in the future.\n"
+" Default: Courier\n"
+"2 Spooling\n"
+" SimH provides the infrastructure for spooling files to physical\n"
+" printers or other processes.  To enable spooling, use the -S switch\n"
+" on the ATTACH command.  -S implies -R.\n"
+"\n"
+" When spooling is enabled, the output files should be put into a\n"
+" dedicated directory.  The filename specified on the ATTACH command is\n"
+" used as a base to generate the names for each spooled session.\n"
+"\n"
+" A spooled session starts when you ATTACH a file to the %D device.  It\n"
+" ends when you DETACH the device, or when you issue the PRINT command\n"
+" to SIMH.  PRINT is also available as ^P on the remote console.  During\n"
+" a session, the file is locked for exclusive use by the operating\n"
+" system under which SimH runs.  This means that no other process can\n"
+" access it.\n"
+"\n"
+" SimH does not know when a 'print job' begins or ends.  Thus the\n"
+" operator of SimH must, use knowledge of the emulated system, commands\n"
+" to the system and/or information from the system to decide when to end\n"
+" a session.\n"
+"\n"
+" When a session ends, the current ouput file is closed, and a new one\n"
+" is created.  The new one will contain a sequential number just before\n"
+" the file extension.  (These numbers do not go on forever; the\n"
+" eventually wrap.)\n"
+"\n"
+" When the file is closed, an external process can access the file. That\n"
+" process can launch a viewer, send the file to a printer, or do\n"
+" anything else.  One implementation is provided as an example, but is\n"
+" not supported by SimH.  This watcher (PDFWatcher) uses the Windows OS\n"
+" to monitor a directory and detect files that are closed.  It then\n"
+" launches a command (typically a renderer/printer) and if the command\n"
+" succeeds, deletes the file.\n"
+"\n"
+" Similar programs can be created for other Operating Systems.\n"
+"3 PDF Watcher\n"
+" The pdfwatcher.c sample, NOT supported by the SimH team is provided\n"
+" as an example of how one can implement the system-specific parts of\n"
+" print spooling.\n"
+"\n"
+" pdfwatcher --help is the definitive help, but this summary illustrates\n"
+" the capabilities:\n"
+"\n"
+" Launch pdfwatcher in a command window - it can be minimized, as\n"
+" pdfwatcher normally generates no output.\n"
+"\n"
+" The command is:\n"
+"+pdfwatcher directory command\n"
+" In the command, %%s indicates where the filename is to be placed.\n"
+"\n"
+" To have pdfwatcher print all files spooled to a physical printer,\n"
+" the command might look like (this is one long line):\n"
+"+pdfwatcher spool \n"
+"++\"C:\\Program Files (x86)\\Adobe\\Reader 11.0\\Reader\\AcroRd32.exe\" \n"
+"++/n /h /s /t %%s \"My Printer\" \"HPWJ65N3.GPD\" \"HP_printer_port\"\n"
+" The second, third and fourth arguments to AcroRD32 are the windows\n"
+" printer name, printer driver name, and printer port name.  These can\n"
+" be obtained from the Control Panel Properties page for the printer.\n"
+"\n"
+" Other PDF readers, including Acrobat, ghostscript and Foxit, can be\n"
+" substituted for AcroRd32.  Consult their documentation for the\n"
+" required command syntax.\n"
+;
+
+/* Please leave the help as the last thing in this file, as this
+ * makes editing it much easier.
+ */

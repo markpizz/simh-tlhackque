@@ -116,7 +116,7 @@ DEVICE lpt_dev = {
     NULL, NULL, &lpt_reset,
     NULL, &lpt_attach, &lpt_detach,
     &lpt_dib, DEV_DISABLE | DEV_UBUS | DEV_QBUS, 0,
-    NULL, NULL, NULL, &lpt_help, NULL, NULL, 
+    NULL, NULL, NULL, &lpt_help, &pdflpt_attach_help, NULL, 
     &lpt_description
     };
 
@@ -209,21 +209,60 @@ return detach_unit (uptr);
 
 t_stat lpt_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
-fprintf (st, "Line Printer (LPT)\n\n");
-fprintf (st, "The line printer (LPT) writes data to a disk file.  The POS register specifies\n");
-fprintf (st, "the number of the next data item to be written.  Thus, by changing POS, the\n");
-fprintf (st, "user can backspace or advance the printer.\n");
-fprintf (st, "If the disk file is named .pdf, the output will be in PDF format on greenbar paper.\n");
-fprintf (st, "In this case, POS will not work.  The PDF output is customizable; see the general documentation.\n");
-fprint_set_help (st, dptr);
-fprint_show_help (st, dptr);
-fprint_reg_help (st, dptr);
-fprintf (st, "\nError handling is as follows:\n\n");
-fprintf (st, "    error         STOP_IOE   processed as\n");
-fprintf (st, "    not attached  1          out of paper\n");
-fprintf (st, "                  0          disk not ready\n\n");
-fprintf (st, "    OS I/O error  x          report error and stop\n");
-return SCPE_OK;
+static const char helptext[] = {
+" %D is emulating a %1s, a %2s device\n"
+"\n"
+" The LP11/LS11/LA11/LPV11 are software compatible interfaces to three\n"
+" families of line printers.  They use programmed I/O; that is, each\n"
+" character to be printed is moved to the device by software.  They do\n"
+" not support electronic VFUs.  The printers respond to 7-bit ASCII\n"
+" graphics and the <CR> <LF> and <FF> controls.\n"
+"\n"
+" The LPV11 attaches to the Q-BUS; the others to the UNIBUS.\n"
+" %3H\n"
+"1 Hardware Description\n"
+" The LP11 controller supports impact line printers at speeds of up to\n"
+" 1250 lines per minute.  It was sold with Data Products corporation\n"
+" line printers, including models 2230, 2310, 2410 and 2470 - which have\n"
+" the DEC model numbers LP05 (132 columns 240/300 LPM), LP01 (80\n"
+" columns, 356 LPM), LP02 (132 columns, 245 LPM) and LP04 (132 columns,\n"
+" 925/1250 LPM).  The print speeds vary based on the number of 20 column\n"
+" zones used, and whether the drum is 64 (upper case only) or 96 (upper\n"
+" and lower case) characters.\n"
+"\n"
+" The LS11 supports Centronics line printers, including models 101\n"
+" (5x7), 101A (9x7), 101D 102A and 303.  These are matrix printers\n"
+" averaging 132 characters per second, 60 LPM for full lines.\n"
+"\n"
+" The LA11 supports the DEC LA180 (parallel interface) 132 columns at\n"
+" 180 CPS at 70 LPM.\n"
+"\n"
+" For details, see the LP11/LS11/LA11 user's manual EK-LP11S-OP-001.\n"
+"2 $Registers\n"
+"\n"
+" The POS register indicates the position in the ATTACHed file.\n"
+"\n"
+" For PDF files, this is the current page number.  DEPOSIT commands have\n"
+" no effect.\n"
+"\n"
+" For other files, this is the byte position.  DEPOSIT commands may\n"
+" backspace or advance the printer.\n"
+"\n"
+" Error handling is as follows:\n"
+"\n"
+"+error         STOP_IOE     processed as\n"
+"+not attached    1          out of paper\n"
+"+++++0          disk not ready\n"
+"\n"
+"+OS I/O error    x          report error and stop\n"
+"1 Configuration\n"
+"2 $Set commands\n"
+"2 $Show commands\n"
+};
+return scp_help (st, dptr, uptr, flag, helptext, cptr,
+                 ((UNIBUS)? "LP11": "LPV11"),
+                 ((UNIBUS)? "UNIBUS": "Q-BUS"),
+                  pdflpt_helptext);
 }
 
 char *lpt_description (DEVICE *dptr)

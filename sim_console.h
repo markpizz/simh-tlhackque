@@ -51,6 +51,7 @@
 #define  TT_MODE_KSR    (TT_MODE_UC)
 #define TT_GET_MODE(x)  (((x) >> TTUF_V_MODE) & TTUF_M_MODE)
 
+t_stat print_cmd (int32 flag, char *cptr);
 t_stat sim_set_console (int32 flag, char *cptr);
 t_stat sim_set_remote_console (int32 flag, char *cptr);
 t_stat sim_set_kmap (int32 flag, char *cptr);
@@ -99,3 +100,11 @@ extern int32 sim_tt_pchar;                                  /* printable charact
 extern int32 sim_del_char;                                  /* delete character */
 
 #endif
+
+#ifdef TMXR_VALID
+#ifndef SIM_CONSOLE_X_H_
+#define SIM_CONSOLE_X_H_ 0_
+t_stat sim_con_register_printer (UNIT *uptr, t_stat (*callback)(UNIT *unit, TMLN *lp));
+#endif
+#endif
+
