@@ -3347,7 +3347,7 @@ static t_stat kmc_help (FILE *st, struct sim_device *dptr,
     "  See also the Whizbang paper shredder (SHRED).\n"
     "";
 
-    return scp_help (st, dptr, uptr, text, cptr);
+    return scp_help (st, dptr, uptr, flag, text, cptr);
 }
 /* Description of this device.
  * Conventionally last function in the file.

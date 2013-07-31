@@ -164,6 +164,14 @@ UNIT sim_con_unit = { UDATA (&sim_con_poll_svc, 0, 0)  };   /* console connectio
 #define DBG_RCV  TMXR_DBG_RCV                           /* display Received Data */
 #define DBG_ASY  TMXR_DBG_ASY                           /* asynchronous thread activity */
 
+typedef struct printer_cb {
+    struct printer_cb *next;
+    UNIT *unit;
+    t_stat (*callback)(UNIT *unit, TMLN *lp);
+} PRINTCB;
+static PRINTCB *printers = NULL;
+static t_stat process_print_cmd (int32 flag, TMLN *lp);
+
 static DEBTAB sim_con_debug[] = {
   {"TRC",    DBG_TRC},
   {"XMT",    DBG_XMT},
@@ -271,6 +279,69 @@ static int32 *cons_kmap[] = {
    the console is described by internal terminal multiplexor
    sim_con_tmxr and internal terminal line description sim_con_ldsc.
 */
+
+/* Register a printer for the PRINT comand
+*/
+t_stat sim_con_register_printer (UNIT *uptr, t_stat (*callback)(UNIT *unit, TMLN *lp))
+{
+    PRINTCB *p;
+
+    for (p = printers; p != NULL; p = p->next) {
+        if (p->unit == uptr) {
+            break;
+            }
+        }
+    if (!p) {
+        p = (PRINTCB *) malloc (sizeof (PRINTCB));
+        if (!p) {
+            return SCPE_MEM;
+            }
+        p->next = printers;
+        printers = p;
+        p->unit = uptr;
+        }
+    p->callback = callback;
+    return SCPE_OK;
+}
+
+/* PRINT command
+ * flag is 1 for remote console-initiated
+ */
+
+t_stat print_cmd (int32 flag, char *cptr)
+{
+    if (!cptr || *cptr) {
+        return SCPE_ARG;
+        }
+
+    return process_print_cmd (flag, NULL);
+}
+
+static t_stat process_print_cmd (int32 flag, TMLN *lp) {
+    PRINTCB *p;
+    int r = SCPE_EOF;
+
+    for  (p = printers; p != NULL; p = p->next) {
+        if (p->callback != NULL) {
+            if (p->callback (p->unit, lp) == SCPE_OK) {
+                r = SCPE_OK;
+            }
+        }
+    }
+    if (r == SCPE_OK) {
+        if (flag) {
+            if (sim_log)
+                fprintf (sim_log, "Printer file(s) released\r\n");
+        }
+    } else {
+        if (lp)
+            tmxr_linemsgf (lp, "Nothing ready to print\n");
+        printf ("Nothing to ready to print\n");
+        if (sim_log)
+            fprintf (sim_log, "Nothing ready to print\r\n");
+    }
+    return SCPE_OK;
+}
 
 /* SET CONSOLE command */
 
@@ -466,6 +537,7 @@ static CTAB allowed_remote_cmds[] = {
     { "DEASSIGN", &deassign_cmd,      0 },
     { "CONTINUE", &x_continue_cmd,    0 },
     { "STEP",     &x_step_cmd,        0 },
+    { "PRINT",    &print_cmd,         1 },
     { "PWD",      &pwd_cmd,           0 },
     { "SAVE",     &save_cmd,          0 },
     { "DIR",      &dir_cmd,           0 },
@@ -473,19 +545,20 @@ static CTAB allowed_remote_cmds[] = {
     { "ECHO",     &echo_cmd,          0 },
     { "SET",      &set_cmd,           0 },
     { "SHOW",     &show_cmd,          0 },
-    { "HELP",     &x_help_cmd,        0 },
+    { "HELP",     &x_help_cmd,        SCP_HELP_ONECMD },
     { NULL,       NULL }
     };
 
 static CTAB allowed_single_remote_cmds[] = {
     { "ATTACH",   &attach_cmd,        0 },
     { "DETACH",   &detach_cmd,        0 },
+    { "PRINT",    &print_cmd,         1 },
     { "PWD",      &pwd_cmd,           0 },
     { "DIR",      &dir_cmd,           0 },
     { "LS",       &dir_cmd,           0 },
     { "ECHO",     &echo_cmd,          0 },
     { "SHOW",     &show_cmd,          0 },
-    { "HELP",     &x_help_cmd,        0 },
+    { "HELP",     &x_help_cmd,        SCP_HELP_ONECMD },
     { NULL,       NULL }
     };
 
@@ -616,7 +689,7 @@ for (i=(was_stepping ? sim_rem_step_line : 0);
                             }
                         if (sim_rem_buf_ptr[i]+80 >= sim_rem_buf_size[i]) {
                             sim_rem_buf_size[i] += 1024;
-                            sim_rem_buf[i] = realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
+                            sim_rem_buf[i] = (char *) realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
                             }
                         strcpy (sim_rem_buf[i], "CONTINUE         ! Automatic continue due to timeout");
                         tmxr_linemsgf (lp, "%s\n", sim_rem_buf[i]);
@@ -654,7 +727,7 @@ for (i=(was_stepping ? sim_rem_step_line : 0);
                     tmxr_linemsg (lp, "\r\n");
                     if (sim_rem_buf_ptr[i]+1 >= sim_rem_buf_size[i]) {
                         sim_rem_buf_size[i] += 1024;
-                        sim_rem_buf[i] = realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
+                        sim_rem_buf[i] = (char *) realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
                         }
                     sim_rem_buf[i][sim_rem_buf_ptr[i]++] = '\0';
                     got_command = TRUE;
@@ -668,7 +741,7 @@ for (i=(was_stepping ? sim_rem_step_line : 0);
                     if (!sim_rem_single_mode[i]) {
                         if (sim_rem_buf_ptr[i]+80 >= sim_rem_buf_size[i]) {
                             sim_rem_buf_size[i] += 1024;
-                            sim_rem_buf[i] = realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
+                            sim_rem_buf[i] = (char *) realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
                             }
                         strcpy (sim_rem_buf[i], "CONTINUE         ! Automatic continue before close");
                         tmxr_linemsgf (lp, "%s\n", sim_rem_buf[i]);
@@ -676,11 +749,20 @@ for (i=(was_stepping ? sim_rem_step_line : 0);
                         }
                     close_session = TRUE;
                     break;
+                case '\020': /* PRINT (^P) */
+                    if (c == sim_int_char) {
+                        break;
+                    }
+                    tmxr_linemsgf (lp, "print\n");
+                    process_print_cmd (1, lp);
+                    tmxr_send_buffered_data (lp);
+                    sim_activate_after(uptr, 100000); /* check again in 100 milliaeconds */
+                    return SCPE_OK;
                 default:
                     tmxr_putc_ln (lp, c);
                     if (sim_rem_buf_ptr[i]+2 >= sim_rem_buf_size[i]) {
                         sim_rem_buf_size[i] += 1024;
-                        sim_rem_buf[i] = realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
+                        sim_rem_buf[i] = (char *) realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
                         }
                     sim_rem_buf[i][sim_rem_buf_ptr[i]++] = c;
                     sim_rem_buf[i][sim_rem_buf_ptr[i]] = '\0';
@@ -893,15 +975,15 @@ if (sim_rem_con_tmxr.master)
 for (i=0; i<sim_rem_con_tmxr.lines; i++)
     free (sim_rem_buf[i]);
 sim_rem_con_tmxr.lines = lines;
-sim_rem_con_tmxr.ldsc = realloc (sim_rem_con_tmxr.ldsc, sizeof(*sim_rem_con_tmxr.ldsc)*lines);
+sim_rem_con_tmxr.ldsc = (TMLN *) realloc (sim_rem_con_tmxr.ldsc, sizeof(*sim_rem_con_tmxr.ldsc)*lines);
 memset (sim_rem_con_tmxr.ldsc, 0, sizeof(*sim_rem_con_tmxr.ldsc)*lines);
-sim_rem_buf = realloc (sim_rem_buf, sizeof(*sim_rem_buf)*lines);
+sim_rem_buf = (char **) realloc (sim_rem_buf, sizeof(*sim_rem_buf)*lines);
 memset (sim_rem_buf, 0, sizeof(*sim_rem_buf)*lines);
-sim_rem_buf_size = realloc (sim_rem_buf_size, sizeof(*sim_rem_buf_size)*lines);
+sim_rem_buf_size = (int32 *)realloc (sim_rem_buf_size, sizeof(*sim_rem_buf_size)*lines);
 memset (sim_rem_buf_size, 0, sizeof(*sim_rem_buf_size)*lines);
-sim_rem_buf_ptr = realloc (sim_rem_buf_ptr, sizeof(*sim_rem_buf_ptr)*lines);
+sim_rem_buf_ptr = (int32 *) realloc (sim_rem_buf_ptr, sizeof(*sim_rem_buf_ptr)*lines);
 memset (sim_rem_buf_ptr, 0, sizeof(*sim_rem_buf_ptr)*lines);
-sim_rem_single_mode = realloc (sim_rem_single_mode, sizeof(*sim_rem_single_mode)*lines);
+sim_rem_single_mode = (t_bool*) realloc (sim_rem_single_mode, sizeof(*sim_rem_single_mode)*lines);
 memset (sim_rem_single_mode, 0, sizeof(*sim_rem_single_mode)*lines);
 return SCPE_OK;
 }
@@ -1373,7 +1455,7 @@ else if (strcmp (gbuf, "STDERR") == 0) {                /* output to stderr? */
     *pref = NULL;
     }
 else {
-    *pref = calloc (1, sizeof(**pref));
+    *pref = (FILEREF *) calloc (1, sizeof(**pref));
     if (!*pref)
         return SCPE_MEM;
     get_glyph_nc (filename, gbuf, 0);                   /* reparse */

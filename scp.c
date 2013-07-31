@@ -649,6 +649,8 @@ static CTAB cmd_table[] = {
       "exi{t}|q{uit}|by{e}      exit from simulation\n" },
     { "QUIT", &exit_cmd, 0, NULL },
     { "BYE", &exit_cmd, 0, NULL },
+    { "PRINT", &print_cmd, 0,
+      "print                    release any spooled output from simulated printers\n" },
     { "CD", &set_default_cmd, 0,
       "cd                       set the current directory\n" },
     { "PWD", &pwd_cmd, 0, 
@@ -1252,17 +1254,17 @@ void fprint_show_help (FILE *st, DEVICE *dptr)
     fprint_show_help_ex (st, dptr, TRUE);
     }
 
-t_stat help_dev_help (FILE *st, DEVICE *dptr, UNIT *uptr, char *cptr)
+t_stat help_dev_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
 char gbuf[CBUFSIZE];
 CTAB *cmdp;
 
 if (*cptr) {
-    cptr = get_glyph (cptr, gbuf, 0);
+    char *gptr = get_glyph (cptr, gbuf, 0);
     if ((cmdp = find_cmd (gbuf))) {
         if (cmdp->action == &exdep_cmd) {
-            if (dptr->help)
-                return dptr->help (st, dptr, uptr, 0, cptr);
+            if (dptr->help) /* Shouldn't this pass cptr so the device knows which command invoked? */
+                return dptr->help (st, dptr, uptr, flag, gptr);
             else
                 fprintf (st, "No help available for the %s %s command\n", cmdp->name, sim_dname(dptr));
             return SCPE_OK;
@@ -1279,22 +1281,22 @@ if (*cptr) {
             fprint_attach_help_ex (st, dptr, FALSE);
             return SCPE_OK;
             }
-        fprintf (st, "No %s help is available for the %s device\n", cmdp->name, dptr->name);
         if (dptr->help)
-            return dptr->help (st, dptr, uptr, 0, cptr);
+            return dptr->help (st, dptr, uptr, flag, cptr);
+        fprintf (st, "No %s help is available for the %s device\n", cmdp->name, dptr->name);
         return SCPE_OK;
         }
     if (MATCH_CMD (gbuf, "REGISTERS") == 0) {
         fprint_reg_help_ex (st, dptr, FALSE);
         return SCPE_OK;
         }
-    fprintf (st, "No %s help is available for the %s device\n", gbuf, dptr->name);
     if (dptr->help)
-        return dptr->help (st, dptr, uptr, 0, cptr);
+        return dptr->help (st, dptr, uptr, flag, cptr);
+    fprintf (st, "No %s help is available for the %s device\n", gbuf, dptr->name);
     return SCPE_OK;
     }
 if (dptr->help) {
-    return dptr->help (st, dptr, uptr, 0, cptr);
+    return dptr->help (st, dptr, uptr, flag, cptr);
     }
 if (dptr->description)
     fprintf (st, "%s %s help\n", dptr->description (dptr), dptr->name);
@@ -1329,9 +1331,9 @@ if (*cptr) {
                     if (dptr == NULL)
                         return SCPE_2MARG;
                     }
-                r = help_dev_help (stdout, dptr, uptr, (cmdp->action == &set_cmd) ? "SET" : "SHOW");
+                r = help_dev_help (stdout, dptr, uptr, flag, (cmdp->action == &set_cmd) ? "SET" : "SHOW");
                 if (sim_log)
-                    help_dev_help (stdout, dptr, uptr, (cmdp->action == &set_cmd) ? "SET" : "SHOW");
+                    help_dev_help (stdout, dptr, uptr, flag | SCP_HELP_FLAT, (cmdp->action == &set_cmd) ? "SET" : "SHOW");
                 return r;
                 }
             else
@@ -1424,9 +1426,9 @@ if (*cptr) {
                     fprintf (sim_log, "Device %s is currently disabled\n", dptr->name);
                 }
             }
-        r = help_dev_help (stdout, dptr, uptr, cptr);
+        r = help_dev_help (stdout, dptr, uptr, flag, cptr);
         if (sim_log)
-            help_dev_help (stdout, dptr, uptr, cptr);
+            help_dev_help (sim_log, dptr, uptr, flag, cptr);
         return r;
         }
     }
@@ -7089,7 +7091,7 @@ return;
  * Device help can be presented hierarchically by calling
  *
  * t_stat scp_help (FILE *st, struct sim_device *dptr,
- *                  struct sim_unit *uptr, const char *help, char *cptr)
+ *                  struct sim_unit *uptr, int flag, const char *help, char *cptr)
  *
  * or one of its three cousins from the device HELP routine.
  *
@@ -7105,6 +7107,7 @@ return;
 typedef struct topic {
     uint32         level;
     char          *title;
+    char          *label;
     struct topic  *parent;
     struct topic **children;
     uint32         kids;
@@ -7115,8 +7118,13 @@ typedef struct topic {
 #define HLP_MAGIC_TOPIC  1
 } TOPIC;
 
+static volatile struct {
+    const char *error;
+    size_t block;
+    size_t line;
+} help_where = { "", 0, 0 };
 jmp_buf (help_env);
-#define FAIL(why) longjmp (help_env, (why))
+#define FAIL(why,text) { help_where.error = #text; longjmp (help_env, (why)); }
 
 /* Add to topic text.
  * Expands text buffer as necessary.
@@ -7130,7 +7138,7 @@ static void appendText (TOPIC *topic, const char *text, size_t len) {
 
     newt = (char *)realloc (topic->text, topic->len + len +1);
     if (!newt) {
-        FAIL (SCPE_MEM);
+        FAIL (SCPE_MEM, No memory);
     }
     topic->text = newt;
     memcpy (newt + topic->len, text, len);
@@ -7147,6 +7155,7 @@ static void cleanHelp (TOPIC *topic) {
 
     free (topic->title);
     free (topic->text);
+    free (topic->label);
     for (i = 0; i < topic->kids; i++) {
         child = topic->children[i];
         cleanHelp (child);
@@ -7166,6 +7175,10 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
 #define VSMAX 100
     char *vstrings[VSMAX];
     size_t vsnum = 0;
+    size_t vsbase = 0;
+    char *astrings[VSMAX+1];
+    size_t asnum = 0;
+    char *const *hblock;
     const char *ep;
     t_bool excluded = FALSE;
 
@@ -7176,204 +7189,232 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
      */
 
     memset (vstrings, 0, VSMAX * sizeof (char *));
+    memset (astrings, 0, VSMAX * sizeof (char *));
+    astrings[asnum++] = (char *) htext;
 
-    while (*htext) {
-        const char *start;
+    for (hblock = astrings; (htext = *hblock) != NULL; hblock++) {
+        help_where.block = hblock - astrings;
+        help_where.line = 0;
+        while (*htext) {
+            const char *start;
 
-        if (isspace (*htext) || *htext == '+') {/* Topic text, indented topic text */
-            if (excluded) {                     /* Excluded topic text */
-                while (*htext && *htext != '\n') {
-                    htext++;
-                }
-                if (*htext)
-                    ++htext;
-                continue;
-            }
-            ilvl = 1;
-            appendText (topic, "    ", 4);      /* Basic indentation */
-            if (*htext == '+') {                /* More for each + */
-                while (*htext == '+') {
-                    ilvl++;
-                    appendText (topic, "    ", 4);
-                    htext++;
-                }
-            }
-            while (*htext && *htext != '\n' && isspace (*htext)) {
-                htext++;
-            }
-            if (!*htext) {                      /* Empty after removing leading spaces */
-                break;
-            }
-            start = htext;
-            while (*htext) {                    /* Process line for substitutions */
-                if (*htext == '%') {
-                    appendText (topic, start, htext - start); /* Flush up to escape */
-                    switch (*++htext) {         /* Evaluate escape */
-                    case 'U':
-                        if (dptr) {
-                            char buf[129];
-                            n = uptr? uptr - dptr->units: 0;
-                            sprintf (buf, "%s%u", dptr->name, n);
-                            appendText (topic, buf, strlen (buf));
-                        }
-                        break;
-                    case 'D':
-                        if (dptr) {
-                            appendText (topic, dptr->name, strlen (dptr->name));
-                            break;
-                        }
-                    case 'S':
-                        appendText (topic, sim_name, strlen (sim_name));
-                        break;
-                    case '%':
-                        appendText (topic, "+", 1);
-                        break;
-                    case '+':
-                        appendText (topic, "%", 1);
-                        break;
-                    default:                    /* Check for vararg # */
-                        if (isdigit (*htext)) {
-                            n = 0;
-                            while (isdigit (*htext)) {
-                                n += (n * 10) + (*htext++ - '0');
-                            }
-                            if (*htext != 's' || n == 0 || n >= VSMAX)
-                                FAIL (SCPE_ARG);
-                            while (n > vsnum) { /* Get arg pointer if not cached */
-                                vstrings[vsnum++] = va_arg (ap, char *);
-                            }
-                            start = vstrings[n-1]; /* Insert selected string */
-                            ep = start;
-                            while (*ep) {
-                                if (*ep == '\n') {
-                                    ep++;       /* Segment to \n */
-                                    appendText (topic, start, ep - start);
-                                    if (*ep) {  /* More past \n, indent */
-                                        size_t i;
-                                        for (i = 0; i < ilvl; i++) {
-                                            appendText (topic, "    ", 4);
-                                        }
-                                    }
-                                    start = ep;
-                                } else {
-                                    ep++;
-                                }
-                            }
-                            appendText (topic, start, ep-start);
-                            break;
-                        }
-
-                        FAIL (SCPE_ARG);
-                    } /* switch (escape) */
-                    start = ++htext;
-                    continue;                   /* Current line */
-                } /* if (escape) */
-                if (*htext == '\n') {           /* End of line, append last segment */
-                    htext++;
-                    appendText (topic, start, htext - start);
-                    break;                      /* To next line */
-                }
-                htext++;                        /* Regular character */
-            }
-            continue;
-        } /* topic text line */
-        if (isdigit (*htext)) {                 /* Topic heading */
-            TOPIC **children;
-            TOPIC *newt;
-
-            n = 0;
-            start = htext;
-            while (isdigit (*htext)) {
-                n += (n * 10) + (*htext++ - '0');
-            }
-            if ((htext == start) || !n) {
-                FAIL (SCPE_ARG);
-            }
-            if (n <= topic->level) {            /* Find level for new topic */
-                while (n <= topic->level) {
-                    topic = topic->parent;
-                }
-            } else {
-                if (n > topic->level +1) {      /* Skipping down more than 1 */
-                    FAIL (SCPE_ARG);            /* E.g. 1 3, not reasonable */
-                }
-            }
-            while (*htext && (*htext != '\n') && isspace (*htext)) {
-                htext++;
-            }
-            if (!*htext || (*htext == '\n')) {  /* Name missing */
-                FAIL (SCPE_ARG);
-            }
-            start = htext;
-            while (*htext && (*htext != '\n')) {
-                htext++;
-            }
-            if (start == htext) {               /* Name NULL */
-                FAIL (SCPE_ARG);
-            }
-            excluded = FALSE;
-            if (*start == '?') {                /* Conditional topic? */
-                n = 0;
-                start++;
-                while (isdigit (*start)) {      /* Get param # */
-                    n += (n * 10) + (*start++ - '0');
-                }
-                if (!*start || *start == '\n'|| n == 0 || n >= VSMAX)
-                    FAIL (SCPE_ARG);
-                while (n > vsnum) {             /* Get arg pointer if not cached */
-                    vstrings[vsnum++] = va_arg (ap, char *);
-                }
-                end = vstrings[n-1];            /* Check for True */
-                if (!end || !(toupper (*end) == 'T' || *end == '1')) {
-                    excluded = TRUE;            /* False, skip topic this time */
-                    if (*htext)
+            help_where.line++;
+            if (isspace (*htext) || *htext == '+') {/* Topic text, indented topic text */
+                if (excluded) {                     /* Excluded topic text */
+                    while (*htext && *htext != '\n') {
                         htext++;
+                    }
+                    if (*htext)
+                        ++htext;
                     continue;
                 }
-            }                    
-            newt = (TOPIC *) calloc (sizeof (TOPIC), 1);
-            if (!newt) {
-                FAIL (SCPE_MEM);
-            }
-            newt->title = (char *) malloc ((htext - start)+1);
-            if (!newt->title) {
-                free (newt);
-                FAIL (SCPE_MEM);
-            }
-            memcpy (newt->title, start, htext - start);
-            newt->title[htext - start] = '\0';
-            if (*htext)
-                htext++;
+                ilvl = 1;
+                appendText (topic, "    ", 4);      /* Basic indentation */
+                if (*htext == '+') {                /* More for each + */
+                    while (*htext == '+') {
+                        ilvl++;
+                        appendText (topic, "    ", 4);
+                        htext++;
+                    }
+                }
+                while (*htext && *htext != '\n' && isspace (*htext)) {
+                    htext++;
+                }
+                if (!*htext) {                      /* Empty after removing leading spaces */
+                    break;
+                }
+                start = htext;
+                while (*htext) {                    /* Process line for substitutions */
+                    if (*htext == '%') {
+                        appendText (topic, start, htext - start); /* Flush up to escape */
+                        switch (*++htext) {         /* Evaluate escape */
+                        case 'U':
+                            if (dptr) {
+                                char buf[129];
+                                n = uptr? uptr - dptr->units: 0;
+                                sprintf (buf, "%s%u", dptr->name, n);
+                                appendText (topic, buf, strlen (buf));
+                            }
+                            break;
+                        case 'D':
+                            if (dptr) {
+                                appendText (topic, dptr->name, strlen (dptr->name));
+                                break;
+                            }
+                        case 'S':
+                            appendText (topic, sim_name, strlen (sim_name));
+                            break;
+                        case '%':
+                            appendText (topic, "%", 1);
+                            break;
+                        case '+':
+                            appendText (topic, "+", 1);
+                            break;
+                        default:                    /* Check for vararg # */
+                            if (isdigit (*htext)) {
+                                n = 0;
+                                while (isdigit (*htext)) {
+                                    n += (n * 10) + (*htext++ - '0');
+                                }
+                                if (( *htext != 'H' && *htext != 's') ||
+                                    n == 0 || n >= VSMAX)
+                                    FAIL (SCPE_ARG, Invalid escape);
+                                while (n > vsnum) { /* Get arg pointer if not cached */
+                                    vstrings[vsnum++] = va_arg (ap, char *);
+                                }
+                                start = vstrings[n-1]; /* Insert selected string */
+                                if (*htext == 'H') {   /* Append as more input */
+                                    if (asnum >= VSMAX) {
+                                        FAIL (SCPE_ARG, Too many blocks);
+                                    }
+                                    astrings[asnum++] = (char *)start;
+                                    break;
+                                }
+                                ep = start;
+                                while (*ep) {
+                                    if (*ep == '\n') {
+                                        ep++;       /* Segment to \n */
+                                        appendText (topic, start, ep - start);
+                                        if (*ep) {  /* More past \n, indent */
+                                            size_t i;
+                                            for (i = 0; i < ilvl; i++) {
+                                                appendText (topic, "    ", 4);
+                                            }
+                                        }
+                                        start = ep;
+                                    } else {
+                                        ep++;
+                                    }
+                                }
+                                appendText (topic, start, ep-start);
+                                break;
+                            }
+                            FAIL (SCPE_ARG, Invalid escape);
+                        } /* switch (escape) */
+                        start = ++htext;
+                        continue;                   /* Current line */
+                    } /* if (escape) */
+                    if (*htext == '\n') {           /* End of line, append last segment */
+                        htext++;
+                        appendText (topic, start, htext - start);
+                        break;                      /* To next line */
+                    }
+                    htext++;                        /* Regular character */
+                }
+                continue;
+            } /* topic text line */
+            if (isdigit (*htext)) {                 /* Topic heading */
+                TOPIC **children;
+                TOPIC *newt;
+                char nbuf[100];
 
-            if (newt->title[0] == '$') {
-                newt->flags |= HLP_MAGIC_TOPIC;
-            }
+                n = 0;
+                start = htext;
+                while (isdigit (*htext)) {
+                    n += (n * 10) + (*htext++ - '0');
+                }
+                if ((htext == start) || !n) {
+                    FAIL (SCPE_ARG, Invalid topic heading);
+                }
+                if (n <= topic->level) {            /* Find level for new topic */
+                    while (n <= topic->level) {
+                        topic = topic->parent;
+                    }
+                } else {
+                    if (n > topic->level +1) {      /* Skipping down more than 1 */
+                        FAIL (SCPE_ARG, Level not contiguous); /* E.g. 1 3, not reasonable */
+                    }
+                }
+                while (*htext && (*htext != '\n') && isspace (*htext)) {
+                    htext++;
+                }
+                if (!*htext || (*htext == '\n')) {  /* Name missing */
+                    FAIL (SCPE_ARG, Missing topic name);
+                }
+                start = htext;
+                while (*htext && (*htext != '\n')) {
+                    htext++;
+                }
+                if (start == htext) {               /* Name NULL */
+                    FAIL (SCPE_ARG, Null topic name);
+                }
+                excluded = FALSE;
+                if (*start == '?') {                /* Conditional topic? */
+                    n = 0;
+                    start++;
+                    while (isdigit (*start)) {      /* Get param # */
+                        n += (n * 10) + (*start++ - '0');
+                    }
+                    if (!*start || *start == '\n'|| n == 0 || n >= VSMAX)
+                        FAIL (SCPE_ARG, Invalid parameter number);
+                    while (n > vsnum) {             /* Get arg pointer if not cached */
+                        vstrings[vsnum++] = va_arg (ap, char *);
+                    }
+                    end = vstrings[n-1];            /* Check for True */
+                    if (!end || !(toupper (*end) == 'T' || *end == '1')) {
+                        excluded = TRUE;            /* False, skip topic this time */
+                        if (*htext)
+                            htext++;
+                        continue;
+                    }
+                }                    
+                newt = (TOPIC *) calloc (sizeof (TOPIC), 1);
+                if (!newt) {
+                    FAIL (SCPE_MEM, No memory);
+                }
+                newt->title = (char *) malloc ((htext - start)+1);
+                if (!newt->title) {
+                    free (newt);
+                    FAIL (SCPE_MEM, No memory);
+                }
+                memcpy (newt->title, start, htext - start);
+                newt->title[htext - start] = '\0';
+                if (*htext)
+                    htext++;
 
-            children = (TOPIC **) realloc (topic->children,
-                                           (topic->kids +1) * sizeof (TOPIC *));
-            if (!children) {
-                free (newt->title);
-                free (newt);
-                FAIL (SCPE_MEM);
+                if (newt->title[0] == '$') {
+                    newt->flags |= HLP_MAGIC_TOPIC;
+                }
+
+                children = (TOPIC **) realloc (topic->children,
+                                               (topic->kids +1) * sizeof (TOPIC *));
+                if (!children) {
+                    free (newt->title);
+                    free (newt);
+                    FAIL (SCPE_MEM, No memory);
+                }
+                topic->children = children;
+                topic->children[topic->kids++] = newt;
+                newt->level = n;
+                newt->parent = topic;
+                n = strlen (newt->title);
+                if (n > topic->kidwid) {
+                    topic->kidwid = n;
+                }
+                sprintf (nbuf, ".%u", topic->kids);
+                n = strlen (topic->label) + strlen (nbuf) + 1;
+                newt->label = (char *) malloc (n);
+                if (!newt->label) {
+                    free (newt->title);
+                    topic->children[topic->kids -1] = NULL;
+                    free (newt);
+                    FAIL (SCPE_MEM, No memory);
+                }
+                sprintf (newt->label, "%s%s", topic->label, nbuf);
+                topic = newt;
+                continue;
+            } /* digits introducing a topic */
+            if (*htext == ';') {                    /* Comment */
+                while (*htext && *htext != '\n')
+                    htext++;
+                continue;
             }
-            topic->children = children;
-            topic->children[topic->kids++] = newt;
-            newt->level = n;
-            newt->parent = topic;
-            n = strlen (newt->title);
-            if (n > topic->kidwid) {
-                topic->kidwid = n;
-            }
-            topic = newt;
-            continue;
-        } /* digits introducing a topic */
-        if (*htext == ';') {                    /* Comment */
-            while (*htext && *htext != '\n')
-                htext++;
-            continue;
-        }
-        FAIL (SCPE_ARG);                        /* Unknown line */
-    } /* htext not at end */
+            FAIL (SCPE_ARG, Unknown line type);     /* Unknown line */
+        } /* htext not at end */
+        vsbase = vsnum;
+        memset (vstrings, 0, VSMAX * sizeof (char *));
+        vsnum = 0;
+    } /* all strings */
 
     return topic;
 }
@@ -7381,31 +7422,41 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
 /* Create prompt string - top thru current topic
  * Add prompt at end.
  */
-static char *helpPrompt ( TOPIC *topic, const char *pstring ) {
+static char *helpPrompt ( TOPIC *topic, const char *pstring, t_bool oneword ) {
     char *prefix;
-    char *newp;
+    char *newp, *newt;
 
     if (topic->level == 0) {
         prefix = (char *) calloc (2,1);
         if (!prefix) {
-            FAIL (SCPE_MEM);
+            FAIL (SCPE_MEM, No memory);
         }
         prefix[0] = '\n';
     } else {
-        prefix = helpPrompt (topic->parent, "");
+        prefix = helpPrompt (topic->parent, "", oneword);
     }
 
     newp = (char *) malloc (strlen (prefix) + 1 + strlen (topic->title) + 1 +
                             strlen (pstring) +1);
     if (!newp) {
         free (prefix);
-        FAIL (SCPE_MEM);
+        FAIL (SCPE_MEM, No memory);
     }
     strcpy (newp, prefix);
     if (topic->level != 0)
         strcat (newp, " ");
-    strcat (newp, ((topic->flags & HLP_MAGIC_TOPIC)?
-                   topic->title+1: topic->title));
+    newt = (topic->flags & HLP_MAGIC_TOPIC)?
+            topic->title+1: topic->title;
+    if (oneword) {
+        char *np = newp + strlen (newp);
+        while (*newt) {
+            *np++ = isspace (*newt)? '_' : *newt;
+            newt++;
+        }
+        *np = '\0';
+    } else {
+        strcat (newp, newt);
+    }
     if (*pstring && *pstring != '?')
         strcat (newp, " ");
     strcat (newp, pstring);
@@ -7413,69 +7464,231 @@ static char *helpPrompt ( TOPIC *topic, const char *pstring ) {
     return newp;
 }
 
+static void displayMagicTopic (FILE *st, struct sim_device *dptr, TOPIC *topic) {
+    FILE *tmp = tmpfile();
+    char tbuf[CBUFSIZE];
+    size_t i, skiplines;
+
+    if (!tmp) {
+        fprintf (st, "Unable to create temporary file: %s\n", strerror (errno));
+        return;
+    }
+    
+    if (topic->title)
+        fprintf (st, "%s\n", topic->title+1);
+
+    skiplines = 0;
+    if (!strcmp (topic->title+1, "Registers")) {
+        fprint_reg_help (tmp, dptr) ;
+        skiplines = 1;
+    } else if (!strcmp (topic->title+1, "Set commands")) {
+        fprint_set_help (tmp, dptr);
+        skiplines = 3;
+    } else if (!strcmp (topic->title+1, "Show commands")) {
+        fprint_show_help (tmp, dptr);
+        skiplines = 3;
+    }
+    rewind (tmp);
+
+    /* Discard leading blank lines/redundant titles */
+
+    for (i =0; i < skiplines; i++) {
+        fgets (tbuf, sizeof (tbuf), tmp);
+    }
+
+    while (fgets (tbuf, sizeof (tbuf), tmp)) {
+        if (tbuf[0] != '\n') {
+            fputs ("    ", st);
+        }
+        fputs (tbuf, st);
+    }
+    fclose (tmp);
+    return;
+}
+/* Flatten and display help for those who say they prefer it.
+ */
+
+static t_stat displayFlatHelp (FILE *st, struct sim_device *dptr,
+                               struct sim_unit *uptr, int32 flag,
+                               TOPIC *topic, va_list ap ) {
+    size_t i;
+
+    if (topic->flags & HLP_MAGIC_TOPIC) {
+        fprintf (st, "\n%s ", topic->label);
+        displayMagicTopic (st, dptr, topic);
+    } else {
+        fprintf (st, "\n%s %s\n", topic->label, topic->title);
+    }
+    
+    /* Topic text (for magic topics, follows for explanations)
+     * It's possible/reasonable for a magic topic to have no text.
+     */
+
+    if (topic->text)
+        fputs (topic->text, st);
+
+    for (i = 0; i < topic->kids; i++) {
+        displayFlatHelp (st, dptr, uptr, flag, topic->children[i], ap);
+    }
+
+    return SCPE_OK;
+}
+
+#define HLP_MATCH_AMBIGUOUS (~0u)
+#define HLP_MATCH_WILDCARD  (~1U)
+#define HLP_MATCH_NONE      0
+static int matchHelpTopicName (TOPIC *topic, const char *token) {
+    size_t i, match;
+    char cbuf[CBUFSIZE], *cptr;
+
+    if (!strcmp (token, "*")) {
+        return HLP_MATCH_WILDCARD;
+    }
+    match = 0;
+    for (i = 0; i < topic->kids; i++) {
+        strcpy (cbuf,topic->children[i]->title +
+                ((topic->children[i]->flags & HLP_MAGIC_TOPIC)? 1 : 0));
+        cptr = cbuf;
+        while (*cptr) {
+            if (isspace (*cptr)) {
+                *cptr++ = '_';
+            } else {
+                *cptr = toupper (*cptr);
+                cptr++;
+            }
+        }
+        if (!strncmp (cbuf, token, strlen (token))) {
+            if (match) {
+                return HLP_MATCH_AMBIGUOUS;
+            }
+            match = i+1;
+        }
+    }
+    return match;
+}
+
 /* Main help routine
  * Takes a va_list
  */
 
 t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
-                  struct sim_unit *uptr, const char *help, char *cptr, va_list ap) {
+                  struct sim_unit *uptr, int32 flag,
+                  const char *help, char *cptr, va_list ap) {
 
-    TOPIC top = { 0, NULL, &top, NULL, 0, NULL, 0, 0};
+    TOPIC top = { 0, NULL, NULL, &top, NULL, 0, NULL, 0, 0};
     TOPIC *topic = &top;
-    int failed;
+    int failed, match;
     size_t i;
     char *p;
-    const char *const brief_help = "%s help.  Type <CR> to exit, HELP for navigation help";
-    const char *const help_help = 
+    t_bool flat_help = FALSE;
+    char cbuf [CBUFSIZE], gbuf[CBUFSIZE];
+
+    static const char attach_help[] = { " ATTACH" };
+    static const char brief_help[] = { "%s help.  Type <CR> to exit, HELP for navigation help" };
+    static const char onecmd_help[] = { "%s help." };
+    static const char help_help[] = {
         /****|***********************80 column width guide********************************/
         "    This help command provides hierarchical help.  To see more information, type\n"
         "    an offered subtopic name.  To move back a level, just type <CR>.\n"
         "    To review the current topic/subtopic, type \"?\".\n"
+        "    To view all subtopics, type \"*\".\n"
         "    To exit help at any time, type EXIT.\n"
-        ;
+    };
 
     if ((failed = setjmp (help_env)) != 0) {
-        fprintf (stderr, "Help was unable to process the help for this device.\n"
-                         "Please contact the device maintainer.\n");
+        fprintf (stderr, "\nHelp was unable to process the help for this device.\n"
+                         "Error in block %u line %u: %s\n"
+                         "Please contact the device maintainer.\n", 
+                 help_where.block, help_where.line, help_where.error);
         cleanHelp (&top);
         return failed;
     }
 
-    /* Build structure */
+    /* Compile string into navigation tree */
+
+    /* Root */
+
     if (dptr) {
         p = dptr->name;
+        flat_help = (dptr->flags & DEV_FLATHELP) != 0;
     } else {
         p = sim_name;
     }
-    top.title = (char *) malloc (strlen (p) +1);
+    top.title = (char *) malloc (strlen (p) + ((flag & SCP_HELP_ATTACH)? sizeof (attach_help)-1: 0) +1);
     for (i = 0; p[i]; i++ ) {
         top.title[i] = toupper (p[i]);
     }
-    top.title[i] = '\0';    
-    fprintf (st, brief_help, top.title);
+    top.title[i] = '\0';
+    if (flag & SCP_HELP_ATTACH) {
+        strcpy (top.title+i, attach_help);
+    }
+
+    top.label = (char *) malloc (sizeof ("1"));
+    strcpy (top.label, "1");
+
+    flat_help = flat_help || !sim_ttisatty() || (flag & SCP_HELP_FLAT);
+
+    if (flat_help) {
+        flag |= SCP_HELP_FLAT;
+        if (sim_ttisatty()) {
+            fprintf (st, "%s help.\nThis help is also available in hierarchical form.\n", top.title);
+        } else {
+            fprintf (st, "%s help.\n", top.title);
+        }
+    } else {
+        fprintf (st, ((flag & SCP_HELP_ONECMD)? onecmd_help: brief_help), top.title);
+    }
+
+    /* Add text and subtopics */
 
     (void) buildHelp (&top, dptr, uptr, help, ap);
+
+    /* Go to initial topic if provided */
+
+    while (cptr && *cptr) {
+        cptr = get_glyph (cptr, gbuf, 0);
+        if (!gbuf[0]) {
+            break;
+        }
+        if (!strcmp (gbuf, "HELP")) {           /* HELP (about help) */
+            fputs (help_help, st);
+            break;
+        }
+        match =  matchHelpTopicName (topic, gbuf);
+        if (match == HLP_MATCH_WILDCARD) {
+            displayFlatHelp (st, dptr, uptr, flag, topic, ap);
+            cleanHelp (&top);
+            return SCPE_OK;
+        }
+        if (match == HLP_MATCH_AMBIGUOUS) {
+            fprintf (st, "\n%s is ambiguous in %s\n", gbuf, topic->title);
+            break;
+        }
+        if (match == HLP_MATCH_NONE) {
+            fprintf (st, "\n%s is not available in %s\n", gbuf, topic->title);
+            break;
+        }
+        topic = topic->children[match-1];
+    }
+    cptr = NULL;
+
+    if (flat_help) {
+        displayFlatHelp (st, dptr, uptr, flag, topic, ap);
+        cleanHelp (&top);
+        return SCPE_OK;
+    }
 
     /* Interactive loop displaying help */
 
     while (TRUE) {
-        char cbuf[CBUFSIZE], gbuf[CBUFSIZE];
         char *pstring;
         const char *prompt[2] = {"? ", "Subtopic? "};
 
         /* Some magic topic names for help from data structures */
 
         if (topic->flags & HLP_MAGIC_TOPIC) {
-            /* These provide their own title:
-             * if (topic->title) fprintf (st, "\n%s\n", topic->title+1);
-             */
-            if (!strcmp (topic->title+1, "Registers")) {
-                fprint_reg_help (st, dptr) ;
-            } else if (!strcmp (topic->title+1, "Set commands")) {
-                fprint_set_help (st, dptr);
-            } else if (!strcmp (topic->title+1, "Show commands")) {
-                fprint_show_help (st, dptr);
-            }
+            fputc ('\n', st);
+            displayMagicTopic (st, dptr, topic);
         } else {
             fprintf (st, "\n%s\n", topic->title);
         }
@@ -7489,40 +7702,52 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
 
         if (topic->kids) {
             size_t w = 0;
-            char *p = cbuf;
+            char *p;
+            char tbuf[CBUFSIZE];
 
             fprintf (st, "\n    Additional information available:\n\n");
             for (i = 0; i < topic->kids; i++) {
-                strcpy (cbuf, topic->children[i]->title + 
+                strcpy (tbuf, topic->children[i]->title + 
                         ((topic->children[i]->flags & HLP_MAGIC_TOPIC)? 1 : 0));
-                while (*p) {
+                for (p = tbuf; *p; p++) {
                     if (isspace (*p))
                         *p = '_';
-                    p++;
                 }
                 w += 4 + topic->kidwid;
                 if (w > 80) {
                     w = 4 + topic->kidwid;
                     fputc ('\n', st);
                 }
-                fprintf (st, "    %-*s", topic->kidwid, cbuf);
+                fprintf (st, "    %-*s", topic->kidwid, tbuf);
             }
             fprintf (st, "\n\n");
+            if (flag & SCP_HELP_ONECMD) {
+                pstring = helpPrompt (topic, "", TRUE);
+                fprintf (st, "To view additional topics, type HELP %s topicname\n", pstring+1);
+                free (pstring);
+                break;
+            }
         }
 
-        if (!sim_ttisatty())
+        if (!sim_ttisatty() || (flag & SCP_HELP_ONECMD))
             break;
 
       reprompt:
-        pstring = helpPrompt (topic, prompt[topic->kids != 0]);
+        if (!cptr || !*cptr) {
+            pstring = helpPrompt (topic, prompt[topic->kids != 0], FALSE);
 
-        cptr = read_line_p (pstring, cbuf, sizeof (cbuf), stdin);
-        free (pstring);
+            cptr = read_line_p (pstring, cbuf, sizeof (cbuf), stdin);
+            free (pstring);
+        }
 
         if (!cptr)                              /* EOF, exit help */
             break;
 
         cptr = get_glyph (cptr, gbuf, 0);
+        if (!strcmp (gbuf, "*")) {              /* Wildcard */
+            displayFlatHelp (st, dptr, uptr, flag, topic, ap);
+            gbuf[0] = '\0';                     /* Displayed all subtopics, go up */
+        }
         if (!gbuf[0]) {                         /* Blank, up a level */
             if (topic->level == 0)
                 break;
@@ -7536,7 +7761,7 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
             fputs (help_help, st);
             goto reprompt;
         }
-        if (!strcmp (gbuf, "EXIT")) {           /* EXIT (help) */
+        if (!strcmp (gbuf, "EXIT") || !strcmp (gbuf, "QUIT")) { /* EXIT (help) */
             break;
         }
 
@@ -7544,31 +7769,24 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
 
         if (!topic->kids) {
             fprintf (st, "No additional help at this level.\n");
+            cptr = NULL;
+            goto reprompt;
+        }
+        match = matchHelpTopicName (topic, gbuf);
+        if (match == HLP_MATCH_AMBIGUOUS) {
+            fprintf (st, "%s is ambiguous, please type more of the topic name\n", gbuf);
+            cptr = NULL;
             goto reprompt;
         }
 
-        for (i = 0; i < topic->kids; i++) {
-            strcpy (cbuf,topic->children[i]->title +
-                    ((topic->children[i]->flags & HLP_MAGIC_TOPIC)? 1 : 0));
-            cptr = cbuf;
-            while (*cptr) {
-                if (isspace (*cptr)) {
-                    *cptr++ = '_';
-                } else {
-                    *cptr = toupper (*cptr);
-                    cptr++;
-                }
-            }
-            if (!strncmp (cbuf, gbuf, strlen (gbuf))) {
-                break;
-            }
+        if (match == HLP_MATCH_NONE) {
+            fprintf (st, "Help for %s is not available\n", gbuf);
+            cptr = NULL;
+            goto reprompt;
         }
-        if (i < topic->kids) {                  /* Found, display subtopic */
-            topic = topic->children[i];
-            continue;                
-        }
-        fprintf (st, "Help for %s is not available\n", gbuf);
-        goto reprompt;
+        /* Found, display subtopic */
+
+        topic = topic->children[match-1];
     }
 
     /* Free structures and return */
@@ -7582,12 +7800,13 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
  */
 
 t_stat scp_help (FILE *st, struct sim_device *dptr,
-                 struct sim_unit *uptr, const char *help, char *cptr, ...) {
+                 struct sim_unit *uptr, int32 flag,
+                 const char *help, char *cptr, ...) {
     t_stat r;
     va_list ap;
 
     va_start (ap, cptr);
-    r = scp_vhelp (st, dptr, uptr, help, cptr, ap);
+    r = scp_vhelp (st, dptr, uptr, flag, help, cptr, ap);
     va_end (ap);
 
     return r;
@@ -7602,7 +7821,9 @@ t_stat scp_help (FILE *st, struct sim_device *dptr,
  */
 
 t_stat scp_vhelpFromFile (FILE *st, struct sim_device *dptr,
-                         struct sim_unit *uptr, const char *helpfile, char *cptr, va_list ap) {
+                         struct sim_unit *uptr, int32 flag,
+                          const char *helpfile,
+                          char *cptr, va_list ap) {
     FILE *fp;
     char *help, *p;
     t_offset size, n;
@@ -7687,19 +7908,20 @@ t_stat scp_vhelpFromFile (FILE *st, struct sim_device *dptr,
 
     fclose (fp);
 
-    r = scp_vhelp (st, dptr, uptr, help, cptr, ap);
+    r = scp_vhelp (st, dptr, uptr, flag, help, cptr, ap);
     free (help);
 
     return r;
 }
 
 t_stat scp_helpFromFile (FILE *st, struct sim_device *dptr,
-                          struct sim_unit *uptr, const char *helpfile, char *cptr, ...) {
+                         struct sim_unit *uptr, int32 flag,
+                         const char *helpfile, char *cptr, ...) {
     t_stat r;
     va_list ap;
 
     va_start (ap, cptr);
-    r = scp_vhelpFromFile (st, dptr, uptr, helpfile, cptr, ap);
+    r = scp_vhelpFromFile (st, dptr, uptr, flag, helpfile, cptr, ap);
     va_end (ap);
 
     return r;

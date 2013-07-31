@@ -27,7 +27,8 @@
 #ifndef LPT2PDF_H_
 #define LPT2PDF_H_  0
 
-/*
+/* Provides an API for writing lineprinter data to pdf files with simulated paper.
+ *
  * The API for the library is fairly straightforward:
  *  PDF_HANDLE handle = pdf_open ("pdf_file.pdf");
  *     Returns NULL on error; errno may give a clue.
@@ -71,7 +72,7 @@
  *                                    "YELLOWBAR"  - Standard yellowbar
  *                                    "GRAYBAR"    - Standard graybar
  *                                    "PLAIN"      - Plain white
- *       PDF_FORM_IMAGE     filename              File name for PDF_JPEG background (replaces form)
+ *       PDF_FORM_IMAGE     filename              File name for PDF_JPEG background (over form)
  *                                                Image can be used for logos, special forms.  It is 
  *                                                scaled to fit the width of the page, less margins.
  *                                                Aspect ratio is maintained. 
@@ -104,6 +105,9 @@
  *
  *     Returns PDF_OK for success
  *
+ * int pdf_is_empty (PDF_HANDLE pdf)
+ *     Returns true if the file contains any pages (full or partial).
+ *
  * const char *const *pdf_get_formlist ( size_t *length )
  *    Returns a NULL-terminated list of the supported form names, and optionally it's length.
  *
@@ -125,12 +129,22 @@
  *     handle is invalid thereafter.
  *     Returns PDF_OK for success
  *
+ * PDF_HANDLE pdf_newfile (PDF_HANDLE openpdf, const char *filename)
+ *    Used when the output file is to be handed to an external process, such
+ *    as a printer, and a new file is replace it.
+ *
+ *    Opens a new pdf file with the same parameters as an open file.
+ *    The new file does not inherit any other state from the open file.
+ *    Does not close the open file.
+ *    Returns the new PDF_HANDLE, or NULL if an error occurs.
+ *
  * int pdf_file (filename)
  *    Returns PDF_OK if file has a PDF header.
  *    Not an exhaustive check, but can be used to see if appending should be PDF or text.
  *
  * int pdf_error (PDF_HANDLE pdf)
- *    Returns the last error on this handle (or from errno)
+ *    pdf must be valid.  Specify NULL if pdf_open or pdf_close fails.
+ *    Returns the last error on this handle (or from errno if pdf is NULL
  *
  * const char *pdf_strerror (int errnum)
  *    Returns the string corresponding to the specified error (pdf or system)
@@ -158,6 +172,10 @@ int pdf_file ( const char *name );
 
 PDF_HANDLE pdf_open (const char *filename);
 
+PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename);
+
+FILE *pdf_open_exclusive (const char *filename, const char *mode);
+
 int pdf_set (PDF_HANDLE pdf, int arg,...);
 #define PDF_NO_LZW        (-1)
 #define PDF_TOP_MARGIN    (1)
@@ -183,6 +201,8 @@ int pdf_print (PDF_HANDLE pdf, const char *string, size_t length);
 #define PDF_USE_STRLEN ((size_t)(~0u))
 
 int pdf_where (PDF_HANDLE pdf, size_t *page, size_t *line);
+
+int pdf_is_empty (PDF_HANDLE pdf);
 
 const char *const* pdf_get_formlist ( size_t *length );
 

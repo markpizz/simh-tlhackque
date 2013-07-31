@@ -128,7 +128,9 @@
  *    or attach function, (e.g. in a device init caused by a register write), you may need
  *    to call pdflpt_reset to stop the idle timer.
  *
- *    Update the device help.
+ *    Update the device help.  It can point to the printer appendix of simh_doc.doc for the details
+ *    of pdf output.  Or call pdflpt_help and pdflpt_attach_help, which provide generic help.
+ *    Best: convert to structured help and %H-include the PDF tree.  See scp_help.h.
  *
  *    If you don't do anything special with errors (e.g. you just reflect them as SCPE_IOERR),
  *    you're done.  If you do, look at the error functions.  The error codes are defined in
@@ -151,6 +153,10 @@
 
 /* Replacements for attach_unit and detach_unit that handle PDF magic.
  * These defer to the standard functions if pdf output is not selected.
+ *
+ * Also provides spooled file support, which allows output to be sent to
+ * an external process (usually a physical printer's spooler) without
+ * stopping the simulator.  -S applies to any LPT device.
  */
 
 /* Attach function for LPTs
@@ -169,6 +175,10 @@
  *   -E - File must exist (and be a .pdf file)
  *   -R - If the file exists, must be empty
  *   None - If the file exists, data will be appended.  If not, will be created.
+ *   -S - Enable file spooling.  This will create sequentially numbered output
+ *        files when commanded by the operator.  External software can be used
+ *        to detect these files and automatically print them.  Files after the
+ *        initial file are named .nnnnn.pdf instead of .pdf.
  *
  * Note that a .pdf file must be properly closed; a simulator crash will
  * likely corrupt a file.
@@ -176,7 +186,7 @@
  * Parameters:     Default
  *   Parameter      Value       Description
  *   FORM         GREENBAR      Form to be printed: PLAIN, GREENBAR, BLUEBAR, YELLOWBAR, GRAYBAR
- *   IMAGE                      .JPG file printed instead of FORM.
+ *   IMAGE                      .JPG file printed over FORM.
  *   TITLE    Lineprinter data  Title of PDF document
  *   FONT     Courier           Font for text; must be PDF standard, monospace.
  *   TOP-MARGIN     1.0in       Space above first bar; start of normal print area
@@ -292,6 +302,18 @@ void pdflpt_reset (UNIT *uptr);
  */
 
 int pdflpt_snapshot (UNIT *uptr, const char *filename);
+
+/* Help helpers */
+
+t_stat pdflpt_attach_help (FILE *st, struct sim_device *dptr,
+                                  struct sim_unit *uptr, int32 flag, char *cptr);
+
+t_stat pdflpt_help (FILE *st, struct sim_device *dptr,
+                           struct sim_unit *uptr, int32 flag, char *cptr);
+
+extern const char pdflpt_helptext[];
+extern const char pdflpt_attach_helptext[];
+
 #define PDFLPT_OK (0)
 
 /* For the daringly lazy:
