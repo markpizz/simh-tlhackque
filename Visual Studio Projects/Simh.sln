@@ -99,6 +99,10 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VAX8600", "VAX8600.vcproj",
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SSEM", "SSEM.vcproj", "{48DA6BA8-23E1-4F0D-959C-48C8576494DA}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lpt2pdf", "lpt2pdf.vcproj", "{A08DD180-8124-419E-9788-59BE688367F6}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PDFWatcher", "PDFWatcher.vcproj", "{D7CE6D5F-2C7E-44D4-A637-9712BC9DF2DC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32
@@ -253,6 +257,14 @@ Global
 		{48DA6BA8-23E1-4F0D-959C-48C8576494DA}.Debug|Win32.Build.0 = Debug|Win32
 		{48DA6BA8-23E1-4F0D-959C-48C8576494DA}.Release|Win32.ActiveCfg = Release|Win32
 		{48DA6BA8-23E1-4F0D-959C-48C8576494DA}.Release|Win32.Build.0 = Release|Win32
+		{A08DD180-8124-419E-9788-59BE688367F6}.Debug|Win32.ActiveCfg = Debug|Win32
+		{A08DD180-8124-419E-9788-59BE688367F6}.Debug|Win32.Build.0 = Debug|Win32
+		{A08DD180-8124-419E-9788-59BE688367F6}.Release|Win32.ActiveCfg = Release|Win32
+		{A08DD180-8124-419E-9788-59BE688367F6}.Release|Win32.Build.0 = Release|Win32
+		{D7CE6D5F-2C7E-44D4-A637-9712BC9DF2DC}.Debug|Win32.ActiveCfg = Debug|Win32
+		{D7CE6D5F-2C7E-44D4-A637-9712BC9DF2DC}.Debug|Win32.Build.0 = Debug|Win32
+		{D7CE6D5F-2C7E-44D4-A637-9712BC9DF2DC}.Release|Win32.ActiveCfg = Release|Win32
+		{D7CE6D5F-2C7E-44D4-A637-9712BC9DF2DC}.Release|Win32.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

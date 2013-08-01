@@ -218,6 +218,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\lpt2pdf.c"
+				>
+			</File>
+			<File
 				RelativePath="..\scp.c"
 				>
 			</File>
@@ -235,6 +239,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_fio.c"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_pdflpt.c"
 				>
 			</File>
 			<File

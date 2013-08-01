@@ -192,6 +192,10 @@
 			Filter="cpp;c;cxx;def;odl;idl;hpj;bat;asm"
 			>
 			<File
+				RelativePath="..\lpt2pdf.c"
+				>
+			</File>
+			<File
 				RelativePath="..\PDP10\pdp10_cpu.c"
 				>
 			</File>
@@ -273,6 +277,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_fio.c"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_pdflpt.c"
 				>
 			</File>
 			<File
