@@ -47,6 +47,7 @@
  */
 
 #include "ibm1130_defs.h"
+#include "sim_pdflpt.h"
 #include <stdlib.h>				/* needed for atexit, for cgi mode */
 
 /***************************************************************************************
@@ -151,18 +152,25 @@ REG prt_reg[] = {
 	{ DRDATA (TTIME,  prt_twait, 24), PV_LEFT },		/* 1403 transfer wait */
 	{ NULL }  };
 
+static t_stat set_prt_type (UNIT *uptr, int32 val, char *cptr, void *desc);
+static t_stat show_prt_type (FILE *st, UNIT *uptr, int32 val, void *desc);
 MTAB prt_mod[] = {
-	{ UNIT_1403, 0,           "1132",    "1132", NULL },	/* model option */
-	{ UNIT_1403, UNIT_1403,   "1403",    "1403", NULL },
-	{ UNIT_TRACE, UNIT_TRACE, "TRACE",   "TRACE", NULL },
-	{ UNIT_TRACE, 0,          "NOTRACE", "NOTRACE", NULL },
+    { MTAB_XTD|MTAB_VDV,          0, "MODEL",   "1132", 
+      &set_prt_type, &show_prt_type, NULL, "Printer model" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 1, NULL, "1403", 
+      &set_prt_type, NULL,           NULL, "Printer model" },
+	{ UNIT_TRACE, UNIT_TRACE,        "TRACE",   "TRACE", NULL },
+	{ UNIT_TRACE, 0,                 "NOTRACE", "NOTRACE", NULL },
 	{ 0 }  };
 
 DEVICE prt_dev = {
 	"PRT", prt_unit, prt_reg, prt_mod,
 	1, 16, 16, 1, 16, 16,
 	NULL, NULL, &prt_reset,
-	NULL, prt_attach, prt_detach};
+	NULL, prt_attach, prt_detach,
+    NULL, 0, 0,
+    NULL, NULL, NULL,
+    &pdflpt_help, &pdflpt_attach_help };
 
 #define MAX_COLUMNS     120								
 #define MAX_OVPRINT	     20
@@ -264,20 +272,20 @@ static t_bool save_1132_prt_line (int ch)
  * are never fired for them, so ncol[r] is the last printed position on each line.
  */
 
-static void newpage (FILE *fd, t_bool physical_printer)
+static void newpage (UNIT *uptr, t_bool physical_printer)
 {
 	if (cgi)
-		fputs("<HR>\n", fd);
+		pdflpt_puts(uptr, "<HR>\n");
 	else if (! formfed) {
-		putc('\f', fd);
+		pdflpt_putc(uptr, '\f');
 		if (physical_printer) {
-			fflush(fd);										/* send the ff out to the printer immediately */
+			pdflpt_flush(uptr);  							/* send the ff out to the printer immediately */
 			formfed = TRUE;									/* hack: inhibit consecutive ff's */
 		}
 	}
 }
 
-static void flush_prt_line (FILE *fd, int spacemode, t_bool physical_printer)
+static void flush_prt_line (UNIT *uptr, int spacemode, t_bool physical_printer)
 {
 	int r;
 
@@ -290,11 +298,11 @@ static void flush_prt_line (FILE *fd, int spacemode, t_bool physical_printer)
 		if (prt_row == 0 && prt_nnl) {
 #ifdef _WIN32
 			if (! cgi)
-				putc('\r', fd);								/* DOS/Windows: end with cr/lf */
+				pdflpt_putc(uptr, '\r');					/* DOS/Windows: end with cr/lf */
 #endif
-			putc('\n', fd);									/* otherwise end with lf */
+			pdflpt_putc(uptr, '\n');						/* otherwise end with lf */
 			if (spacemode & UNIT_SKIPPING)					/* add formfeed if we crossed page boundary while skipping */
-				newpage(fd, physical_printer);
+				newpage(uptr, physical_printer);
 
 			prt_nnl = 0;
 		}
@@ -311,18 +319,18 @@ static void flush_prt_line (FILE *fd, int spacemode, t_bool physical_printer)
 		while (prt_nnl > 0) {								/* spit out queued newlines */
 #ifdef _WIN32
 			if (! cgi)
-				putc('\r', fd);								/* DOS/Windows: end with cr/lf */
+				pdflpt_putc(uptr, '\r');					/* DOS/Windows: end with cr/lf */
 #endif
-			putc('\n', fd);									/* otherwise end with lf */
+			pdflpt_putc(uptr, '\n');						/* otherwise end with lf */
 			prt_nnl--;
 		}
 	}
 
 	for (r = 0; r < maxnp; r++) {
 		if (r > 0)
-			putc('\r', fd);									/* carriage return between overprinted lines */
+			pdflpt_putc(uptr, '\r');						/* carriage return between overprinted lines */
 
-		fxwrite(&prtbuf[r*MAX_COLUMNS], 1, ncol[r], fd);
+		pdflpt_write(uptr, &prtbuf[uptr, r*MAX_COLUMNS], 1, ncol[r]);
 	}
 
 	reset_prt_line();
@@ -331,7 +339,7 @@ static void flush_prt_line (FILE *fd, int spacemode, t_bool physical_printer)
 	prt_nnl++;												/* queue a newline */
 
 	if (physical_printer)									/* if physical printer, send buffered output to device */
-		fflush(fd);
+		pdflpt_flush(uptr);
 
 	formfed = FALSE;										/* note that something is now on the page */
 }
@@ -451,7 +459,7 @@ static t_stat prt1132_svc (UNIT *uptr)
 	}
 
 	if (uptr->flags & UNIT_SPACING) {
-		flush_prt_line(uptr->fileref, UNIT_SPACING, IS_PHYSICAL(uptr));
+		flush_prt_line(uptr, UNIT_SPACING, IS_PHYSICAL(uptr));
 
 		CLRBIT(PRT_DSW, PRT1132_DSW_CHANNEL_MASK|PRT1132_DSW_PRINTER_BUSY|PRT1132_DSW_CARRIAGE_BUSY);
 		SETBIT(PRT_DSW, cc_format_1132(cctape[prt_row]) | PRT1132_DSW_SPACE_RESPONSE);
@@ -462,7 +470,7 @@ static t_stat prt1132_svc (UNIT *uptr)
 
 	if (uptr->flags & UNIT_SKIPPING) {
 		do {
-			flush_prt_line(uptr->fileref, UNIT_SKIPPING, IS_PHYSICAL(uptr));
+			flush_prt_line(uptr, UNIT_SKIPPING, IS_PHYSICAL(uptr));
 			CLRBIT(PRT_DSW, PRT1132_DSW_CHANNEL_MASK);
 			SETBIT(PRT_DSW, cc_format_1132(cctape[prt_row]));
 		} while ((cctape[prt_row] & CC_1132_BITS) == 0);			/* slew directly to a cc tape punch */
@@ -615,7 +623,7 @@ static t_stat prt1403_svc(UNIT *uptr)
 	}
 	else if (uptr->flags & UNIT_SKIPPING) {
 		do {												/* find line with exact match of tape punches */
-			flush_prt_line(uptr->fileref, UNIT_SKIPPING, IS_PHYSICAL(uptr));
+			flush_prt_line(uptr, UNIT_SKIPPING, IS_PHYSICAL(uptr));
 		} while (cctape[prt_row] != SKIPTARGET);			/* slew directly to requested cc tape punch */
 
 		CLRBIT(uptr->flags, UNIT_SKIPPING);					/* done with this */
@@ -625,7 +633,7 @@ static t_stat prt1403_svc(UNIT *uptr)
 		SETBIT(ILSW[4], ILSW_4_1403_PRINTER);
 	}
 	else if (uptr->flags & UNIT_SPACING) {
-		flush_prt_line(uptr->fileref, UNIT_SPACING, IS_PHYSICAL(uptr));
+		flush_prt_line(uptr, UNIT_SPACING, IS_PHYSICAL(uptr));
 
 		CLRBIT(uptr->flags, UNIT_SPACING);					/* done with this */
 		CLRBIT(PRT_DSW, PRT1403_DSW_CARRIAGE_BUSY);
@@ -671,6 +679,7 @@ static t_stat delete_cmd (int flag, char *cptr)
 static t_stat prt_reset (DEVICE *dptr)
 {
 	UNIT *uptr = &prt_unit[0];
+    char tbuf[sizeof ("columns=999")];
 	int i;
 
 /* add a DELETE filename command so we can be sure to have clean listings */
@@ -700,6 +709,7 @@ static t_stat prt_reset (DEVICE *dptr)
 		PRT_DSW = cc_format_1132(cctape[prt_row]);
 		if (! IS_ONLINE(uptr))
 			SETBIT(PRT_DSW, PRT1132_DSW_NOT_READY);
+        i = PRT1132_COLUMNS;
 	}
 	else {
 		CLRBIT(ILSW[4], ILSW_4_1403_PRINTER);
@@ -710,7 +720,12 @@ static t_stat prt_reset (DEVICE *dptr)
 			SETBIT(PRT_DSW, PRT1403_DSW_CH12);
 		if (! IS_ONLINE(uptr))
 			SETBIT(PRT_DSW, PRT1403_DSW_NOT_READY);
+        i = PRT1403_COLUMNS;
 	}
+
+    pdflpt_reset (uptr);
+    sprintf (tbuf, "columns=%u", i);
+    pdflpt_set_defaults (uptr, tbuf);
 
 	SET_ACTION(uptr, 0);
 	calc_ints();
@@ -741,20 +756,14 @@ static t_stat prt_attach (UNIT *uptr, char *cptr)
 	sim_cancel(uptr);
 
 	if (strcmp(cptr, "(stdout)") == 0) {				/* connect printer to stdout */
-		if (uptr -> flags & UNIT_DIS) return SCPE_UDIS;	/* disabled? */
-		uptr->filename = calloc(CBUFSIZE, sizeof(char));
+        if ((rval = pdflpt_attach (uptr, "-")) != SCPE_OK)
+            return rval;
 		strcpy(uptr->filename, "(stdout)");
-	    uptr->fileref = stdout;
-		SETBIT(uptr->flags, UNIT_ATT);
-		uptr->pos = 0;
 	}
 	else {
-		if ((rval = attach_unit(uptr, quotefix(cptr))) != SCPE_OK)
+		if ((rval = pdflpt_attach (uptr, quotefix(cptr))) != SCPE_OK)
 			return rval;
 	}
-
-	fseek(uptr->fileref, 0, SEEK_END);					/* if we opened an existing file, append to it */
-	uptr->pos = ftell(uptr->fileref);
 
 	if (IS_1132(uptr)) {
 		CLRBIT(ILSW[1], ILSW_1_1132_PRINTER);
@@ -800,14 +809,9 @@ static t_stat prt_detach (UNIT *uptr)
 	t_stat rval;
 
 	if (uptr->flags & UNIT_ATT)
-		flush_prt_line(uptr->fileref, TRUE, TRUE);
+		flush_prt_line(uptr, TRUE, TRUE);
 
-	if (uptr->fileref == stdout) {
-		CLRBIT(uptr->flags, UNIT_ATT);
-		free(uptr->filename);
-		uptr->filename = NULL;
-	}
-	else if ((rval = detach_unit(uptr)) != SCPE_OK)
+    if ((rval = pdflpt_detach(uptr)) != SCPE_OK)
 		return rval;
 
 	sim_cancel(uptr);
@@ -829,3 +833,28 @@ static t_stat prt_detach (UNIT *uptr)
 	return SCPE_OK;
 }
 
+static t_stat set_prt_type (UNIT *uptr, int32 val, char *cptr, void *desc) {
+    size_t ncol;
+    char tbuf[sizeof ("columns=999")];
+
+    if (val == 0) {
+        uptr->flags &= ~UNIT_1403;
+        ncol = PRT1132_COLUMNS;
+    } else {
+        uptr->flags |= UNIT_1403;
+        ncol = PRT1403_COLUMNS;
+    }
+    sprintf (tbuf, "columns=%u", ncol);
+    pdflpt_set_defaults (uptr, tbuf);
+
+    return SCPE_OK;
+}
+
+static t_stat show_prt_type (FILE *st, UNIT *uptr, int32 val, void *desc) {
+    if (uptr->flags & UNIT_1403) {
+        fprintf (st, "1403");
+    } else {
+        fprintf (st, "1132");
+    }
+    return SCPE_OK;
+}
