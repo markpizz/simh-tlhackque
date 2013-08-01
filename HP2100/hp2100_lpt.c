@@ -74,6 +74,7 @@
 */
 
 #include "hp2100_defs.h"
+#include "sim_pdflpt.h"
 
 #define LPT_PAGELNT     60                              /* page length */
 
@@ -125,7 +126,7 @@ t_stat lpt_attach (UNIT *uptr, char *cptr);
 DIB lpt_dib = { &lptio, LPT };
 
 UNIT lpt_unit = {
-    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_DISABLE+UNIT_TEXT, 0)
+    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_DISABLE, 0)
     };
 
 REG lpt_reg[] = {
@@ -157,8 +158,10 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, lpt_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lpt_reset,
-    NULL, &lpt_attach, NULL,
-    &lpt_dib, DEV_DISABLE
+    NULL, &lpt_attach, &pdflpt_detach,
+    &lpt_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL,
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 
@@ -282,7 +285,7 @@ if (uptr->buf & LPT_CTL) {                              /* control word? */
     if (uptr->buf & LPT_CHAN) {
         chan = uptr->buf & LPT_CHANM;
         if (chan == 0) {                                /* top of form? */
-            fputc ('\f', uptr->fileref);                /* ffeed */
+            pdflpt_putc (uptr, '\f');                   /* ffeed */
             lpt_lcnt = 0;                               /* reset line cnt */
             skip = 0;
             }
@@ -291,18 +294,18 @@ if (uptr->buf & LPT_CTL) {                              /* control word? */
         }
     else {
         skip = uptr->buf & LPT_SKIPM;
-        if (skip == 0) fputc ('\r', uptr->fileref);
+        if (skip == 0) pdflpt_putc (uptr, '\r');
         }
-    for (i = 0; i < skip; i++) fputc ('\n', uptr->fileref);
+    for (i = 0; i < skip; i++) pdflpt_putc (uptr, '\n');
     lpt_lcnt = (lpt_lcnt + skip) % LPT_PAGELNT;
     }
-else fputc (uptr->buf & 0177, uptr->fileref);           /* no, just add char */
-if (ferror (uptr->fileref)) {
-    perror ("LPT I/O error");
-    clearerr (uptr->fileref);
+else pdflpt_putc (uptr, uptr->buf & 0177);              /* no, just add char */
+if (pdf_error (uptr)) {
+    pdflpt_perror (uptr, "LPT I/O error");
+    pdflpt_clearerr (uptr);
     return SCPE_IOERR;
     }
-lpt_unit.pos = ftell (uptr->fileref);                   /* update pos */
+lpt_unit.pos = pdflpt_where (uptr, NULL);               /* update pos */
 return SCPE_OK;
 }
 
@@ -314,6 +317,7 @@ t_stat lpt_reset (DEVICE *dptr)
 IOPRESET (&lpt_dib);                                    /* PRESET device (does not use PON) */
 
 sim_cancel (&lpt_unit);                                 /* deactivate unit */
+pdflpt_reset (&lpt_unit);
 return SCPE_OK;
 }
 
@@ -346,5 +350,5 @@ t_stat lpt_attach (UNIT *uptr, char *cptr)
 {
 lpt_lcnt = 0;                                           /* top of form */
 lpt_restart (uptr, 0, NULL, NULL);                      /* restart I/O if hung */
-return attach_unit (uptr, cptr);
+return pdflpt_attach (uptr, cptr);
 }
