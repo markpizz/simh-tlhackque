@@ -31,11 +31,10 @@
  * You should not need to read this file to use the API.
 */
 
-#include <sim_defs.h>
-#include <sim_tmxr.h>
-#include <sim_console.h>
-
-#include <sim_pdflpt.h>
+#include "sim_defs.h"
+#include "sim_tmxr.h"
+#include "sim_console.h"
+#include "sim_pdflpt.h" 
 
 #define DIM(x) (sizeof (x) / sizeof ((x)[0]))
 
@@ -725,10 +724,26 @@ t_stat pdflpt_detach (UNIT *uptr) {
     int r;
     size_t page;
 
-    if (uptr == NULL)
+    if (uptr == NULL) {
         return SCPE_IERR;
+    }
 
     SETCTX (SCPE_MEM);
+
+    if (!(uptr->flags & UNIT_ATTABLE)) {
+        return SCPE_NOATT;
+    }
+
+    if (!(uptr->flags & UNIT_ATT)) {
+        if (sim_switches & SIM_SW_REST)
+            return SCPE_OK;
+        else
+            return SCPE_NOATT;
+    }
+
+    if ((dptr = find_dev_from_unit (uptr)) == NULL) {
+        return SCPE_OK;
+    }
 
     pdflpt_reset (uptr);
 
@@ -744,20 +759,9 @@ t_stat pdflpt_detach (UNIT *uptr) {
         return detach_unit (uptr);
     }
 
-    if (!(uptr->flags & UNIT_ATTABLE)) {
-        return SCPE_NOATT;
-    }
-
     if (sim_switches & SIM_SW_REST) {
         return SCPE_NOATT;
     }
-
-    if (!(uptr->flags & UNIT_ATT)) {
-        return SCPE_NOATT;
-    }
-
-    if ((dptr = find_dev_from_unit (uptr)) == NULL)
-        return SCPE_OK;
 
     if (pdfctx->bc) {
         pdf_print (pdf, pdfctx->buffer, pdfctx->bc);
