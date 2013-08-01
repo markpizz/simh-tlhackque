@@ -424,7 +424,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         if (!(pdfctx->udflags & UNIT_NO_FIO)) {
             uptr->dynflags &= ~UNIT_NO_FIO;
         }
-        if (sim_switches & SWMASK ('S')) {
+        if (sim_switches & SWMASK ('S') && strcmp (cptr, "-")) {
             ext = strrchr (cptr, '.');
             if (!ext) {
                 ext = cptr + strlen (cptr);
@@ -459,7 +459,15 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         } else {
             free (pdfctx->fntemplate);
             pdfctx->fntemplate = NULL;
-            reason = attach_unit (uptr, cptr);
+            if (strcmp (cptr, "-")) {
+                reason = attach_unit (uptr, cptr);
+            } else {
+                uptr->fileref = stdout;
+                reason = SCPE_OK;
+                uptr->filename = (char *) calloc (CBUFSIZE, sizeof (char)); 
+                strcpy (uptr->filename, "-");
+                uptr->flags |= UNIT_ATT;
+            }
         }
 
         if (reason == SCPE_OK) {
@@ -727,6 +735,12 @@ t_stat pdflpt_detach (UNIT *uptr) {
     sim_con_register_printer (uptr, NULL);
 
     if (!pdf) {
+        if (uptr->fileref == stdout) {
+            uptr->flags &= ~UNIT_ATT;
+            free (uptr->filename);
+            uptr->filename = NULL;
+            return SCPE_OK;
+        }
         return detach_unit (uptr);
     }
 
