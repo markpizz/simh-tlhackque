@@ -210,6 +210,7 @@
 
 t_stat pdflpt_attach (UNIT *uptr, char *cptr);
 t_stat pdflpt_detach (UNIT *uptr);
+t_stat pdflpt_set_defaults (UNIT *uptr, const char *pstring);
 
 /* Information */
 

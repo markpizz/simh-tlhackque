@@ -7104,6 +7104,8 @@ return;
  * other device references, it can be used for non-device help.
  */
 
+#define blankch(x) ((x) == ' ' || (x) == '\t')
+
 typedef struct topic {
     uint32         level;
     char          *title;
@@ -7340,7 +7342,7 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
                 }
                 excluded = FALSE;
                 if (*start == '?') {                /* Conditional topic? */
-                    n = 0;
+                    size_t n = 0;
                     start++;
                     while (isdigit (*start)) {      /* Get param # */
                         n += (n * 10) + (*start++ - '0');
@@ -7450,7 +7452,7 @@ static char *helpPrompt ( TOPIC *topic, const char *pstring, t_bool oneword ) {
     if (oneword) {
         char *np = newp + strlen (newp);
         while (*newt) {
-            *np++ = isspace (*newt)? '_' : *newt;
+            *np++ = blankch (*newt)? '_' : *newt;
             newt++;
         }
         *np = '\0';
@@ -7550,7 +7552,7 @@ static int matchHelpTopicName (TOPIC *topic, const char *token) {
                 ((topic->children[i]->flags & HLP_MAGIC_TOPIC)? 1 : 0));
         cptr = cbuf;
         while (*cptr) {
-            if (isspace (*cptr)) {
+            if (blankch (*cptr)) {
                 *cptr++ = '_';
             } else {
                 *cptr = toupper (*cptr);
@@ -7710,7 +7712,7 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
                 strcpy (tbuf, topic->children[i]->title + 
                         ((topic->children[i]->flags & HLP_MAGIC_TOPIC)? 1 : 0));
                 for (p = tbuf; *p; p++) {
-                    if (isspace (*p))
+                    if (blankch (*p))
                         *p = '_';
                 }
                 w += 4 + topic->kidwid;

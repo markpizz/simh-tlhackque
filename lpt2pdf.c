@@ -1559,7 +1559,11 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
 
     case PDF_FORM_IMAGE:
         svalue = va_arg (ap, const char *);
-        REJECT_NULL
+        if (svalue == NULL) {
+            free (pdf->p.formfile);
+            pdf->p.formfile = NULL;
+            return PDF_OK;
+        }
         if (!(fh = fopen (svalue, "rb"))){
             return errno;
         }
