@@ -67,6 +67,7 @@
 */
 
 #include "h316_defs.h"
+#include "sim_pdflpt.h"
 
 #define LPT_WIDTH       120                             /* width */
 #define LPT_SCAN        (LPT_WIDTH / 2)                 /* words/scan */
@@ -107,7 +108,7 @@ t_stat lpt_reset (DEVICE *dptr);
 
 DIB lpt_dib = { LPT, IOBUS, 1, &lptio };
 
-UNIT lpt_unit = { UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0) };
+UNIT lpt_unit = { UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE, 0) };
 
 REG lpt_reg[] = {
     { DRDATA (WDPOS, lpt_wdpos, 6) },
@@ -134,8 +135,10 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, NULL,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lpt_reset,
+    NULL, &pdflpt_attach, &pdflpt_detach,
+    &lpt_dib, DEV_DISABLE, 0,
     NULL, NULL, NULL,
-    &lpt_dib, DEV_DISABLE
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* IO routine */
@@ -318,8 +321,8 @@ if (lpt_svcst & LPT_SVCSH) {                            /* shuttling? */
                 break; 
             }
         lpt_buf[i + 1] = 0;
-        fputs (lpt_buf, uptr->fileref);                 /* output buf */
-        uptr->pos = ftell (uptr->fileref);              /* update pos */
+        pdflpt_puts (uptr, lpt_buf);                    /* output buf */
+        uptr->pos = pdflpt_where (uptr, NULL);             /* update pos */
         for (i = 0; i < LPT_WIDTH; i++)                 /* clear buf */
             lpt_buf[i] = ' ';
         lpt_prdn = 1;                                   /* print done */
@@ -327,8 +330,8 @@ if (lpt_svcst & LPT_SVCSH) {                            /* shuttling? */
     }
 if (lpt_svcst & LPT_SVCPA) {                            /* paper advance */
     SET_INT (INT_LPT);                                  /* interrupt */
-    fputs (lpt_cc[lpt_svcch & 03], uptr->fileref);      /* output eol */
-    uptr->pos = ftell (uptr->fileref);                  /* update pos */
+    pdflpt_puts (uptr, lpt_cc[lpt_svcch & 03]);         /* output eol */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update pos */
     }
 lpt_svcst = 0;
 return SCPE_OK;
@@ -339,6 +342,7 @@ return SCPE_OK;
 t_stat lpt_reset (DEVICE *dptr)
 {
 int32 i;
+char tbuf[sizeof ("columns=999")];
 
 lpt_wdpos = lpt_drpos = lpt_crpos = 0;                  /* clear positions */
 lpt_svcst = lpt_svcch = 0;                              /* idle state */
@@ -352,5 +356,8 @@ lpt_buf[LPT_WIDTH] = 0;
 CLR_INT (INT_LPT);                                      /* clear int, enb */
 CLR_ENB (INT_LPT);
 sim_cancel (&lpt_unit);                                 /* deactivate unit */
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_WIDTH);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }
