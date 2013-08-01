@@ -48,7 +48,15 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
+#if defined (_MSC_VER) && _MSC_VER < 1600
+typedef __int32 int32_t;
+typedef unsigned __int32 uint32_t;
+typedef unsigned char uint8_t;
+typedef unsigned short uint16_t;
+typedef short int_least16_t;
+#else
 #include <stdint.h>
+#endif
 #include <string.h>
 #include <time.h>
 #include <fcntl.h>
@@ -910,12 +918,15 @@ FILE *pdf_open_exclusive (const char *filename, const char *mode) {
 
 #ifdef _WIN32
     fh = _fdopen (fd, mode);
+    if (!fh) {
+        _close (fd);
+    }
 #else
     fh = fdopen (fd, mode);
-#endif
     if (!fh) {
         close (fd);
     }
+#endif
 
     return fh;
 }
