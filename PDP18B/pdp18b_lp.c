@@ -47,6 +47,8 @@
 */
 
 #include "pdp18b_defs.h"
+#include "sim_pdflpt.h"
+
 extern int32 int_hwre[API_HLVL+1];
 const char fio_to_asc[64] = {
     ' ','1','2','3','4','5','6','7','8','9','\'','~','#','V','^','<',
@@ -96,7 +98,7 @@ t_stat lp62_reset (DEVICE *dptr);
 DIB lp62_dib = { DEV_LPT, 2, &lp62_iors, { &lp62_65, &lp62_66 } };
 
 UNIT lp62_unit = {
-    UDATA (&lp62_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT
+    UDATA (&lp62_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
     };
 
 REG lp62_reg[] = {
@@ -124,8 +126,9 @@ DEVICE lp62_dev = {
     "LPT", &lp62_unit, lp62_reg, lp62_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lp62_reset,
-    NULL, NULL, NULL,
-    &lp62_dib, DEV_DISABLE
+    NULL, &pdflpt_attach, &pdflpt_detach,
+    &lp62_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* IOT routines */
@@ -182,11 +185,11 @@ if (lp62_spc) {                                         /* space? */
     SET_INT (LPTSPC);                                   /* set flag */
     if ((uptr->flags & UNIT_ATT) == 0)                  /* attached? */
         return IORETURN (lp62_stopioe, SCPE_UNATT);
-    fputs (lp62_cc[lp62_spc & 07], uptr->fileref);      /* print cctl */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* error? */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    pdflpt_puts (uptr, lp62_cc[lp62_spc & 07]);         /* print cctl */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {                          /* error? */
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     lp62_ovrpr = 0;                                     /* clear overprint */
@@ -196,12 +199,12 @@ else {
     if ((uptr->flags & UNIT_ATT) == 0)                  /* attached? */
         return IORETURN (lp62_stopioe, SCPE_UNATT);
     if (lp62_ovrpr)                                     /* overprint? */
-        fputc ('\r', uptr->fileref);
-    fputs (lp62_buf, uptr->fileref);                    /* print buffer */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* test error */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+        pdflpt_putc (uptr, '\r');
+    pdflpt_puts (uptr, lp62_buf);                       /* print buffer */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {                          /* test error */
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     lp62_bp = 0;
@@ -217,6 +220,7 @@ return SCPE_OK;
 t_stat lp62_reset (DEVICE *dptr)
 {
 int32 i;
+char tbuf[sizeof ("columns=999")];
 
 CLR_INT (LPT);                                          /* clear intrs */
 CLR_INT (LPTSPC);
@@ -226,6 +230,9 @@ for (i = 0; i <= LP62_BSIZE; i++)                       /* clear buffer */
     lp62_buf[i] = 0;
 lp62_spc = 0;                                           /* clear state */
 lp62_ovrpr = 0;                                         /* clear overprint */
+pdflpt_reset (&lp62_unit);
+sprintf (tbuf, "columns=%u", LP62_BSIZE);
+pdflpt_set_defaults (&lp62_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -282,7 +289,7 @@ t_stat lp647_detach (UNIT *uptr);
 DIB lp647_dib = { DEV_LPT, 2, &lp647_iors, { &lp647_65, &lp647_66 } };
 
 UNIT lp647_unit = {
-    UDATA (&lp647_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT
+    UDATA (&lp647_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
     };
 
 REG lp647_reg[] = {
@@ -313,7 +320,8 @@ DEVICE lp647_dev = {
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lp647_reset,
     NULL, &lp647_attach, &lp647_detach,
-    &lp647_dib, DEV_DISABLE
+    &lp647_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* IOT routines */
@@ -424,22 +432,22 @@ if ((lp647_iot & 020) == 0) {                           /* print? */
     pbuf[lp647_bp++] = 0;                               /* append nul */
     for (i = 0; i < LP647_BSIZE; i++)                   /* clear buffer */
         lp647_buf[i] = 0;
-    fputs (pbuf, uptr->fileref);                        /* print buffer */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* error? */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    pdflpt_puts (uptr, pbuf);                           /* print buffer */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {                          /* error? */
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         lp647_bp = 0;
         return SCPE_IOERR;
         }
     lp647_bp = 0;                                       /* clear buffer ptr */
     }
 if (lp647_iot & 060) {                                  /* space? */
-    fputs (lp647_cc[lp647_iot & 07], uptr->fileref);    /* write cctl */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* error? */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    pdflpt_puts (uptr, lp647_cc[lp647_iot & 07]);       /* write cctl */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {                         /* error? */
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     }
@@ -451,6 +459,7 @@ return SCPE_OK;
 t_stat lp647_reset (DEVICE *dptr)
 {
 int32 i;
+char tbuf[sizeof ("columns=999")];
 
 lp647_don = 0;                                          /* clear done */
 lp647_err = (lp647_unit.flags & UNIT_ATT)? 0: 1;        /* clr/set error */
@@ -461,6 +470,9 @@ lp647_bp = 0;                                           /* clear buffer ptr */
 lp647_iot = 0;                                          /* clear state */
 for (i = 0; i < LP647_BSIZE; i++)                       /* clear buffer */
     lp647_buf[i] = 0;
+pdflpt_reset (&lp647_unit);
+sprintf (tbuf, "columns=%u", LP647_BSIZE);
+pdflpt_set_defaults (&lp647_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -477,7 +489,7 @@ t_stat lp647_attach (UNIT *uptr, char *cptr)
 {
 t_stat reason;
 
-reason = attach_unit (uptr, cptr);
+reason = pdflpt_attach (uptr, cptr);
 lp647_err = (lp647_unit.flags & UNIT_ATT)? 0: 1;        /* clr/set error */
 return reason;
 }
@@ -487,7 +499,7 @@ return reason;
 t_stat lp647_detach (UNIT *uptr)
 {
 lp647_err = 1;
-return detach_unit (uptr);
+return pdflpt_detach (uptr);
 }
 
 #endif
@@ -521,7 +533,7 @@ t_stat lp09_detach (UNIT *uptr);
 DIB lp09_dib = { DEV_LPT, 2, &lp09_iors, { NULL, &lp09_66 } };
 
 UNIT lp09_unit = {
-    UDATA (&lp09_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT
+    UDATA (&lp09_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
     };
 
 REG lp09_reg[] = {
@@ -547,7 +559,8 @@ DEVICE lp09_dev = {
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lp09_reset,
     NULL, &lp09_attach, &lp09_detach,
-    &lp09_dib, DEV_DISABLE | DEV_DIS
+    &lp09_dib, DEV_DISABLE | DEV_DIS, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* IOT routines */
@@ -607,11 +620,11 @@ if ((uptr->flags & UNIT_ATT) == 0) {                    /* not attached? */
 c = uptr->buf & 0177;                                   /* get char */
 if ((c == 0) || (c == 0177))                            /* skip NULL, DEL */
     return SCPE_OK;
-fputc (c, uptr->fileref);                               /* print char */
-uptr->pos = ftell (uptr->fileref);                      /* update position */
-if (ferror (uptr->fileref)) {                           /* error? */
-    perror ("LPT I/O error");
-    clearerr (uptr->fileref);
+pdflpt_putc (uptr, c);                                  /* print char */
+uptr->pos = pdflpt_where (uptr, NULL);                  /* update position */
+if (pdflpt_error (uptr)) {                              /* error? */
+    pdflpt_perror (uptr, "LPT I/O error");
+    pdflpt_clearerr (uptr);
     return SCPE_IOERR;
     }
 return SCPE_OK;
@@ -621,10 +634,14 @@ return SCPE_OK;
 
 t_stat lp09_reset (DEVICE *dptr)
 {
+char tbuf[sizeof ("columns=999")];
 lp09_don = 0;                                           /* clear done */
 lp09_err = (lp09_unit.flags & UNIT_ATT)? 0: 1;          /* compute error */
 lp09_ie = 1;                                            /* set enable */
 CLR_INT (LPT);                                          /* clear int */
+pdflpt_reset (&lp09_unit);
+sprintf (tbuf, "columns=%u", LP09_BSIZE);
+pdflpt_set_defaults (&lp09_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -641,7 +658,7 @@ t_stat lp09_attach (UNIT *uptr, char *cptr)
 {
 t_stat reason;
 
-reason = attach_unit (uptr, cptr);
+reason = pdflpt_attach (uptr, cptr);
 lp09_err = (lp09_unit.flags & UNIT_ATT)? 0: 1;          /* clr/set error */
 return reason;
 }
@@ -651,7 +668,7 @@ return reason;
 t_stat lp09_detach (UNIT *uptr)
 {
 lp09_err = 1;
-return detach_unit (uptr);
+return pdflpt_detach (uptr);
 }
 
 #endif
@@ -692,7 +709,7 @@ int32 lp15_iors (void);
 t_stat lp15_svc (UNIT *uptr);
 t_stat lp15_reset (DEVICE *dptr);
 
-int32 lp15_updsta (int32 new);
+int32 lp15_updsta (int32 newstate);
 
 /* LP15 LPT data structures
 
@@ -704,7 +721,7 @@ int32 lp15_updsta (int32 new);
 DIB lp15_dib = { DEV_LPT, 2, &lp15_iors, { &lp15_65, &lp15_66 } };
 
 UNIT lp15_unit = {
-    UDATA (&lp15_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT
+    UDATA (&lp15_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
     };
 
 REG lp15_reg[] = {
@@ -732,8 +749,9 @@ DEVICE lp15_dev = {
     "LPT", &lp15_unit, lp15_reg, lp15_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lp15_reset,
-    NULL, NULL, NULL,
-    &lp15_dib, DEV_DISABLE
+    NULL, &pdflpt_attach, &pdflpt_detach,
+    &lp15_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* IOT routines */
@@ -820,12 +838,12 @@ for (more = 1; more != 0; ) {                           /* loop until ctrl */
     for (i = 0; i < ccnt; i++) {                        /* loop through */
         if ((c[i] <= 037) && ctrl[c[i]]) {              /* control char? */
             lp15_buf[lp15_bp] = 0;                      /* append nul */
-            fputs (lp15_buf, uptr->fileref);            /* print line */
-            fputs (ctrl[c[i]], uptr->fileref);          /* space */
-            uptr->pos = ftell (uptr->fileref);
-            if (ferror (uptr->fileref)) {               /* error? */
-                perror ("LPT I/O error");
-                clearerr (uptr->fileref);
+            pdflpt_puts (uptr, lp15_buf);               /* print line */
+            pdflpt_puts (uptr, ctrl[c[i]]);             /* space */
+            uptr->pos = pdflpt_where (uptr, NULL);
+            if (pdflpt_error (uptr)) {                  /* error? */
+                pdflpt_perror (uptr, "LPT I/O error");
+                pdflpt_clearerr (uptr);
                 lp15_bp = 0;
                 lp15_updsta (STA_DON | STA_ALM);
                 return SCPE_IOERR;
@@ -849,9 +867,9 @@ return SCPE_OK;
 
 /* Update status */
 
-int32 lp15_updsta (int32 new)
+int32 lp15_updsta (int32 newstate)
 {
-lp15_sta = (lp15_sta | new) & ~(STA_CLR | STA_ERR | STA_BUSY);
+lp15_sta = (lp15_sta | newstate) & ~(STA_CLR | STA_ERR | STA_BUSY);
 if (lp15_sta & STA_EFLGS)                               /* update errors */
     lp15_sta = lp15_sta | STA_ERR;
 if (sim_is_active (&lp15_unit))
@@ -866,11 +884,15 @@ return lp15_sta;
 
 t_stat lp15_reset (DEVICE *dptr)
 {
+char tbuf[sizeof ("columns=999")];
 lp15_mode = lp15_lc = lp15_bp = 0;                      /* clear controls */
 sim_cancel (&lp15_unit);                                /* deactivate unit */
 lp15_sta = 0;                                           /* clear status */
 lp15_ie = 1;                                            /* enable interrupts */
 lp15_updsta (0);                                        /* update status */
+pdflpt_reset (&lp15_unit);
+sprintf (tbuf, "columns=%u", LP15_BSIZE);
+pdflpt_set_defaults (&lp15_unit, tbuf);
 return SCPE_OK;
 }
 
