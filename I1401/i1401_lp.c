@@ -34,6 +34,7 @@
 */
 
 #include "i1401_defs.h"
+#include "sim_pdflpt.h"
 
 extern uint8 M[];
 extern char bcd_to_ascii_old[64];
@@ -71,7 +72,7 @@ char *pch_table[4] = {
 */
 
 UNIT lpt_unit = {
-    UDATA (NULL, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0)
+    UDATA (NULL, UNIT_SEQ+UNIT_ATTABLE, 0)
     };
 
 REG lpt_reg[] = {
@@ -99,7 +100,10 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, lpt_mod,
     1, 10, 31, 1, 8, 7,
     NULL, NULL, &lpt_reset,
-    NULL, &lpt_attach, NULL
+    NULL, &lpt_attach, &pdflpt_detach,
+    NULL, 0, 0,
+    NULL, NULL, NULL,
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* Print routine
@@ -133,20 +137,20 @@ for (i = 0; i < LPT_WIDTH; i++) {                       /* convert print buf */
 lbuf[LPT_WIDTH] = 0;                                    /* trailing null */
 for (i = LPT_WIDTH - 1; (i >= 0) && (lbuf[i] == ' '); i--)
     lbuf[i] = 0;
-fputs (lbuf, lpt_unit.fileref);                         /* write line */
+pdflpt_puts (&lpt_unit, lbuf);                          /* write line */
 if (lines)                                              /* cc action? do it */
     space (lines, lflag); 
 else if (sup == 0)                                      /* default? 1 line */
     space (1, FALSE);
 else {
-    fputc ('\r', lpt_unit.fileref);                     /* sup -> overprint */
-    lpt_unit.pos = ftell (lpt_unit.fileref);            /* update position */
+    pdflpt_putc (&lpt_unit, '\r');                      /* sup -> overprint */
+    lpt_unit.pos = pdflpt_where (&lpt_unit, NULL);      /* update position */
     }
 lines = lflag = 0;                                      /* clear cc action */
-if (ferror (lpt_unit.fileref)) {                        /* error? */
+if (pdflpt_error (&lpt_unit)) {                         /* error? */
     ind[IN_LPT] = 1;
-    perror ("Line printer I/O error");
-    clearerr (lpt_unit.fileref);
+    pdflpt_perror (&lpt_unit, "Line printer I/O error");
+    pdflpt_clearerr (&lpt_unit);
     if (iochk)
         return SCPE_IOERR;
     }
@@ -226,12 +230,12 @@ if ((lpt_unit.flags & UNIT_ATT) == 0)
     return SCPE_UNATT;
 cctptr = (cctptr + count) % cctlnt;                     /* adv cct, mod lnt */
 if (sflag && CHP (0, cct[cctptr]))                      /* skip, top of form? */
-    fputs ("\n\f", lpt_unit.fileref);                   /* nl, ff */
+    pdflpt_puts (&lpt_unit, "\n\f");                    /* nl, ff */
 else {
     for (i = 0; i < count; i++)
-        fputc ('\n', lpt_unit.fileref);
+        pdflpt_putc (&lpt_unit, '\n');
     }
-lpt_unit.pos = ftell (lpt_unit.fileref);                /* update position */
+lpt_unit.pos = pdflpt_where (&lpt_unit, NULL);          /* update position */
 ind[IN_CC9] = CHP (9, cct[cctptr]) != 0;                /* set indicators */
 ind[IN_CC12] = CHP (12, cct[cctptr]) != 0;
 return SCPE_OK;
@@ -241,9 +245,13 @@ return SCPE_OK;
 
 t_stat lpt_reset (DEVICE *dptr)
 {
+char tbuf[sizeof ("columns=999")];
 cctptr = 0;                                             /* clear cct ptr */
 lines = lflag = 0;                                      /* no cc action */
 ind[IN_LPT] = 0;
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_WIDTH);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -254,5 +262,5 @@ t_stat lpt_attach (UNIT *uptr, char *cptr)
 cctptr = 0;                                             /* clear cct ptr */
 lines = 0;                                              /* no cc action */
 ind[IN_LPT] = 0;
-return attach_unit (uptr, cptr);
+return pdflpt_attach (uptr, cptr);
 }
