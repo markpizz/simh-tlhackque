@@ -2560,14 +2560,14 @@ static void imageform (PDF *pdf) {
 
     if ((pdf->flags & PDF_UNCOMPRESSED) || encstm (pdf, jbuf, jbused)) {
         fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
-                 " /Width %u /Height %u /Length %lu /Filter /DCTDecode"
+                 " /Width %u /Height %u /Length %u /Filter /DCTDecode"
                  " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
                  obj, ((unsigned int)imgwid), ((unsigned int)imghgt), jbused);
         fwrite (jbuf, jbused, 1, pdf->pdf);
     } else {
         /* Close to PDF_C_LINELEN */
         fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
-                 " /Width %u /Height %u /Length %lu /DL %u"
+                 " /Width %u /Height %u /Length %u /DL %u"
                  " /Filter [ /LZWDecode /DCTDecode ]"
                  " /DecodeParams [ << /EarlyChange 0 >> null ]"
                  " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
