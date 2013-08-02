@@ -39,7 +39,7 @@
  * assumptions are made about the structure to simplify this code.
  */
 
-#define LPT2PDF_VERSION "1.0-002"
+#define LPT2PDF_VERSION "1.0-003"
 
 #include <ctype.h>
 #include <errno.h>
@@ -51,9 +51,9 @@
 #if defined (_MSC_VER) && _MSC_VER < 1600
 typedef __int32 int32_t;
 typedef unsigned __int32 uint32_t;
-typedef unsigned char uint8_t;
-typedef unsigned short uint16_t;
-typedef short int_least16_t;
+typedef unsigned __int8 uint8_t;
+typedef unsigned __int16 uint16_t;
+typedef __int16 int_least16_t;
 #else
 #include <stdint.h>
 #endif
