@@ -31,6 +31,7 @@
  *
  * The API for the library is fairly straightforward:
  *  PDF_HANDLE handle = pdf_open ("pdf_file.pdf");
+ *     "-" will use stdout (which must be seekable - e.g. not a pipe.)
  *     Returns NULL on error; errno may give a clue.
  *
  *  int pdf_set (handle, ITEM, value)
@@ -157,15 +158,6 @@
  * 
  */
 
-#include <stdarg.h>
-#ifndef INT64_C
-#if defined (_MSC_VER) && _MSC_VER < 1600
-typedef __int32 int32_t;
-typedef unsigned __int32 uint32_t;
-#else
-#include <stdint.h>
-#endif
-#endif
 #include <stdarg.h>
 #include <stdlib.h>
 
