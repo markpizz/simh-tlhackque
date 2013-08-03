@@ -716,6 +716,16 @@ t_stat pdflpt_set_defaults (UNIT *uptr, const char *pstring) {
     return PDFLPT_OK;
 }
 
+/* Returns default string.
+ * Do not cache: not valid after defaults are changed.
+ */
+
+const char *pdflpt_get_defaults (UNIT *uptr) {
+    SETCTX (NULL);
+
+    return pdfctx->defaults;
+}
+
 /* Switch to a new form
  *
  */
