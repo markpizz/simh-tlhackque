@@ -255,6 +255,7 @@ static const ARG argtable[] = {
    XSET (LFONT,         LABEL_FONT,     QSTRING)
     SET (NUMBER-WIDTH,  LNO_WIDTH,      NUMBER)
     SET (LPI,           LPI,            INTEGER)
+    SET (LPP,           LPP,            INTEGER)
    XSET (NFONT,         LNO_FONT,       QSTRING)
    XSET (REQUIRE,       FILE_REQUIRE,   STRING)
     SET (SIDE-MARGIN,   SIDE_MARGIN,    NUMBER)
@@ -713,6 +714,35 @@ t_stat pdflpt_set_defaults (UNIT *uptr, const char *pstring) {
     pdfctx->defaults = NULL;
 
     return PDFLPT_OK;
+}
+
+/* Switch to a new form
+ *
+ */
+
+t_stat pdflpt_newform (UNIT *uptr, const char *params) {
+    int r;
+    
+    SETCTX (SCPE_MEM);
+
+    if (!pdf || !(uptr->flags & UNIT_ATT)) {
+        return SCPE_OK;
+    }
+
+    r = pdf_reopen (pdf);
+    if (r != PDF_OK) {
+        return SCPE_NOATT;
+    }
+
+    r = parse_params (pdf, (char *)params, strlen (params));
+    if (r != SCPE_OK) {
+        return SCPE_ARG;
+    }
+    r = pdf_print (pdf, "", 0);
+    if (r != SCPE_OK) {
+        return SCPE_ARG;
+    }
+    return SCPE_OK;
 }
 
 /* detach_unit replacement
@@ -1650,8 +1680,14 @@ const char pdflpt_helptext[] =
 " Default: 14.875in\n"
 "\n"
 " length=number\n"
-"+Specifies the length of the paper, inclusive of all margins.\n"
+"+Specifies the length of the paper, inclusive of all margins.  Superseded\n"
+"+by lpp if both are specified.\n"
 " Default: 11in\n"
+"\n"
+" lpp=integer\n"
+"+Specified the length of the page in lines.  Supersedes length if both are\n"
+"+specified, as length is lpp * lpi.  VFUs may set this automatically to\n"
+"+match the tape length.\n"
 "\n"
 " top-margin=number\n"
 "+Specifies height of the top margin on the paper.  For 'bar' forms, this\n"

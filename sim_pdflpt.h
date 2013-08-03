@@ -267,6 +267,14 @@ size_t pdflpt_write (UNIT *uptr, void *ptr, size_t size, size_t nmemb);
 
 t_addr pdflpt_where (UNIT *uptr, size_t *line);
 
+/* Reconfigure output form
+ * Does not close file, but starts a new session.
+ * Allows switching to a new form, e.g. when a new VFU is loaded.
+ * params are the same paramters used by attach.  These are applied over
+ * what attach set.
+ */
+t_stat pdflpt_newform (UNIT *uptr, const char *params);
+
 /* Error library
  * 
  * These replace the corresponding standard functions, but handle PDF stream
