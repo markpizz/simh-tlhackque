@@ -57,6 +57,10 @@
 #include "pdp10_defs.h"
 #include "sim_pdflpt.h"
 
+#define DIM(x) (sizeof (x) / sizeof (x[0]))
+
+extern UNIT cpu_unit;
+
 /* The LP20 has the following CSR assignments:
  * Unit No. 1: 775400, Vector: 754
  * Unit No. 2: 775420, Vector: 750
@@ -64,6 +68,63 @@
  * Note that the KS only supported one LP20.
  * Note also that the vector assigned to unit 2 is lower than unit 1's.
  */
+
+/* Define printer characteristics
+ * Some had slower speed options for better print quality.
+ * Doesn't seem worth simulating that.
+ */
+typedef struct {
+    const char *name;
+    size_t columns;
+    size_t chars;
+    size_t lpm;
+    size_t rpm;
+    double firstadv;          /* usec for first line moved */
+    double slew;              /* usec/in for slew */
+    t_bool davfu;
+#define DAVFU TRUE
+#define OVFU  FALSE
+} LPT;
+static const LPT printers[] = {
+#define LPT(name, width, chars, lpm, rpm, firstadv, ips, davfu)       \
+    { #name, (width), (chars), (lpm), (rpm), (1000.0 * (firstadv)), (1000000.0/(ips)), (davfu) },
+    /*    model                     1st adv Slew
+     *    name   cols char LPM   RPM   msec ips VFU */
+    LPT ( LP05A, 132,  64,  300, 1000, 41.0, 20, DAVFU )
+    LPT ( LP05B, 132,  96,  240,  660, 41.0, 20, DAVFU )
+
+    LPT ( LP07A, 132,  64, 1220,    0, 12.5, 60, DAVFU )
+    LPT ( LP07B, 132,  96,  905,    0, 12.5, 60, DAVFU )
+#define DEFAULT_LPT "LP07B"
+
+    LPT ( LP10A, 132,  64,  300,  333, 12.0, 24, OVFU )
+    LPT ( LP10B, 132,  64,  600,  750, 12.0, 24, OVFU )
+
+    LPT ( LP10C, 132,  64, 1000, 1250, 12.0, 24, OVFU )
+    LPT ( LP10D, 132,  96,  600,  750, 12.0, 24, OVFU )
+
+    LPT ( LP10E, 132, 128,  500,  550, 12.0, 24, OVFU )
+
+    LPT ( LP10F, 132,  64, 1250, 1800, 14.0, 35, OVFU )
+    LPT ( LP10H, 132,  96,  925, 1200, 14.0, 35, OVFU )
+
+    LPT ( LP14A, 132,  64,  890, 1280, 20.0, 30, DAVFU )
+    LPT ( LP14B, 132,  96,  650,  857, 20.0, 30, DAVFU )
+    LPT ( FAST,  132, 256,10000,10000,  0.1,999, DAVFU )
+#undef LPT
+};
+#undef DAVFU
+#undef OVFU
+
+/* The real timing is a function of where the drum is, what
+ * characters are selected, how may columns share a hammer..
+ * We'll approximate all that with LPM - which includes 1 line
+ * advance + slew time.  Results are in usec of delay.
+ */
+#define pch ((LPT *)uptr->up7)
+#define PRTTIME ((60000000.0 / pch->lpm) - pch->firstadv)
+#define ADVTIME(n) ((n) * (pch->slew / (lpi & ~LPI_SET)))
+#define GO_TIME (100)
 
 #define UNIT_DUMMY      (1 << UNIT_V_UF)
 #define LP_WIDTH        132                             /* printer width */
@@ -183,8 +244,8 @@ static int32 lppdat = 0;                                /* printer data */
 static int32 lpcsum = 0;                                /* checksum */
 static int32 dvptr = 0;                                 /* davfu pointer */
 static int32 dvlnt = 0;                                 /* davfu length */
+static int32 last_dvlnt = 0;                            /* Last good davfu length */
 static int32 lp20_irq = 0;                              /* int request */
-static int32 lp20_stopioe = 0;                          /* stop on error */
 static int32 dvld = 0;
 static int32 dvld_hold = 0;
 static int32 lpi = DEFAULT_LPI;                         /* Printer's LPI. */
@@ -196,20 +257,25 @@ static t_stat lp20_rd (int32 *data, int32 pa, int32 access);
 static t_stat lp20_wr (int32 data, int32 pa, int32 access);
 static int32 lp20_inta (void);
 static t_stat lp20_svc (UNIT *uptr);
+static t_stat lp20_done (UNIT *uptr);
 static t_stat lp20_reset (DEVICE *dptr);
 static t_stat lp20_init (DEVICE *dptr);
 static t_stat lp20_attach (UNIT *uptr, char *ptr);
 static t_stat lp20_detach (UNIT *uptr);
 static t_stat lp20_set_lpi (UNIT *uptr, int32 val, char *cptr, void *desc);
-static t_stat lp20_show_lpi (FILE *st, UNIT *up, int32 v, void *dp);
-static t_stat lp20_set_vfu_type (UNIT *uptr, int32 val, char *cptr, void *desc);
-static t_stat lp20_show_vfu_type (FILE *st, UNIT *up, int32 v, void *dp);
-static t_stat lp20_show_vfu (FILE *st, UNIT *up, int32 v, void *dp);
+static t_stat lp20_show_lpi (FILE *st, UNIT *uptr, int32 v, void *dp);
+static t_stat lp20_show_printers (FILE *st, UNIT *uptr, int32 val, void *desc);
+static t_stat lp20_set_unit_type (UNIT *uptr, int32 val, char *cptr, void *desc);
+static t_stat lp20_show_unit_type (FILE *st, UNIT *uptr, int32 v, void *dp);
+static void lp20_newform (UNIT *uptr);
+static t_stat lp20_set_tape (UNIT *uptr, int32 val, char *cptr, void *desc);
+static t_stat lp20_show_vfu_state (FILE *st, UNIT *uptr, int32 v, void *dp);
+static t_stat lp20_show_vfu (FILE *st, UNIT *uptr, int32 v, void *dp);
 static t_stat lp20_set_tof (UNIT *uptr, int32 val, char *cptr, void *desc);
 static t_stat lp20_clear_vfu (UNIT *uptr, int32 val, char *cptr, void *desc);
-static t_bool lp20_print (int32 c);
-static t_bool lp20_adv (int32 c, t_bool advdvu);
-static t_bool lp20_davfu (int32 c);
+static t_bool lp20_print (UNIT *uptr, int32 c);
+static t_bool lp20_adv (UNIT *uptr, int32 c, t_bool advdvu);
+static t_bool lp20_davfu (UNIT *uptr, int32 c);
 static void update_lpcs (int32 flg);
 static void change_rdy (int32 setrdy, int32 clrrdy);
 static int16 evenbits (int16 value);
@@ -281,13 +347,13 @@ static const int16 defaultvfu[] = { /* Generated by vfu.pl per DEC HRM */
     00224,    /* Line  56     8        5     3       */
     00230,    /* Line  57     8        5  4          */
     00224,    /* Line  58     8        5     3       */
-    00220,    /* Line  59     8        5             */
+    04220,    /* Line  59 12  8        5             */
     00020,    /* Line  60              5             */
     00020,    /* Line  61              5             */
     00020,    /* Line  62              5             */
     00020,    /* Line  63              5             */
     00020,    /* Line  64              5             */
-    04020,    /* Line  65 12           5             */
+    00020,    /* Line  65              5             */
 };
 
 /* LP data structures
@@ -303,7 +369,8 @@ static DIB lp20_dib = {
     };
 
 static UNIT lp20_unit = {
-    UDATA (&lp20_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT,
+    UDATA (&lp20_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT,
+    0, 0, 0, 0, (void *)printers,
     };
 
 static REG lp20_reg[] = {
@@ -328,7 +395,6 @@ static REG lp20_reg[] = {
     { FLDATA (IE, lpcsa, CSR_V_IE) },
     { DRDATA (POS, lp20_unit.pos, T_ADDR_W), PV_LEFT },
     { DRDATA (TIME, lp20_unit.wait, 24), PV_LEFT },
-    { FLDATA (STOP_IOE, lp20_stopioe, 0) },
     { BRDATA (TXRAM, txram, 8, 13, TX_SIZE) },
     { BRDATA (DAVFU, davfu, 8, 12, DV_SIZE) },
     { DRDATA (LPI, lpi, 8), REG_RO | REG_HIDDEN },
@@ -344,10 +410,16 @@ static MTAB lp20_mod[] = {
       &set_vec, &show_vec, NULL },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "VFU", NULL, NULL, &lp20_show_vfu,
         NULL, "Display VFU tape/contents" },
-    { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NC, 0, "VFUTYPE", "VFUTYPE={DAVFU|OPTICAL{=tapefile}}",
-        &lp20_set_vfu_type, &lp20_show_vfu_type, NULL, NULL },
-    { MTAB_XTD|MTAB_VDV|MTAB_VALO, 0, "LPI", "LPI={6-LPI|8-LPI}", &lp20_set_lpi, &lp20_show_lpi,
-        NULL, "Printer vertical lines per inch" },
+    { MTAB_XTD|MTAB_VDV, 0, "VFU-STATUS", NULL, NULL, &lp20_show_vfu_state,
+      NULL, "Display VFU status" },
+    { MTAB_XTD|MTAB_VDV, 0, "PRINTER-MODEL", "PRINTER-MODEL=modelname Set characteristics of printer",
+        &lp20_set_unit_type, &lp20_show_unit_type, NULL, "Display model of printer" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "MODELS", NULL, NULL, &lp20_show_printers,
+        NULL, "Display printer models" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NC, 0, NULL, "TAPE", 
+      &lp20_set_tape, NULL, NULL, "Load a custom VFU tape (optical VFU only)" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALO, 0, "LPI", "LPI={6-LPI|8-LPI}  Printer lines per inch", &lp20_set_lpi, &lp20_show_lpi,
+        NULL, "Display vertical pitch"  },
     { UNIT_DUMMY, 0, NULL, "TOPOFFORM", &lp20_set_tof, NULL,
         NULL, "Advance to top-of-form" },
     { UNIT_DUMMY, 0, NULL, "VFUCLEAR", &lp20_clear_vfu, NULL,
@@ -355,13 +427,26 @@ static MTAB lp20_mod[] = {
     { 0 }
     };
 
+/* Debug conditions */
+#define DF_REGR 00001
+#define DF_REGW 00002
+#define DF_TIME 00004
+#define DBG(x) { #x, DF_ ## x },
+static DEBTAB lp20_debug[] = {
+    DBG (REGR)
+    DBG (REGW)
+    DBG (TIME)
+    {0}
+};
+#undef DBG
+
 DEVICE lp20_dev = {
     "LP20", &lp20_unit, lp20_reg, lp20_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lp20_reset,
     NULL, &lp20_attach, &lp20_detach,
-    &lp20_dib, DEV_DISABLE | DEV_UBUS, 0,
-    NULL, NULL, NULL, &lp20_help, &pdflpt_attach_help, NULL, &lp20_description,
+    &lp20_dib, DEV_DISABLE | DEV_UBUS | DEV_DEBUG, 0,
+    lp20_debug, NULL, NULL, &lp20_help, &pdflpt_attach_help, NULL, &lp20_description,
     };
 
 /* Line printer routines
@@ -420,12 +505,16 @@ switch ((pa >> 1) & 07) {                               /* case on PA<3:1> */
         break;
         }                                               /* end case PA */
 
+sim_debug (DF_REGR, &lp20_dev, "LP20 CSR rd: addr=0%06o  SEL%d, data=%06o access=%d\n",
+              pa, pa & 07, *data, access);
 return SCPE_OK;
 }
 
 static t_stat lp20_wr (int32 data, int32 pa, int32 access)
 {
 update_lpcs (0);                                        /* update csr's */
+sim_debug (DF_REGW, &lp20_dev, "LP20 CSR wr: addr=0%06o  SEL%d, data=%06o access=%d\n",
+              pa, pa & 07, data, access);
 switch ((pa >> 1) & 07) {                               /* case on PA<3:1> */
 
     case 00:                                            /* LPCSA */
@@ -448,7 +537,8 @@ switch ((pa >> 1) & 07) {                               /* case on PA<3:1> */
                 if (lpcsb & CSB_ERR)
                     lpcsb = lpcsb | CSB_GOE;
                 lpcsum = 0;                             /* clear checksum */
-                sim_activate (&lp20_unit, lp20_unit.wait);
+                lp20_unit.action = &lp20_svc;
+                sim_activate (&lp20_unit, GO_TIME);
                 }
             }
         else sim_cancel (&lp20_unit);                   /* go clr, stop DMA */
@@ -553,15 +643,15 @@ lpcsa = lpcsa & ~CSA_GO;
 ba = CSA_GETUAE (lpcsa) | lpba;
 fnc = CSA_GETFNC (lpcsa);
 tbc = 010000 - lpbc;
-if (((fnc & FNC_INTERNAL) == 0) && ((lp20_unit.flags & UNIT_ATT) == 0)) {
+if (((fnc & FNC_INTERNAL) == 0) && ((uptr->flags & UNIT_ATT) == 0)) {
     update_lpcs (CSA_ERR);
-    return IORETURN (lp20_stopioe, SCPE_UNATT);
+    return SCPE_OK;
     }
 if ((fnc == FNC_PR) && (lpcsb & CSB_DVOF)) {
     update_lpcs (CSA_ERR);
     return SCPE_OK;
     }
-
+uptr->wait = 0;
 for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
     if (Map_ReadW (ba, 2, &wd10)) {                     /* get word, err? */
         lpcsb = lpcsb | CSB_MTE;                        /* set NXM error */
@@ -600,7 +690,7 @@ for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
              * The DAVFU is in the printer, so it will see the attempted load
              * as print data.  The LP20 inhibits translation.
              */
-            cont = lp20_print (lpcbuf);
+            cont = lp20_print (uptr, lpcbuf);
             break;
             }
         if ((lpcbuf >= 0354) && (lpcbuf <= 0356)) { /* start DVU load? */
@@ -626,7 +716,10 @@ for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
                 dvlnt = 0;
                 change_rdy (0, CSA_DVON);
                 }
-            else change_rdy(CSA_DVON, 0);
+            else {
+                change_rdy(CSA_DVON, 0);
+                lp20_newform (uptr);
+                }
             }
         else if (dvld == 2) {                       /* even state? */
             dvld_hold = lpcbuf & DV_DMASK;
@@ -662,17 +755,17 @@ for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
         switch (txcase[txst]) {                         /* case on state */
 
         case TX_CHR:                                    /* take char */
-            cont = lp20_print (lpcbuf);
+            cont = lp20_print (uptr, lpcbuf);
             break;
 
         case TX_RAM:                                    /* take translation */
-            cont = lp20_print (lprdat);
+            cont = lp20_print (uptr, lprdat);
             break;
 
         case TX_DVU:                                    /* DAVFU action */
             if (lprdat & TX_SLEW)
-                cont = lp20_adv (lprdat & TX_VMASK, TRUE);
-            else cont = lp20_davfu (lprdat & TX_VMASK);
+                cont = lp20_adv (uptr, lprdat & TX_VMASK, TRUE);
+            else cont = lp20_davfu (uptr, lprdat & TX_VMASK);
             break;
 
         case TX_INT:                                    /* interrupt */
@@ -689,15 +782,28 @@ for (i = 0, cont = TRUE; (i < tbc) && cont; ba++, i++) {
 lpba = ba & 0177777;
 lpcsa = (lpcsa & ~CSA_UAE) | ((ba >> (16 - CSA_V_UAE)) & CSA_UAE);
 lpbc = (lpbc + i) & BC_MASK;
+if (uptr->wait) {
+    uptr->action = &lp20_done;
+    sim_activate_after (uptr, uptr->wait);
+    sim_debug (DF_TIME, &lp20_dev, "LP20 Active: delay = %u\n", uptr->wait);
+} else {
+    lp20_done (uptr);
+}
+if ((fnc == FNC_PR) && pdflpt_error(uptr)) {
+    pdflpt_perror (uptr, "LP I/O error");
+    pdflpt_clearerr(uptr);
+    return SCPE_OK;
+    }
+return SCPE_OK;
+}
+
+static t_stat lp20_done (UNIT *uptr) {
+sim_debug (DF_TIME, &lp20_dev, "LP20 Done\n");
 if (lpbc)                                               /* intr, but not done */
     update_lpcs (CSA_MBZ);
 else update_lpcs (CSA_DONE);                            /* intr and done */
-if ((fnc == FNC_PR) && pdflpt_error(&lp20_unit)) {
-    perror ("LP I/O error");
-    pdflpt_clearerr(&lp20_unit);
-    return SCPE_IOERR;
-    }
-return SCPE_OK;
+
+    return SCPE_OK;
 }
 
 /* Print routines
@@ -709,24 +815,24 @@ return SCPE_OK;
    Return TRUE to continue printing, FALSE to stop
 */
 
-static t_bool lp20_print (int32 c)
+static t_bool lp20_print (UNIT *uptr, int32 c)
 {
 t_bool r = TRUE;
-int32 i, rpt = 1;
+int32 rpt = 1;
 
 lppdat = c & 0177;                                      /* mask char to 7b */
 if (lppdat == 000)                                      /* NUL? no op */
     return TRUE;
 if (lppdat == 012)                                      /* LF? adv carriage */
-    return lp20_adv (1, TRUE);
+    return lp20_adv (uptr, 1, TRUE);
 if (lppdat == 014)                                      /* FF? top of form */
-    return lp20_davfu (DV_TOF);
+    return lp20_davfu (uptr, DV_TOF);
 if (lppdat == 015)                                      /* CR? reset col cntr */
-    return lp20_adv (0, FALSE);
+    return lp20_adv (uptr, 0, FALSE);
 else if (lppdat == 011) {                               /* TAB? simulate */
     lppdat = ' ';                                       /* with spaces */
     if (lpcolc >= 128) {
-        r = lp20_adv (1, TRUE);                         /* eol? adv carriage */
+        r = lp20_adv (uptr, 1, TRUE);                   /* eol? adv carriage */
         rpt = 8;                                        /* adv to col 9 */
         }
     else rpt = 8 - (lpcolc & 07);                       /* else adv 1 to 8 */
@@ -735,16 +841,17 @@ else {
     if (lppdat < 040)                                   /* cvt non-prnt to spc */
         lppdat = ' ';
     if (lpcolc >= LP_WIDTH)                             /* line full? */
-        r = lp20_adv (1, TRUE);                         /* adv carriage */
+        r = lp20_adv (uptr, 1, TRUE);                         /* adv carriage */
     }
-for (i = 0; i < rpt; i++)
-    pdflpt_putc (&lp20_unit, lppdat); 
-lp20_unit.pos = pdflpt_where (&lp20_unit, NULL);
 lpcolc = lpcolc + rpt;
+while (rpt--) {
+    pdflpt_putc (uptr, lppdat); 
+}
+lp20_unit.pos = pdflpt_where (uptr, NULL);
 return r;
 }
 
-static t_bool lp20_adv (int32 cnt, t_bool dvuadv)
+static t_bool lp20_adv (UNIT *uptr, int32 cnt, t_bool dvuadv)
 {
 int32 i;
 int stoppc = FALSE;
@@ -756,7 +863,8 @@ int stoppc = FALSE;
  */
 
 if (lpcolc) {
-    pdflpt_putc (&lp20_unit, '\r');
+    pdflpt_putc (uptr, '\r');
+    uptr->wait += (uint32) PRTTIME;
     lpcolc = 0;
 }
 
@@ -771,9 +879,10 @@ if (lpcsb & CSB_DVOF)
  * stops on the even.  If we slew from the bottom of the even, we will pass the TOF of the
  * odd page and stop on the odd; seeing a second TOF.  
  */
+uptr->wait += (uint32) (pch->firstadv + ADVTIME (cnt - 1));
 
 for (i = 0; i < cnt; i++) {                             /* print 'n' newlines; each can complete a page */
-    pdflpt_putc (&lp20_unit, '\n');
+    pdflpt_putc (uptr, '\n');
     if (dvuadv) {                                       /* update DAVFU ptr */
         dvptr = (dvptr + cnt) % dvlnt;
         if (davfu[dvptr] & (1 << DV_TOF)) {              /* at top of form? */
@@ -785,14 +894,14 @@ for (i = 0; i < cnt; i++) {                             /* print 'n' newlines; e
             } /* At TOF */
         } /* update pointer */
     }
-lp20_unit.pos = pdflpt_where (&lp20_unit, NULL);
+uptr->pos = pdflpt_where (uptr, NULL);
 if (stoppc)                                            /* Crossed one or more TOFs? */
     return FALSE;
 
 return TRUE;
 }
 
-static t_bool lp20_davfu (int32 cnt)
+static t_bool lp20_davfu (UNIT *uptr, int32 cnt)
 {
 int i;
 
@@ -806,11 +915,11 @@ for (i = 0; i < dvlnt; i++) {                           /* search DAVFU */
         dvptr = 0;
     if (davfu[dvptr] & (1 << cnt)) {                    /* channel stop set? */
         if (cnt)                                        /* !TOF channel, adv */
-            return lp20_adv (i + 1, FALSE);
+            return lp20_adv (uptr, i + 1, FALSE);
         if (lpcolc)                                     /* TOF, need to flush line? */
-            lp20_adv (0, FALSE);
-        pdflpt_putc (&lp20_unit, '\f');                 /* print form feed */
-        lp20_unit.pos = pdflpt_where (&lp20_unit, NULL);
+            lp20_adv (uptr, 0, FALSE);
+        pdflpt_putc (uptr, '\f');                       /* print form feed */
+        uptr->pos = pdflpt_where (uptr, NULL);
         lppagc = (lppagc - 1) & PAGC_MASK;              /* decr page cntr */
         if (lppagc != 0)
             return TRUE;
@@ -820,7 +929,9 @@ for (i = 0; i < dvlnt; i++) {                           /* search DAVFU */
             }
         }
     }                                                   /* end for */
-lp20_adv (0, FALSE);
+cnt = dvlnt - cnt;
+uptr->wait += (uint32) (pch->firstadv + ADVTIME (cnt - 1));
+lp20_adv (uptr, 0, FALSE);
 change_rdy (0,CSA_DVON);                                /* Code to channel with no channel stop */
 return FALSE;
 }
@@ -861,15 +972,18 @@ if ((newcsa ^ lpcsa) & (CSA_ONL | CSA_DVON) && !sim_is_active (&lp20_unit)) {
     }
 /* CSA_ERR is handled in update_csa */
 
-if (newcsa & CSA_DVON)
+if (newcsa & CSA_DVON) {
     lpcsb &= ~CSB_DVOF;
-else
+}
+else {
     lpcsb |= CSB_DVOF;
-if (newcsa & CSA_ONL)
+}
+if (newcsa & CSA_ONL) {
     lpcsb &= ~CSB_OFFL;
-else
+}
+else {
     lpcsb |= CSB_OFFL;
-
+}
 lpcsa = newcsa;
 }
 
@@ -893,12 +1007,15 @@ t_stat lp20_reset (DEVICE *dptr)
 {
     /* On power-up reset, clear DAVFU & RAM.  Set DAVFU off-line. */
 if (sim_switches & SWMASK ('P')) {
+    UNIT *uptr = dptr->units;
     memset (davfu, 0, sizeof(davfu));
     memset (txram, 0, sizeof(txram));
     dvlnt = dvptr = dvld= 0;
     lpcsa &= ~CSA_DVON;
     lpcsb |= CSB_DVOF;
     lpi = DEFAULT_LPI;
+    /* Set unit type; if has OVFU, will load default tape */
+    (void) lp20_set_unit_type (uptr, 0x100, DEFAULT_LPT, NULL);
 }
 
 return lp20_init (dptr);
@@ -924,8 +1041,8 @@ return SCPE_OK;
 static t_stat lp20_attach (UNIT *uptr, char *cptr)
 {
 t_stat reason;
-    
-reason = pdflpt_attach (uptr, cptr);                       /* attach file */
+
+reason = pdflpt_attach (uptr, cptr);                    /* attach file */
 if (lpcsa & CSA_DVON) {
     int i;
     for (i = 0; i < dvlnt; i++) {                       /* Align VFU with new file */
@@ -961,69 +1078,152 @@ update_lpcs (CSA_MBZ);
 return reason;
 }
 
-static t_stat lp20_set_vfu_type (UNIT *uptr, int32 val, char *cptr, void *desc)
+static t_stat lp20_set_unit_type (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
-char *fname, *cp;
-FILE *vfile;
-int sum = 0;
+size_t i;
+
+if ((uptr->flags & UNIT_ATT) && !(val & 0x100)) {
+    return SCPE_NOATT;
+}
 
 if (!cptr || !*cptr)
     return SCPE_ARG;
 
-fname = strchr (cptr, '=');
-if (fname)
-    *fname++ = '\0';
-
-for (cp = cptr; *cp; cp++)
-    *cp = toupper (*cp);
-
-if (strncmp (cptr, "DAVFU", strlen(cptr)) == 0) { /* set lp20 vfutype=davfu: Switch to DAVFU, empty */
-    if (fname && *fname)
-        return SCPE_ARG;
-    if (!(lpcsb & CSB_OVFU))                            /* No change */
-        return SCPE_OK;
-    if (uptr->flags & UNIT_ATT)
-        return SCPE_NOATT;
-
-    lpcsb &= ~CSB_OVFU;
-    change_rdy (0, CSA_DVON);
-    dvptr = 0;
-    dvlnt = 0;
-    return SCPE_OK;
+for (i = 0; i < DIM (printers); i++) {
+    if (!strcmp (printers[i].name, cptr)) {
+        break;
+    }
+}
+if (i >= DIM (printers)) {
+    return SCPE_ARG;
 }
 
-if (strncmp (cptr, "OPTICAL", strlen(cptr)) != 0)
-    return SCPE_ARG;
-
-if (!fname || !*fname) { /* set lp20 vfutype=optical */
-    if ((uptr->flags & UNIT_ATT) && !(lpcsb & CSB_OVFU))
-        return SCPE_NOATT;
-
+uptr->up7 = (void *)&printers[i];
+if (pch->davfu) {
+    if (lpcsb & CSB_OVFU) {                             /* VFU type change? */
+        lpcsb &= ~CSB_OVFU;                             /* Old was optical, invalidate VFU */
+        change_rdy (0, CSA_DVON);                       /* DAVFU is off-line */
+        dvptr = 0;
+        dvlnt = 0;
+    }
+} else {
     lpcsb |= CSB_OVFU;
-    change_rdy (CSA_DVON, 0);
+    lpcsa |= CSA_DVON;                                 /* OVFU is internally on-line */
+    lpcsb &= ~CSB_DVOF;                                /* (Don't interrupt for this) */
     memcpy (davfu, defaultvfu, sizeof defaultvfu);
     dvlnt = sizeof (defaultvfu) / sizeof (defaultvfu[0]);
     dvptr = 0;
+}
+
+lp20_newform (uptr);
+return SCPE_OK;
+}
+
+static void lp20_newform (UNIT *uptr) {
+    size_t i, tof;
+char tbuf[sizeof ("columns=999 tof-offset=999 lpp=99999")];
+
+/* Setup PDF defaults
+ * Non-default columns
+ * Set DAVFU tof-offset default to to match VFU.  The BOF
+ * channel marks the end of data (or T20, beginning of break).
+ * Set lpp to match vfu length.
+ */
+
+tof = 0;
+for (i = 0; i < (size_t)dvlnt; i++) {
+    if (davfu[i] & (1u << DV_BOF)){
+        if ((!(lpcsb & CSB_OVFU)) && cpu_unit.flags & UNIT_T20) {
+            tof = dvlnt - i;
+            }
+        else {
+            tof = dvlnt - (i+1);
+            }
+        break;
+        }
+    }
+
+tbuf[0] = '\0';
+if (pch->columns != 132) {
+    sprintf (tbuf, "columns=%u", pch->columns);
+    }
+if (tof != 0) {
+    sprintf (tbuf + strlen (tbuf), " tof-offset=%u", tof);
+    }
+
+i = dvlnt? dvlnt : last_dvlnt;
+if (i) {
+    sprintf (tbuf + strlen (tbuf), " lpp=%u", i);
+    }
+pdflpt_set_defaults (uptr, tbuf);
+
+if (dvlnt && dvlnt != last_dvlnt && pdflpt_getmode (uptr) == PDFLPT_IS_PDF) {
+    last_dvlnt = dvlnt;
+    sprintf (tbuf, "lpp=%u", dvlnt);
+    if (tof != 0) {
+        sprintf (tbuf + strlen (tbuf), " tof-offset=%u", tof);
+        }
+
+    pdflpt_newform (uptr, tbuf);
+    }
+
+return;
+}
+
+static t_stat lp20_show_unit_type (FILE *st, UNIT *uptr, int32 v, void *dp)
+{
+    fprintf (st, "%s, %u columns,\n\t%u LPM, %u character drum",
+             pch->name, pch->columns, pch->lpm, pch->chars );
+
     return SCPE_OK;
 }
 
-/* set lp20 vfutype=optical=file
-    * This is OK when attached, so long as not changing from DAVFU.
-    * Read an optical tape file.  These are line-oriented ASCII files:
-    * # ! ; comment
-    * lno: [ch [ch]...] Define line lno (0-length-1 with punches in
-    *                   channel(s) ch (1-12)
-    * Not required to be in order, if a lno appears more than once, the entries
-    * are ORed.  (You can't unpunch a tape.)
-    * The highest lno defines the VFU length. Note that there is confusion about
-    * whether line numbers start at one or at zero.  The HRM uses 0.  Some of the
-    * utilitites use 1.  We stick with 0 here..
-    */
+static t_stat lp20_show_printers (FILE *st, UNIT *uptr, int32 val, void *desc) {
+    size_t i;
 
-if (!(lpcsb & CSB_OVFU) && (uptr->flags & UNIT_ATT)) /* Changing device out from under OS */
-        return SCPE_NOATT;
+    fprintf (st, "       Model Cols Chars  LPM VFU\n");
 
-vfile = sim_fopen( fname, "r" );
+    for (i = 0; i < DIM (printers); i++) {
+        fprintf (st, "    %c%8s  %3u %5u %4u %s\n",
+                 ((pch == &printers[i])? '*': ' '),
+                 printers[i].name,
+                 printers[i].columns,
+                 printers[i].chars,
+                 printers[i].lpm,
+                 (printers[i].davfu? "DAVFU" : "Optical")
+            );
+    }
+
+    return SCPE_OK;
+}
+
+static t_stat lp20_set_tape (UNIT *uptr, int32 val, char *cptr, void *desc)
+{
+FILE *vfile;
+int sum = 0;
+
+if (!(lpcsb & CSB_OVFU)) { /* Only allowed if optical */
+    return SCPE_NOATT;
+}
+
+if (!cptr || !*cptr) {
+    return SCPE_ARG;
+}
+
+/* set lp20 tape file
+ * This is OK when attached, so long as not changing from DAVFU.
+ * Read an optical tape file.  These are line-oriented ASCII files:
+ * # ! ; comment
+ * lno: [ch [ch]...] Define line lno (0-length-1 with punches in
+ *                   channel(s) ch (1-12)
+ * Not required to be in order, if a lno appears more than once, the entries
+ * are ORed.  (You can't unpunch a tape.)
+ * The highest lno defines the VFU length. Note that there is confusion about
+ * whether line numbers start at one or at zero.  The HRM uses 0.  Some of the
+ * utilitites use 1.  We stick with 0 here..
+ */
+
+vfile = sim_fopen( cptr, "r" );
 if (vfile == NULL) {
     return SCPE_OPENERR;
 }
@@ -1076,8 +1276,8 @@ if (!VFU_LEN_VALID(dvlnt, lpi))   /* Verify VFU has minimum number of lines */
     goto fmt_err;
 
 fclose(vfile);
-lpcsb |= CSB_OVFU;
 change_rdy (CSA_DVON, 0);
+lp20_newform (uptr);
 return SCPE_OK;
 
 fmt_err:
@@ -1087,7 +1287,7 @@ fclose(vfile);
 return SCPE_FMT;
 }
 
-static t_stat lp20_show_vfu_type (FILE *st, UNIT *up, int32 v, void *dp)
+static t_stat lp20_show_vfu_state (FILE *st, UNIT *uptr, int32 v, void *dp)
 {
 if (lpcsb & CSB_OVFU)
     fprintf (st, "optical VFU");
@@ -1122,20 +1322,21 @@ if ((lpcsa & CSA_DVON) && !VFU_LEN_VALID(dvlnt, newlpi))
     return SCPE_ARG;
 
 lpi = newlpi;
+lp20_newform (uptr);
 if ((lpi & LPI_SET) && (pdflpt_getmode(uptr) == PDFLPT_IS_PDF)) { /* Provide LPI if explicitly set */
     pdflpt_puts (uptr, ((lpi & ~LPI_SET) == 8)? "\x9B" "2z": "\x9B" "1z");
     }
 return SCPE_OK;
 }
 
-static t_stat lp20_show_lpi (FILE *st, UNIT *up, int32 v, void *dp)
+static t_stat lp20_show_lpi (FILE *st, UNIT *uptr, int32 v, void *dp)
 {
 fprintf (st, "%u LPI", lpi & ~ LPI_SET);
 
 return SCPE_OK;
 }
 
-static t_stat lp20_show_vfu (FILE *st, UNIT *up, int32 v, void *dp)
+static t_stat lp20_show_vfu (FILE *st, UNIT *uptr, int32 v, void *dp)
 {
 int l, c, sum;
 
@@ -1187,7 +1388,7 @@ if (!(uptr->flags & UNIT_ATT))
 if (lpcsb & CSB_DVOF)
     return SCPE_INCOMP;
 
-lp20_davfu (DV_TOF);
+lp20_davfu (uptr, DV_TOF);
 lppagc = s_lppagc;
 lpcsa = s_lpcsa;
 
@@ -1223,6 +1424,7 @@ return SCPE_OK;
 static t_stat lp20_help (FILE *st, struct sim_device *dptr,
                             struct sim_unit *uptr, int32 flag, char *cptr)
 {
+    const char *defaults;
     static const char text[] = {
 " The LP20 DMA line printer controller is a UNIBUS device developed by DEC\'s\n"
 " 36-bit product line.  The controller is used in the KS10, in PDP-11\n"
@@ -1239,6 +1441,8 @@ static t_stat lp20_help (FILE *st, struct sim_device *dptr,
 " of the optical tape.  The DAVFU is more convenient for operators, as the \n"
 " print spooler changes it automatically to match the forms. Optical VFUs\n"
 " are also supported.\n"
+"\n"
+" Several printer models are emulated and can be configured\n"
 "1 Hardware Description\n"
 " Only a single model of the LP20 was offically released.  However,\n"
 " it is usually bundled with a line printer, so there are a number of part\n"
@@ -1318,12 +1522,15 @@ static t_stat lp20_help (FILE *st, struct sim_device *dptr,
 " \n"
 "2 $Registers\n"
 "1 Configuration\n"
-" \n"
+" The list of emulated printer models and their characteristics can be\n"
+" viewed with:\n"
+"+SHOW LP20 MODELS\n"
+" To select a model, use:\n"
+"+SET PRINTER-MODEL=modelname\n"
+" Selecting a model configures the printer's character set and speed.\n"
 "2 VFU Configuration\n"
-" The emulator can be configured with either a optical or a DAVFU.  \n"
-"+ SET %D VFUTYPE=DAVFU\n"
-"+ SET %D VFUTYPE=OPTICAL\n"
-"+ SET %D VFUTYPE=tapefile\n"
+" The emulator is configured with either a optical or a DAVFU depending\n"
+" on the printer model.\n"
 " \n"
 " The DAVFU contents can be viewed with the\n"
 "+SHOW %D VFU\n"
@@ -1334,8 +1541,17 @@ static t_stat lp20_help (FILE *st, struct sim_device *dptr,
 " provided, which is setup for a 66 line page with a 60 line printable\n"
 " area, and the DEC standard channels punched.  (These correspond to\n"
 " FORTRAN carriage control.)  \n"
+"\n"
+" The \"Normal\" DAVFU of TOPS-10 and TOPS-10 is a 63 line page.  Thus\n"
+" the default TOf-OFFSET for DAVFUs is 3 lines.\n"
+"\n"
+" The VFU length determines the lines-per-page, which together with\n"
+" LPI determines the form length used with PDF printing.  The LENGTH\n"
+" ATTACH parameter has no effect if the VFU is on-line.\n"
 " \n"
-" A custom optical tape can also be configured.\n"
+" A custom optical tape can also be configured.  To load an a custom tape\n"
+" file, use:\n"
+"+ SET %D TAPE tapefile\n"
 "3 Optical VFU file format\n"
 " A custom tape for the optical VFU has the following format.\n"
 " \n"
@@ -1354,7 +1570,7 @@ static t_stat lp20_help (FILE *st, struct sim_device *dptr,
 " \n"
 " Channel 12 is the BOTTOM OF FORM channel. Some printers use this to allow\n"
 " completion of the last page when PAPER OUT is detected.  Paper out sensors\n"
-" tended to alert early.\n"
+" tended to alert early. SimH uses it to determine the TOF-OFFSET.\n"
 "2 $Set commands\n"
 "2 $Show commands\n"
 "1 Operation\n"
@@ -1373,9 +1589,18 @@ static t_stat lp20_help (FILE *st, struct sim_device *dptr,
 " SET %D LPI=6-LPI | 8-LPI\n"
 "+sets the printer's vertical pitch.  This is currently ignored, but may be\n"
 "+implemeneted in the future.  Note that a DAVFU tape can set the vertical\n"
-"+pitch as well.\n"
+"+pitch as well.  The LPI and LPP from the VFU determine the form length.\n"
     };
-    return scp_help (st, dptr, uptr, flag, text, cptr, pdflpt_helptext);
+
+if (!uptr) {
+    uptr = dptr->units;
+}
+defaults = pdflpt_get_defaults (uptr);
+
+return scp_help (st, dptr, uptr, flag, text, cptr,
+                 pdflpt_helptext,
+                 (defaults? "T": "F"), defaults
+        );
 }
 
 static char *lp20_description (DEVICE *dptr)
