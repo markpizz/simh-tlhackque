@@ -75,10 +75,10 @@ extern UNIT cpu_unit;
  */
 typedef struct {
     const char *name;
-    size_t columns;
-    size_t chars;
-    size_t lpm;
-    size_t rpm;
+    size_t columns;           /* Maximum number of print columns */
+    size_t chars;             /* Number of distinct characters on drum/band */
+    size_t lpm;               /* Rated lines/min.  Assumes 1 line advance */
+    size_t rpm;               /* Drum rotation speed */
     double firstadv;          /* usec for first line moved */
     double slew;              /* usec/in for slew */
     t_bool davfu;
@@ -86,6 +86,11 @@ typedef struct {
 #define OVFU  FALSE
 } LPT;
 static const LPT printers[] = {
+    /* LPT macro:
+     * firstadv - time to advance first line in msec
+     * ips      - slew rate in inches/sec - 2nd - nth line advance
+     * davfu    - printer has davfu (vs. optical)
+     */
 #define LPT(name, width, chars, lpm, rpm, firstadv, ips, davfu)       \
     { #name, (width), (chars), (lpm), (rpm), (1000.0 * (firstadv)), (1000000.0/(ips)), (davfu) },
     /*    model                     1st adv Slew
@@ -95,7 +100,6 @@ static const LPT printers[] = {
 
     LPT ( LP07A, 132,  64, 1220,    0, 12.5, 60, DAVFU )
     LPT ( LP07B, 132,  96,  905,    0, 12.5, 60, DAVFU )
-#define DEFAULT_LPT "LP07B"
 
     LPT ( LP10A, 132,  64,  300,  333, 12.0, 24, OVFU )
     LPT ( LP10B, 132,  64,  600,  750, 12.0, 24, OVFU )
@@ -110,6 +114,21 @@ static const LPT printers[] = {
 
     LPT ( LP14A, 132,  64,  890, 1280, 20.0, 30, DAVFU )
     LPT ( LP14B, 132,  96,  650,  857, 20.0, 30, DAVFU )
+
+    LPT ( LP26A, 132,  64,  600,    0, 25.0, 15, DAVFU ) /* Adv unknown, estimated */
+    LPT ( LP26B, 132,  96,  445,    0, 25.0, 15, DAVFU ) /* Adv unknown, estimated */
+
+    LPT ( LP27A, 132,  64, 1200,    0, 18.0, 50, DAVFU ) /* Adv unknown, estimated */
+    LPT ( LP27B, 132,  96,  800,    0, 18.0, 50, DAVFU ) /* Adv unknown, estimated */
+
+    /* The LP29 has 2 64-char bands: 2000 LPM with a statistical band, 1650 std
+     * Dataproducts BP-2000
+     */
+    LPT ( LP29A, 132,  64, 1650,    0, 12.0, 50, DAVFU )
+    LPT ( LP29S, 132,  64, 2000,    0, 12.0, 50, DAVFU )
+    LPT ( LP29B, 132,  96, 1250,    0, 12.0, 50, DAVFU )
+#define DEFAULT_LPT "LP29B"
+
     LPT ( FAST,  132, 256,10000,10000,  0.1,999, DAVFU )
 #undef LPT
 };
