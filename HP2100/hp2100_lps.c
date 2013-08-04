@@ -134,6 +134,7 @@
 
 #include "hp2100_defs.h"
 #include "hp2100_cpu.h"
+#include "sim_pdflpt.h"
 
 #define LPS_ZONECNT     20                              /* zone char count */
 #define LPS_PAGECNT     80                              /* page char count */
@@ -227,7 +228,7 @@ t_stat lps_show_timing (FILE *st, UNIT *uptr, int32 val, void *desc);
 DIB lps_dib = { &lpsio, LPS };
 
 UNIT lps_unit = {
-    UDATA (&lps_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_DISABLE+UNIT_TEXT, 0)
+    UDATA (&lps_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_DISABLE, 0)
     };
 
 REG lps_reg[] = {
@@ -273,8 +274,10 @@ DEVICE lps_dev = {
     "LPS", &lps_unit, lps_reg, lps_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lps_reset,
-    NULL, &lps_attach, NULL,
-    &lps_dib, DEV_DISABLE | DEV_DIS | DEV_DEBUG
+    NULL, &lps_attach, &pdflpt_detach,
+    &lps_dib, DEV_DISABLE | DEV_DIS | DEV_DEBUG, 0,
+    NULL, NULL, NULL,
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 
@@ -482,25 +485,25 @@ if (((c < ' ') || (c > '_')) &&                         /* non-printing char? */
         c = ' ';                                        /* replace with blank */
         }
 if (lps_ccnt > LPS_PAGECNT) {                           /* 81st character? */
-    fputc ('\r', uptr->fileref);                        /* return to line start */
-    uptr->pos = uptr->pos + 1;                          /* update pos */
+    pdflpt_putc (uptr, '\r');                           /* return to line start */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update pos */
     lps_ccnt = 1;                                       /* reset char counter */
     if (DEBUG_PRS (lps_dev))
         fputs (">>LPS svc: Line wraparound to column 1\n", sim_deb);
     }
-fputc (c, uptr->fileref);                               /* "print" char */
-uptr->pos = uptr->pos + 1;                              /* update pos */
+pdflpt_putc (uptr, c);                                  /* "print" char */
+uptr->pos = pdflpt_where (uptr, NULL);                  /* update pos */
 if (DEBUG_PRS (lps_dev))
     fprintf (sim_deb, ">>LPS svc: Character %06o printed\n", c);
 if ((lps_lcnt == 0) && (c == '\n')) {                   /* LF did TOF? */
-    fputc ('\f', uptr->fileref);                        /* do perf skip */
-    uptr->pos = uptr->pos + 1;                          /* update pos */
+    pdflpt_putc (uptr, '\f');                           /* do perf skip */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update pos */
     if (DEBUG_PRS (lps_dev))
         fputs (">>LPS svc: Perforation skip to TOF\n", sim_deb);
     }
-if (ferror (uptr->fileref)) {
-    perror ("LPS I/O error");
-    clearerr (uptr->fileref);
+if (pdflpt_error (uptr)) {
+    pdflpt_perror (uptr, "LPS I/O error");
+    pdflpt_clearerr (uptr);
     return SCPE_IOERR;
     }
 return SCPE_OK;
@@ -519,7 +522,7 @@ IOPRESET (&lps_dib);                                    /* PRESET device (does n
 
 lps_sta = 0;                                            /* clear status */
 sim_cancel (&lps_unit);                                 /* deactivate unit */
-
+pdflpt_reset (&lps_unit);
 return SCPE_OK;
 }
 
@@ -579,7 +582,7 @@ t_stat lps_attach (UNIT *uptr, char *cptr)
 {
 lps_ccnt = lps_lcnt = 0;                                /* top of form */
 lps_restart (uptr, 0, NULL, NULL);                      /* restart I/O if hung */
-return attach_unit (uptr, cptr);
+return pdflpt_attach (uptr, cptr);
 }
 
 /* Set printer timing

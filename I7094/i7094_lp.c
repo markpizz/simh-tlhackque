@@ -48,6 +48,7 @@
 */
 
 #include "i7094_defs.h"
+#include "sim_pdflpt.h"
 
 #define UNIT_V_CONS             (UNIT_V_UF + 0)         /* print to console */
 #define UNIT_CONS               (1u << UNIT_V_CONS)
@@ -144,7 +145,7 @@ extern char colbin_to_bcd (uint32 colbin);
 DIB lpt_dib = { &lpt_chsel, &lpt_chwr };
 
 UNIT lpt_unit = {
-    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_CONS+UNIT_TEXT, 0)
+    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_CONS, 0)
     };
 
 REG lpt_reg[] = {
@@ -177,8 +178,10 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, lpt_mod,
     1, 10, 31, 1, 8, 7,
     NULL, NULL, &lpt_reset,
+    NULL,  &pdflpt_attach, &pdflpt_detach,
+    &lpt_dib, DEV_DISABLE, 0,
     NULL, NULL, NULL,
-    &lpt_dib, DEV_DISABLE
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* Channel select routine */
@@ -336,12 +339,12 @@ for (i = LPT_CHRLNT; (i > 0) &&
     (lpt_cbuf[i - 1] == ' '); --i) ;                    /* trim spaces */
 lpt_cbuf[i] = 0;                                        /* append nul */
 if (uptr->flags & UNIT_ATT) {                           /* file? */
-    fputs (lpt_cbuf, uptr->fileref);                    /* write line */
-    fputc ('\n', uptr->fileref);                        /* append nl */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* error? */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    pdflpt_puts (uptr, lpt_cbuf);                       /* write line */
+    pdflpt_putc (uptr, '\n');                           /* append nl */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {                          /* error? */
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     }
@@ -363,6 +366,7 @@ return SCPE_OK;
 t_stat lpt_reset (DEVICE *dptr)
 {
 uint32 i;
+char tbuf[sizeof ("columns=999")];
 
 for (i = 0; i < LPT_BINLNT; i++)                        /* clear bin buf */
     lpt_bbuf[i] = 0;
@@ -374,5 +378,8 @@ lpt_bptr = 0;                                           /* clear buf ptr */
 lpt_chob = 0;
 lpt_chob_v = 0;
 sim_cancel (&lpt_unit);                                 /* stop printer */
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_CHRLNT);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }

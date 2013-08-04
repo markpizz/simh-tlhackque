@@ -41,6 +41,7 @@ Notes:
 */
 
 #include "nova_defs.h"
+#include "sim_pdflpt.h"
 
 extern int32 int_req, dev_busy, dev_done, dev_disable;
 
@@ -61,7 +62,7 @@ t_stat lpt_reset (DEVICE *dptr);
 DIB lpt_dib = { DEV_LPT, INT_LPT, PI_LPT, &lpt };
 
 UNIT lpt_unit = {    /* 2007-May-30, bkr */
-    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT
+    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
     };
 
 REG lpt_reg[] = {
@@ -80,8 +81,10 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, NULL,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lpt_reset,
+    NULL, &pdflpt_attach, &pdflpt_detach,
+    &lpt_dib, DEV_DISABLE,0,
     NULL, NULL, NULL,
-    &lpt_dib, DEV_DISABLE
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 
@@ -131,11 +134,11 @@ DEV_SET_DONE( INT_LPT ) ;
 DEV_UPDATE_INTR ;
 if ((lpt_unit.flags & UNIT_ATT) == 0)                   /* attached? */
     return IORETURN (lpt_stopioe, SCPE_UNATT);
-fputc (uptr->buf, uptr->fileref);
-uptr->pos = ftell (uptr->fileref);
-if (ferror (uptr->fileref)) {
-    perror ("LPT I/O error");
-    clearerr (uptr->fileref);
+pdflpt_putc (uptr, uptr->buf);
+uptr->pos = pdflpt_where (uptr, NULL);
+if (pdflpt_error (uptr)) {
+    pdflpt_perror (uptr, "LPT I/O error");
+    pdflpt_clearerr (uptr);
     return SCPE_IOERR;
     }
 return SCPE_OK;
@@ -151,5 +154,6 @@ DEV_CLR_BUSY( INT_LPT ) ;
 DEV_CLR_DONE( INT_LPT ) ;
 DEV_UPDATE_INTR ;
 sim_cancel (&lpt_unit);                                 /* deactivate unit */
+pdflpt_reset (&lpt_unit);
 return SCPE_OK;
 }

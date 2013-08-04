@@ -36,6 +36,7 @@
 */
 
 #include "pdp1_defs.h"
+#include "sim_pdflpt.h"
 
 #define BPTR_MAX        40                              /* pointer max */
 #define LPT_BSIZE       (BPTR_MAX * 3)                  /* line size */
@@ -68,7 +69,7 @@ t_stat lpt_reset (DEVICE *dptr);
 */
 
 UNIT lpt_unit = {
-    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0), SERIAL_OUT_WAIT
+    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
     };
 
 REG lpt_reg[] = {
@@ -97,8 +98,9 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, lpt_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lpt_reset,
-    NULL, NULL, NULL,
-    NULL, DEV_DISABLE
+    NULL, &pdflpt_attach, &pdflpt_detach,
+    NULL, DEV_DISABLE, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* Line printer IOT routine */
@@ -166,11 +168,11 @@ if (lpt_spc) {                                          /* space? */
     iosta = iosta | IOS_SPC;                            /* set flag */
     if ((uptr->flags & UNIT_ATT) == 0)                  /* attached? */
         return IORETURN (lpt_stopioe, SCPE_UNATT);
-    fputs (lpt_cc[lpt_spc & 07], uptr->fileref);        /* print cctl */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* error? */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    pdflpt_puts (uptr, lpt_cc[lpt_spc & 07]);          /* print cctl */
+    uptr->pos = pdflpt_where (uptr, NULL);             /* update position */
+    if (pdflpt_error (uptr)) {                         /* error? */
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     lpt_ovrpr = 0;                                      /* dont overprint */
@@ -180,12 +182,12 @@ else {
     if ((uptr->flags & UNIT_ATT) == 0)                  /* attached? */
         return IORETURN (lpt_stopioe, SCPE_UNATT);
     if (lpt_ovrpr)                                      /* overprint? */
-        fputc ('\r', uptr->fileref);
-    fputs (lpt_buf, uptr->fileref);                     /* print buffer */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
+        pdflpt_putc (uptr, '\r');
+    pdflpt_puts (uptr, lpt_buf);                        /* print buffer */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
     if (ferror (uptr->fileref)) {                       /* test error */
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     lpt_bptr = 0;
@@ -201,6 +203,7 @@ return SCPE_OK;
 t_stat lpt_reset (DEVICE *dptr)
 {
 int32 i;
+char tbuf[sizeof ("columns=999")];
 
 lpt_bptr = 0;                                           /* clear buffer ptr */
 for (i = 0; i <= LPT_BSIZE; i++)                        /* clear buffer */
@@ -210,5 +213,8 @@ lpt_ovrpr = 0;                                          /* clear overprint */
 cpls = cpls & ~CPLS_LPT;
 iosta = iosta & ~(IOS_PNT | IOS_SPC);                   /* clear flags */
 sim_cancel (&lpt_unit);                                 /* deactivate unit */
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_BSIZE);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }

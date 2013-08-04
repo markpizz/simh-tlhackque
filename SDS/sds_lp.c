@@ -31,6 +31,7 @@
 */
 
 #include "sds_defs.h"
+#include "sim_pdflpt.h" 
 
 #define LPT_V_LN        9
 #define LPT_M_LN        07
@@ -80,7 +81,7 @@ t_stat lpt (uint32 fnc, uint32 inst, uint32 *dat);
 DIB lpt_dib = { CHAN_W, DEV_LPT, XFR_LPT, lpt_tplt, &lpt };
 
 UNIT lpt_unit = {
-    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 0)
+    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE, 0)
     };
 
 REG lpt_reg[] = {
@@ -111,8 +112,9 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, lpt_mod,
     1, 10, 31, 1, 8, 7,
     NULL, NULL, &lpt_reset,
-    NULL, &lpt_attach, NULL,
-    &lpt_dib, DEV_DISABLE
+    NULL, &lpt_attach, &pdflpt_detach,
+    &lpt_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help, 
     };
 
 /* Line printer routine
@@ -231,7 +233,7 @@ int32 i;
 if ((uptr->flags & UNIT_ATT) && lpt_bptr) {             /* attached? */
     for (i = LPT_WIDTH - 1; (i >= 0) && (lpt_buf[i] == ' '); i--)
         lpt_buf[i] = 0;                                 /* trim line */
-    fputs (lpt_buf, uptr->fileref);                     /* write line */
+    pdflpt_puts (uptr, lpt_buf);                        /* write line */
     lpt_bptr = 0;
     }
 return lpt_status (uptr);                               /* return status */
@@ -242,11 +244,11 @@ return lpt_status (uptr);                               /* return status */
 t_stat lpt_status (UNIT *uptr)
 {
 if (uptr->flags & UNIT_ATT) {                           /* attached? */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (uptr->fileref)) {                       /* I/O error? */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {                          /* I/O error? */
         lpt_end_op (CHF_EOR | CHF_ERR);                 /* set err, disc */
-        perror ("LPT I/O error");                       /* print msg */
-        clearerr (uptr->fileref);
+        pdflpt_perror (uptr, "LPT I/O error");          /* print msg */
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;                              /* ret error */
         }
     }
@@ -279,7 +281,7 @@ t_stat lpt_crctl (UNIT *uptr, int32 ch)
 int32 i, j;
 
 if ((ch == 1) && CHP (ch, lpt_cct[0])) {                /* top of form? */
-    fputs ("\f\n", uptr->fileref);                      /* ff + nl */
+    pdflpt_puts (uptr, "\f\n");                         /* ff + nl */
     lpt_ccp = 0;                                        /* top of page */
     return SCPE_OK;
     }
@@ -287,7 +289,7 @@ for (i = 1; i < lpt_ccl + 1; i++) {                     /* sweep thru cct */
     lpt_ccp = (lpt_ccp + 1) % lpt_ccl;                  /* adv pointer */
     if (CHP (ch, lpt_cct[lpt_ccp])) {                   /* chan punched? */
         for (j = 0; j < i; j++)
-            fputc ('\n', uptr->fileref);
+            pdflpt_putc (uptr, '\n');
         return SCPE_OK;
         }
     }
@@ -301,10 +303,10 @@ t_stat lpt_space (UNIT *uptr, int32 cnt)
 int32 i;
 
 if (cnt == 0)
-     fputc ('\r', uptr->fileref);
+    pdflpt_putc (uptr, '\r');
 else {
     for (i = 0; i < cnt; i++)
-        fputc ('\n', uptr->fileref);
+        pdflpt_putc (uptr, '\n');
     lpt_ccp = (lpt_ccp + cnt) % lpt_ccl;
     }
 return SCPE_OK;
@@ -314,11 +316,15 @@ return SCPE_OK;
 
 t_stat lpt_reset (DEVICE *dptr)
 {
+char tbuf[sizeof ("columns=999")];
 chan_disc (lpt_dib.chan);                               /* disconnect */
 lpt_spc = 0;                                            /* clr state */
 lpt_sta = 0;
 xfr_req = xfr_req & ~XFR_LPT;                           /* clr xfr flag */
 sim_cancel (&lpt_unit);                                 /* deactivate */
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_WIDTH);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -327,5 +333,5 @@ return SCPE_OK;
 t_stat lpt_attach (UNIT *uptr, char *cptr)
 {
 lpt_ccp = 0;                                            /* top of form */
-return attach_unit (uptr, cptr);
+return pdflpt_attach (uptr, cptr);
 }

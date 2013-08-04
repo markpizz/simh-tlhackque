@@ -32,6 +32,7 @@
 */
 
 #include "i1620_defs.h"
+#include "sim_pdflpt.h"
 
 #define LPT_BSIZE       197                             /* buffer size */
 
@@ -70,7 +71,7 @@ t_stat lpt_space (int32 lines, int32 lflag);
 */
 
 UNIT lpt_unit = {
-    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_TEXT, 50)
+    UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE, 50)
     };
 
 REG lpt_reg[] = {
@@ -92,8 +93,11 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, NULL,
     1, 10, 31, 1, 8, 7,
     NULL, NULL, &lpt_reset,
-    NULL, &lpt_attach, NULL
-    };
+    NULL, &lpt_attach, &pdflpt_detach,
+    NULL, 0, 0,
+    NULL, NULL, NULL,
+    &pdflpt_help, &pdflpt_attach_help,
+   };
 
 /* Data tables */
 
@@ -255,13 +259,13 @@ for (i = LPT_WIDTH; i <= LPT_BSIZE; i++)                /* clear unprintable */
 while ((lpt_bptr > 0) && (lpt_buf[lpt_bptr - 1] == ' '))
     lpt_buf[--lpt_bptr] = 0;                            /* trim buffer */
 if (lpt_bptr) {                                         /* any line? */
-    fputs (lpt_buf, lpt_unit.fileref);                  /* print */
-    lpt_unit.pos = ftell (lpt_unit.fileref);            /* update pos */
+    pdflpt_puts (&lpt_unit, lpt_buf);                   /* print */
+    lpt_unit.pos = pdflpt_where (&lpt_unit, NULL);       /* update pos */
     lpt_buf_init ();                                    /* reinit buf */
-    if (ferror (lpt_unit.fileref)) {                    /* error? */
+    if (pdflpt_error (&lpt_unit)) {                     /* error? */
         ind[IN_PRCHK] = ind[IN_WRCHK] = 1;              /* wr, pri check */
-        perror ("LPT I/O error");
-        clearerr (lpt_unit.fileref);
+        pdflpt_perror (&lpt_unit, "LPT I/O error");
+        pdflpt_clearerr (&lpt_unit);
         return SCPE_IOERR;
         }
     }
@@ -301,18 +305,18 @@ int32 i;
 
 cct_ptr = (cct_ptr + count) % cct_lnt;                  /* adv cct, mod lnt */
 if (sflag && CHP (0, cct[cct_ptr]))                     /* skip, top of form? */
-    fputs ("\n\f", lpt_unit.fileref);                   /* nl, ff */
+    pdflpt_puts (&lpt_unit, "\n\f");                    /* nl, ff */
 else {
     for (i = 0; i < count; i++)                         /* count lines */
-        fputc ('\n', lpt_unit.fileref);
+        pdflpt_putc (&lpt_unit, '\n');
     }
-lpt_unit.pos = ftell (lpt_unit.fileref);                /* update position */
+lpt_unit.pos = pdflpt_where (&lpt_unit, NULL);          /* update position */
 ind[IN_PRCH9] = CHP (9, cct[cct_ptr]) != 0;             /* set indicators */
 ind[IN_PRCH12] = CHP (12, cct[cct_ptr]) != 0;
-if (ferror (lpt_unit.fileref)) {                        /* error? */
+if (pdflpt_error (&lpt_unit)) {                         /* error? */
     ind[IN_PRCHK] = ind[IN_WRCHK] = 1;                  /* wr, pri check */
-    perror ("LPT I/O error");
-    clearerr (lpt_unit.fileref);
+    pdflpt_perror (&lpt_unit, "LPT I/O error");
+    pdflpt_clearerr (&lpt_unit);
     return SCPE_IOERR;
     }
 return SCPE_OK;
@@ -342,11 +346,15 @@ return;
 
 t_stat lpt_reset (DEVICE *dptr)
 {
+char tbuf[sizeof ("columns=999")];
 lpt_buf_init ();                                        /* clear buffer */
 cct_ptr = 0;                                            /* clear cct ptr */
 lpt_savctrl = 0x61;                                     /* clear cct action */
 ind[IN_PRCHK] = ind[IN_PRBSY] = 0;                      /* clear indicators */
 ind[IN_PRCH9] = ind[IN_PRCH12] = 0;
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_WIDTH);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -355,5 +363,5 @@ return SCPE_OK;
 t_stat lpt_attach (UNIT *uptr, char *cptr)
 {
 lpt_reset (&lpt_dev);
-return attach_unit (uptr, cptr);
+return pdflpt_attach (uptr, cptr);
 }

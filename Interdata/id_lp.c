@@ -31,6 +31,7 @@
 */
 
 #include "id_defs.h"
+#include "sim_pdflpt.h"
 #include <ctype.h>
 
 /* Device definitions */
@@ -85,7 +86,7 @@ t_stat lpt_spc (UNIT *uptr, int32 cnt);
 
 DIB lpt_dib = { d_LPT, -1, v_LPT, NULL, &lpt, NULL };
 
-UNIT lpt_unit = { UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_UC+UNIT_TEXT, 0) };
+UNIT lpt_unit = { UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_UC, 0) };
 
 REG lpt_reg[] = {
     { HRDATA (STA, lpt_sta, 8) },
@@ -118,8 +119,10 @@ DEVICE lpt_dev = {
     "LPT", &lpt_unit, lpt_reg, lpt_mod,
     1, 10, 31, 1, 16, 7,
     NULL, NULL, &lpt_reset,
-    NULL, &lpt_attach, NULL,
-    &lpt_dib, DEV_DISABLE
+    NULL, &lpt_attach, &pdflpt_detach,
+    &lpt_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL,
+    &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* Line printer: IO routine */
@@ -182,11 +185,11 @@ if (lpt_spnd || ((t >= LF) && (t < CR))) {              /* spc pend or spc op? *
         lpt_spc (uptr, t - SPC_BASE);                   /* space */
     else if ((t >= VFU_BASE) && (t < VFU_BASE + VFU_WIDTH))
         r = lpt_vfu (uptr, t - VFU_BASE);               /* VFU */
-    else fputs ("\r", uptr->fileref);                   /* overprint */
-    uptr->pos = ftell (uptr->fileref);                  /* update position */
-    if (ferror (lpt_unit.fileref)) {
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    else pdflpt_puts (uptr, "\r");                      /* overprint */
+    uptr->pos = pdflpt_where (uptr, NULL);              /* update position */
+    if (pdflpt_error (uptr)) {
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         return SCPE_IOERR;
         }
     }
@@ -214,11 +217,11 @@ if (lpt_bptr == 0) return SCPE_OK;                      /* any char in buf? */
 for (i = LPT_WIDTH - 1; (i >= 0) && (lpxb[i] == ' '); i--)
     lpxb[i] = 0;                                        /* backscan line */
 if (lpxb[0]) {                                          /* any char left? */
-    fputs (lpxb, uptr->fileref);                        /* write line */
-    lpt_unit.pos = ftell (uptr->fileref);               /* update position */
-    if (ferror (uptr->fileref)) {
-        perror ("LPT I/O error");
-        clearerr (uptr->fileref);
+    pdflpt_puts (uptr, lpxb);                           /* write line */
+    lpt_unit.pos = pdflpt_where (uptr ,NULL);           /* update position */
+    if (pdflpt_error (uptr)) {
+        pdflpt_perror (uptr, "LPT I/O error");
+        pdflpt_clearerr (uptr);
         r = SCPE_IOERR;
         }
     }   
@@ -234,7 +237,7 @@ t_stat lpt_vfu (UNIT *uptr, int32 ch)
 uint32 i, j;
 
 if ((ch == (FF_VFU - 1)) && VFUP (ch, lpt_vfut[0])) {   /* top of form? */
-    fputs ("\n\f", uptr->fileref);                      /* nl + ff */
+    pdflpt_puts (uptr, "\n\f");                         /* nl + ff */
     lpt_vfup = 0;                                       /* top of page */
     return SCPE_OK;
     }
@@ -242,7 +245,7 @@ for (i = 1; i < lpt_vful + 1; i++) {                    /* sweep thru cct */
     lpt_vfup = (lpt_vfup + 1) % lpt_vful;               /* adv pointer */
     if (VFUP (ch, lpt_vfut[lpt_vfup])) {                /* chan punched? */
         for (j = 0; j < i; j++)
-            fputc ('\n', uptr->fileref);
+            pdflpt_putc (uptr, '\n');
         return SCPE_OK;
         }
     }
@@ -254,10 +257,10 @@ t_stat lpt_spc (UNIT *uptr, int32 cnt)
 int32 i;
 
 if (cnt == 0)
-     fputc ('\r', uptr->fileref);
+    pdflpt_putc (uptr, '\r');
 else {
     for (i = 0; i < cnt; i++)
-        fputc ('\n', uptr->fileref);
+        pdflpt_putc (uptr, '\n');
     lpt_vfup = (lpt_vfup + cnt) % lpt_vful;
     }
 return SCPE_OK;
@@ -268,6 +271,7 @@ return SCPE_OK;
 t_stat lpt_reset (DEVICE *dptr)
 {
 int32 i;
+char tbuf[sizeof ("columns=999")];
 
 sim_cancel (&lpt_unit);                                 /* deactivate */
 lpt_sta = 0;                                            /* clr busy */
@@ -278,6 +282,9 @@ lpxb[LPT_WIDTH] = 0;
 CLR_INT (v_LPT);                                        /* clearr int */
 CLR_ENB (v_LPT);                                        /* disable int */
 lpt_arm = 0;                                            /* disarm int */
+pdflpt_reset (&lpt_unit);
+sprintf (tbuf, "columns=%u", LPT_WIDTH);
+pdflpt_set_defaults (&lpt_unit, tbuf);
 return SCPE_OK;
 }
 
@@ -286,7 +293,7 @@ return SCPE_OK;
 t_stat lpt_attach (UNIT *uptr, char *cptr)
 {
 lpt_vfup = 0;                                           /* top of form */
-return attach_unit (uptr, cptr);
+return pdflpt_attach (uptr, cptr);
 }
 
 /* Carriage control load routine */

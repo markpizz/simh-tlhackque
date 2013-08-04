@@ -32,6 +32,7 @@
 */
 
 #include "pdp8_defs.h"
+#include "sim_pdflpt.h"
 
 extern int32 int_req, int_enable, dev_done, stop_inst;
 
@@ -82,7 +83,8 @@ DEVICE lpt_dev = {
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &lpt_reset,
     NULL, &lpt_attach, &lpt_detach,
-    &lpt_dib, DEV_DISABLE
+    &lpt_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL, &pdflpt_help, &pdflpt_attach_help,
     };
 
 /* IOT routine */
@@ -140,11 +142,11 @@ if ((uptr->flags & UNIT_ATT) == 0) {
     lpt_err = 1;
     return IORETURN (lpt_stopioe, SCPE_UNATT);
     }
-fputc (uptr->buf, uptr->fileref);                       /* print char */
-uptr->pos = ftell (uptr->fileref);
-if (ferror (uptr->fileref)) {                           /* error? */
-    perror ("LPT I/O error");
-    clearerr (uptr->fileref);
+pdflpt_putc (uptr, uptr->buf);                          /* print char */
+uptr->pos = pdflpt_where (uptr, NULL);
+if (pdflpt_error (uptr)) {                              /* error? */
+    pdflpt_perror (uptr, "LPT I/O error");
+    pdflpt_clearerr (uptr);
     return SCPE_IOERR;
     }
 return SCPE_OK;
@@ -160,6 +162,7 @@ int_req = int_req & ~INT_LPT;
 int_enable = int_enable | INT_LPT;                      /* set enable */
 lpt_err = (lpt_unit.flags & UNIT_ATT) == 0;
 sim_cancel (&lpt_unit);                                 /* deactivate unit */
+pdflpt_reset (&lpt_unit);
 return SCPE_OK;
 }
 
@@ -169,7 +172,7 @@ t_stat lpt_attach (UNIT *uptr, char *cptr)
 {
 t_stat reason;
 
-reason = attach_unit (uptr, cptr);
+reason = pdflpt_attach (uptr, cptr);
 lpt_err = (lpt_unit.flags & UNIT_ATT) == 0;
 return reason;
 }
@@ -179,5 +182,5 @@ return reason;
 t_stat lpt_detach (UNIT *uptr)
 {
 lpt_err = 1;
-return detach_unit (uptr);
+return pdflpt_detach (uptr);
 }

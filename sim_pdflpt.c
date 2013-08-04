@@ -31,11 +31,10 @@
  * You should not need to read this file to use the API.
 */
 
-#include <sim_defs.h>
-#include <sim_tmxr.h>
-#include <sim_console.h>
-
-#include <sim_pdflpt.h>
+#include "sim_defs.h"
+#include "sim_tmxr.h"
+#include "sim_console.h"
+#include "sim_pdflpt.h" 
 
 #define DIM(x) (sizeof (x) / sizeof ((x)[0]))
 
@@ -120,6 +119,7 @@ typedef struct {
     void  (*io_flush)(UNIT *up);
     t_stat (*reset) (DEVICE *dp);
     char *fntemplate;
+    char *defaults;
     uint32 fileseq;
     UNIT idle_unit;/* Used for idle detection and additional context
                     * Usage of device-specific context:
@@ -135,6 +135,7 @@ typedef struct {
 
 /* Internal functions */
 
+static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length);
 static t_stat spool_file (UNIT *uptr, TMLN *lp);
 static t_bool retryable_error (int error);
 static t_bool setup_template (PCTX *ctx, const char *filename, const char *ext);
@@ -226,10 +227,7 @@ static void createctx (UNIT *uptr) {
 #define pdf (pdfctx->pdfh)
 #define idle_unit pdfctx->idle_unit
 
-/* attach_unit replacement
- * drop-in, except that the user may qualify the filename with parameters.
- * see the description in sim_pdflpt.h.
- */
+/* Parse parameter string */
 
 /* Define all the parameter keywords and their types. */
 
@@ -243,6 +241,7 @@ typedef struct {
 #define AT_QSTRING 2
 #define AT_NUMBER  3
 #define AT_INTEGER 4
+#define AT_QSNULL  5
 } ARG;
 static const ARG argtable[] = {
     SET (BAR-HEIGHT,    BAR_HEIGHT,     NUMBER)
@@ -251,11 +250,12 @@ static const ARG argtable[] = {
     SET (CPI,           CPI,            NUMBER)
     SET (FONT,          TEXT_FONT,      QSTRING)
     SET (FORM,          FORM_TYPE,      STRING)
-    SET (IMAGE,         FORM_IMAGE,     QSTRING)
+    SET (IMAGE,         FORM_IMAGE,     QSNULL)
     SET (LENGTH,        PAGE_LENGTH,    NUMBER)
    XSET (LFONT,         LABEL_FONT,     QSTRING)
     SET (NUMBER-WIDTH,  LNO_WIDTH,      NUMBER)
     SET (LPI,           LPI,            INTEGER)
+    SET (LPP,           LPP,            INTEGER)
    XSET (NFONT,         LNO_FONT,       QSTRING)
    XSET (REQUIRE,       FILE_REQUIRE,   STRING)
     SET (SIDE-MARGIN,   SIDE_MARGIN,    NUMBER)
@@ -265,11 +265,139 @@ static const ARG argtable[] = {
     SET (WIDTH,         PAGE_WIDTH,     NUMBER)
 };
 
+/* Parse a string & apply to pdf
+ *
+ */
+
+static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
+    char *fn = cptr + length;
+    char gbuf[CBUFSIZE], vbuf[CBUFSIZE];
+    t_stat reason;
+
+    while (cptr < fn ) {
+        size_t k;
+        char *p;
+
+        reason = SCPE_ARG;
+
+        cptr = get_glyph (cptr, gbuf, '=');
+
+        for (k = 0; k < DIM (argtable); k++) {
+            double arg;
+            long iarg;
+            char *ep;
+            int at;
+
+            if (strncmp (gbuf, argtable[k].keyword, strlen (gbuf))) {
+                continue;
+            }
+            reason = PDF_OK;
+            if (strlen (argtable[k].keyword) != strlen (gbuf)) {
+                size_t kk;
+                for (kk = k+1; kk < DIM (argtable); kk++) {
+                    if (!strncmp (gbuf, argtable[kk].keyword, strlen (gbuf))) {
+                        if (!sim_quiet) {
+                            printf ("Ambiguous keyword: %s\n", gbuf);
+                        }
+                        reason = SCPE_ARG;
+                        break;
+                    }
+                }
+                if (reason != PDF_OK) {
+                    break;
+                }
+            }
+            p = vbuf;
+            at = argtable[k].atype;
+            if (at == AT_QSTRING || at == AT_QSNULL) {
+                cptr = get_glyph_quoted (cptr, vbuf, 0);
+                if (*p == '"' || *p == '\'') {
+                    if (p[strlen (p)-1] == *p) {
+                        *p++;
+                        p[strlen (p)-1] = '\0';
+                    }
+                }
+                if (at == AT_QSNULL && !strlen (p)) {
+                    p = NULL;
+                }
+            } else {
+                cptr = get_glyph (cptr, vbuf, 0);
+            }
+
+            switch (at) {
+            case AT_QSTRING:
+            case AT_QSNULL:
+            case AT_STRING:
+                reason = pdf_set (pdfh, argtable[k].arg, p);
+                break;
+
+            case AT_INTEGER:
+                iarg = strtol (vbuf, &ep, 10);
+                if (!*vbuf || *ep || ep == vbuf) {
+                    if (!sim_quiet) {
+                        printf ("Not an integer for %s value: %s\n",
+                                 argtable[k].keyword, ep);
+                    }
+                    reason= SCPE_ARG;
+                    break;
+                }
+                arg = (double) iarg;
+                reason = pdf_set (pdfh, argtable[k].arg, arg);
+                break;
+
+            case AT_NUMBER:
+                arg = strtod (vbuf, &ep);
+                if (*ep) {
+                    if (!strcmp (ep, "CM")) {
+                        arg /= 2.54;
+                    } else {
+                        if (!strcmp (ep, "MM")) {
+                            arg /= 25.4;
+                        } else if (strcmp (ep, "IN")) {
+                            if (!sim_quiet) {
+                                printf ("Unknown qualifier for %s value: %s\n",
+                                                 argtable[k].keyword,  ep);
+                                reason = SCPE_ARG;
+                                break;
+                            }
+                        }
+                    }
+                }
+                reason = pdf_set (pdfh, argtable[k].arg, arg);
+                break;
+
+            default:
+                return SCPE_ARG;
+            } /* switch (argtype) */
+            break;
+        } /* for (argtable) */
+        if (reason != SCPE_OK) {
+            if (!sim_quiet) {
+                if ( k < DIM (argtable)) {
+                    if (pdf_error (pdfh) != PDF_OK) {
+                        pdf_perror (pdfh, gbuf);
+                    }
+                } else {
+                    printf ("Unknown parameter %s\n", gbuf);
+                }
+            }
+            pdf_close (pdfh);
+            return SCPE_ARG;
+        }
+    } /* while (cptr < fn) */
+    return SCPE_OK;
+}
+
+/* attach_unit replacement
+ * drop-in, except that the user may qualify the filename with parameters.
+ * see the description in sim_pdflpt.h.
+ */
+
 t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     DEVICE *dptr;
     t_stat reason;
     char *p, *fn, *ext;
-    char gbuf[CBUFSIZE], vbuf[CBUFSIZE];
+    char gbuf[CBUFSIZE];
     size_t page, line, fnsize = CBUFSIZE;
 
     if (uptr->flags & UNIT_DIS)
@@ -296,7 +424,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         if (!(pdfctx->udflags & UNIT_NO_FIO)) {
             uptr->dynflags &= ~UNIT_NO_FIO;
         }
-        if (sim_switches & SWMASK ('S')) {
+        if (sim_switches & SWMASK ('S') && strcmp (cptr, "-")) {
             ext = strrchr (cptr, '.');
             if (!ext) {
                 ext = cptr + strlen (cptr);
@@ -331,7 +459,15 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         } else {
             free (pdfctx->fntemplate);
             pdfctx->fntemplate = NULL;
-            reason = attach_unit (uptr, cptr);
+            if (strcmp (cptr, "-")) {
+                reason = attach_unit (uptr, cptr);
+            } else {
+                uptr->fileref = stdout;
+                reason = SCPE_OK;
+                uptr->filename = (char *) calloc (CBUFSIZE, sizeof (char)); 
+                strcpy (uptr->filename, "-");
+                uptr->flags |= UNIT_ATT;
+            }
         }
 
         if (reason == SCPE_OK) {
@@ -446,111 +582,18 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     /* Go back thru the attributes and apply to the handle */
 
-    while (cptr < fn ) {
-        size_t k;
-
-        reason = SCPE_ARG;
-
-        cptr = get_glyph (cptr, gbuf, '=');
-
-        for (k = 0; k < DIM (argtable); k++) {
-            double arg;
-            long iarg;
-            char *ep;
-
-            if (strncmp (gbuf, argtable[k].keyword, strlen (gbuf))) {
-                continue;
-            }
-            reason = PDF_OK;
-            if (strlen (argtable[k].keyword) != strlen (gbuf)) {
-                size_t kk;
-                for (kk = k+1; kk < DIM (argtable); kk++) {
-                    if (!strncmp (gbuf, argtable[kk].keyword, strlen (gbuf))) {
-                        if (!sim_quiet) {
-                            printf ("Ambiguous keyword: %s\n", gbuf);
-                        }
-                        reason = SCPE_ARG;
-                        break;
-                    }
-                }
-                if (reason != PDF_OK) {
-                    break;
-                }
-            }
-            p = vbuf;
-            if (argtable[k].atype == AT_QSTRING) {
-                cptr = get_glyph_quoted (cptr, vbuf, 0);
-                if (*p == '"' || *p == '\'') {
-                    if (p[strlen (p)-1] == *p) {
-                        *p++;
-                        p[strlen (p)-1] = '\0';
-                    }
-                }
-            } else {
-                cptr = get_glyph (cptr, vbuf, 0);
-            }
-
-            switch (argtable[k].atype) {
-            case AT_QSTRING:
-            case AT_STRING:
-                reason = pdf_set (pdf, argtable[k].arg, p);
-                break;
-
-            case AT_INTEGER:
-                iarg = strtol (vbuf, &ep, 10);
-                if (!*vbuf || *ep || ep == vbuf) {
-                    if (!sim_quiet) {
-                        printf ("Not an integer for %s value: %s\n",
-                                 argtable[k].keyword, ep);
-                    }
-                    reason= SCPE_ARG;
-                    break;
-                }
-                arg = (double) iarg;
-                reason = pdf_set (pdf, argtable[k].arg, arg);
-                break;
-
-            case AT_NUMBER:
-                arg = strtod (vbuf, &ep);
-                if (*ep) {
-                    if (!strcmp (ep, "CM")) {
-                        arg /= 2.54;
-                    } else {
-                        if (!strcmp (ep, "MM")) {
-                            arg /= 25.4;
-                        } else if (strcmp (ep, "IN")) {
-                            if (!sim_quiet) {
-                                printf ("Unknown qualifier for %s value: %s\n",
-                                                 argtable[k].keyword,  ep);
-                                reason = SCPE_ARG;
-                                break;
-                            }
-                        }
-                    }
-                }
-                reason = pdf_set (pdf, argtable[k].arg, arg);
-                break;
-
-            default:
-                return SCPE_ARG;
-            } /* switch (argtype) */
-            break;
-        } /* for (argtable) */
+    if (pdfctx->defaults) {
+        reason = parse_params (pdf, pdfctx->defaults, strlen (pdfctx->defaults));
         if (reason != SCPE_OK) {
-            if (!sim_quiet) {
-                if ( k < DIM (argtable)) {
-                    if (pdf_error (pdf) != PDF_OK) {
-                        pdf_perror (pdf, gbuf);
-                    }
-                } else {
-                    printf ("Unknown parameter %s\n", gbuf);
-                }
-            }
-            pdf_close (pdf);
             pdf = NULL;
-            return SCPE_ARG;
+            return reason;
         }
-    } /* while (cptr < fn) */
+    }
+    reason = parse_params (pdf, cptr, fn - cptr);
+    if (reason != SCPE_OK) {
+        pdf = NULL;
+        return reason;
+    }
 
     /* Check for composite errors */
 
@@ -603,7 +646,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         pdf = NULL;
         return SCPE_MEM;
     }
-    strncpy (uptr->filename, cptr, CBUFSIZE);
+    strncpy (uptr->filename, fn, CBUFSIZE);
 
     pdf_where (pdf, &page, &line);
 
@@ -645,6 +688,73 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
     return reason;
 }
 
+/* Setup default parameter string for attach.
+ * Allows devices to override the PDF defaults,e.g. for column width.
+ *
+ * pstring is prefixed to ATTACH command.
+ */
+
+t_stat pdflpt_set_defaults (UNIT *uptr, const char *pstring) {
+    char *p;
+    size_t len = (pstring? strlen (pstring): 0);
+
+    SETCTX (SCPE_MEM);
+
+    if (len) {
+        p = (char *) realloc (pdfctx->defaults, len + 1);
+        if (p == NULL) {
+            return SCPE_MEM;
+        }
+        pdfctx->defaults = p;
+        strcpy (p, pstring);
+        return PDFLPT_OK;
+    }
+
+    free (pdfctx->defaults);
+    pdfctx->defaults = NULL;
+
+    return PDFLPT_OK;
+}
+
+/* Returns default string.
+ * Do not cache: not valid after defaults are changed.
+ */
+
+const char *pdflpt_get_defaults (UNIT *uptr) {
+    SETCTX (NULL);
+
+    return pdfctx->defaults;
+}
+
+/* Switch to a new form
+ *
+ */
+
+t_stat pdflpt_newform (UNIT *uptr, const char *params) {
+    int r;
+    
+    SETCTX (SCPE_MEM);
+
+    if (!pdf || !(uptr->flags & UNIT_ATT)) {
+        return SCPE_OK;
+    }
+
+    r = pdf_reopen (pdf);
+    if (r != PDF_OK) {
+        return SCPE_NOATT;
+    }
+
+    r = parse_params (pdf, (char *)params, strlen (params));
+    if (r != SCPE_OK) {
+        return SCPE_ARG;
+    }
+    r = pdf_print (pdf, "", 0);
+    if (r != SCPE_OK) {
+        return SCPE_ARG;
+    }
+    return SCPE_OK;
+}
+
 /* detach_unit replacement
  * drop-in.
  */
@@ -654,33 +764,44 @@ t_stat pdflpt_detach (UNIT *uptr) {
     int r;
     size_t page;
 
-    if (uptr == NULL)
+    if (uptr == NULL) {
         return SCPE_IERR;
+    }
 
     SETCTX (SCPE_MEM);
+
+    if (!(uptr->flags & UNIT_ATTABLE)) {
+        return SCPE_NOATT;
+    }
+
+    if (!(uptr->flags & UNIT_ATT)) {
+        if (sim_switches & SIM_SW_REST)
+            return SCPE_OK;
+        else
+            return SCPE_NOATT;
+    }
+
+    if ((dptr = find_dev_from_unit (uptr)) == NULL) {
+        return SCPE_OK;
+    }
 
     pdflpt_reset (uptr);
 
     sim_con_register_printer (uptr, NULL);
 
     if (!pdf) {
+        if (uptr->fileref == stdout) {
+            uptr->flags &= ~UNIT_ATT;
+            free (uptr->filename);
+            uptr->filename = NULL;
+            return SCPE_OK;
+        }
         return detach_unit (uptr);
-    }
-
-    if (!(uptr->flags & UNIT_ATTABLE)) {
-        return SCPE_NOATT;
     }
 
     if (sim_switches & SIM_SW_REST) {
         return SCPE_NOATT;
     }
-
-    if (!(uptr->flags & UNIT_ATT)) {
-        return SCPE_NOATT;
-    }
-
-    if ((dptr = find_dev_from_unit (uptr)) == NULL)
-        return SCPE_OK;
 
     if (pdfctx->bc) {
         pdf_print (pdf, pdfctx->buffer, pdfctx->bc);
@@ -1303,8 +1424,18 @@ static t_stat idle_svc (UNIT *uptr) {
 
 t_stat pdflpt_attach_help (FILE *st, struct sim_device *dptr,
                                   struct sim_unit *uptr, int32 flag, char *cptr) {
-return scp_help (st, dptr, uptr, flag | SCP_HELP_ATTACH, pdflpt_attach_helptext, cptr,
-                 pdflpt_helptext);
+    if (!uptr) {
+        uptr = dptr->units;
+    }
+    SETCTX (SCPE_MEM);
+
+    return scp_help (st, dptr, uptr, flag | SCP_HELP_ATTACH, pdflpt_attach_helptext, cptr,
+                     pdflpt_helptext,                          /* P1 */
+                     (pdfctx->defaults? "T": "F"),             /* P2 */
+                     (pdfctx->defaults? pdfctx->defaults: ""), /* P3 */
+                     (pdfctx->defaults? "T": "F"),             /* P1 */
+                     (pdfctx->defaults? pdfctx->defaults: "")  /* P2 */
+        );
 }
 
 t_stat pdflpt_help (FILE *st, struct sim_device *dptr,
@@ -1323,6 +1454,11 @@ t_stat pdflpt_help (FILE *st, struct sim_device *dptr,
 " See \"How to Contribute\" for the location of the SimH team.\n"
 "\n"
 " If you are able, please feel free to contribute help for this device.\n"
+"1 ?2Device-specific defaults\n"
+" The %D defaults the parameters of ATTACH for PDF output to\n"
+"+%3s\n"
+" These defaults replace the standard PDF defaults listed in PDF Printing\n"
+" for the %D, but not for any other PDF-capable printer.\n"
 "1 $Set commands\n"
 "1 $Show commands\n"
 "1 $Registers\n"
@@ -1336,8 +1472,18 @@ t_stat pdflpt_help (FILE *st, struct sim_device *dptr,
 " Thank you for considering a contribution.\n"
     };
 
+    if (!uptr) {
+        uptr = dptr->units;
+    }
+    SETCTX (SCPE_MEM);
+
     return scp_help (st, dptr, uptr, flag, helptext, cptr,
-                     pdflpt_helptext);
+                     pdflpt_helptext,                          /* P1 */
+                     (pdfctx->defaults? "T": "F"),             /* P2 */
+                     (pdfctx->defaults? pdfctx->defaults: ""), /* P3 */
+                     (pdfctx->defaults? "T": "F"),             /* P1 */
+                     (pdfctx->defaults? pdfctx->defaults: "")  /* P2 */
+        );
 }
 
 /* Please keep these strings last in the file to facilitate editing. */
@@ -1362,6 +1508,9 @@ const char pdflpt_attach_helptext[] = {
 " That process can print the file to a physical printer, move it\n"
 " to a network location, e-mail it - or anything else.\n"
 " For details, see the Spooling section.\n"
+"1 ?2Device-specific defaults\n"
+" The %D defaults the parameters of ATTACH for PDF output to\n"
+"+%3s\n"
     };
 
 const char pdflpt_helptext[] = 
@@ -1437,7 +1586,16 @@ const char pdflpt_helptext[] =
 " by appending \"mm\" or \"cm\" to the value.  E.g. 38.1cm is equivalent to\n"
 " 15.0in.  The \"in\" is optional.\n"
 "\n"
+" The default value listed with each parameter may be superseded by a\n"
+" device-specific default.  Consult the \"Device-specific defaults\"\n"
+" topic for specifics. (The topic is present only for these devices.)\n"
+"\n"
 " The parameters are described in groups.\n"
+"4 ?1Device-specific defaults\n"
+" The %D defaults the parameters of ATTACH for PDF output to\n"
+"+%2s\n"
+" These defaults replace the standard PDF defaults shown with each parameter.\n"
+" for the %D, but not for any other PDF-capable printer.\n"
 "4 Form style\n"
 " All emulated paper is called a 'form'.  All forms are tractor-feed,\n"
 " and include the tractor feed holes.\n"
@@ -1532,8 +1690,14 @@ const char pdflpt_helptext[] =
 " Default: 14.875in\n"
 "\n"
 " length=number\n"
-"+Specifies the length of the paper, inclusive of all margins.\n"
+"+Specifies the length of the paper, inclusive of all margins.  Superseded\n"
+"+by lpp if both are specified.\n"
 " Default: 11in\n"
+"\n"
+" lpp=integer\n"
+"+Specified the length of the page in lines.  Supersedes length if both are\n"
+"+specified, as length is lpp * lpi.  VFUs may set this automatically to\n"
+"+match the tape length.\n"
 "\n"
 " top-margin=number\n"
 "+Specifies height of the top margin on the paper.  For 'bar' forms, this\n"

@@ -39,7 +39,7 @@
  * assumptions are made about the structure to simplify this code.
  */
 
-#define LPT2PDF_VERSION "1.0-002"
+#define LPT2PDF_VERSION "1.0-003"
 
 #include <ctype.h>
 #include <errno.h>
@@ -48,7 +48,15 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
+#if defined (_MSC_VER) && _MSC_VER < 1600
+typedef __int32 int32_t;
+typedef unsigned __int32 uint32_t;
+typedef unsigned __int8 uint8_t;
+typedef unsigned __int16 uint16_t;
+typedef __int16 int_least16_t;
+#else
 #include <stdint.h>
+#endif
 #include <string.h>
 #include <time.h>
 #include <fcntl.h>
@@ -222,6 +230,7 @@ typedef struct {
     unsigned int formtype;  /* Type of background/form */
     char *formfile;         /* File containing form image */
     double barh;            /* Height of form bar */
+    unsigned int lpp;       /* Lines per page (requested) */
 } SETP;
 
 typedef struct {
@@ -229,7 +238,9 @@ typedef struct {
     SETP p;                 /* User-settable parameters */
     unsigned int newlpi;
 
-    /* Below this point initialized to zero */
+    /* Below this point initialized to zero
+     * Be sure to update pdf_reopen for additions.
+     */
     int errnum;             /* Last error */
     FILE *pdf;              /* Output file handle */
     unsigned int escstate;  /* Escape sequence parser */
@@ -281,6 +292,8 @@ typedef struct {
 #define PDF_INIT          0x0008 /* Initialized - metadata read if appending */
 #define PDF_WRITTEN       0x0010 /* Headers written */
 #define PDF_RESUMED       0x0020 /* Resumed from a checkpoint */
+#define PDF_REOPENED      0X0040 /* Reopened (and hence must append */
+
     unsigned int lpp;       /* Lines per page */
     short **lines;          /* Data for each line */
     unsigned int  nlines;   /* Number of lines allocated */
@@ -335,10 +348,11 @@ static const PDF defaults = {
         "Times-Bold",            /* nbold */
         PDF_FILE_NEW,            /* frequire */
         "Lineprinter data",      /* title */
-        ~1u,                     /* tof */
+        ~0u,                     /* tof */
         PDF_GREENBAR,            /* formtype */
         NULL,                    /* formfile */
         0.500,                   /* barh */
+        0,                       /* lines per page (requested) */
     },
     6,                           /* lpi */
 };
@@ -356,6 +370,7 @@ static const PDF defaults = {
 
 static int dupstrs (PDF *pdf);
 static int dupstr (PDF *pdf, char **ptr);
+static int pdfreopen (PDF *pdf);
 static int pdfset ( PDF *pdf, int arg, va_list ap);
 static int checkfont (const char *newfont);
 static void pdfinit (PDF *pdf);
@@ -476,10 +491,11 @@ static const ARG argtable [] = {
     SET (font,    TEXT_FONT,      STRING,  Courier,     (Specifies the name of the font to use for rendering the input data.  Accepted are:%F))
     SET (form,    FORM_TYPE,      STRING,  greenbar,    (Specifies the form background to be applied. One of:%fPlain is white page.))
     SET (image,   FORM_IMAGE,     STRING,  <none>,      (Specifies a .jpg image to be used as the form background\nIt will be scaled to fill the area within the margins.\nIt is rendered over the form; for just the image, use -form Plain.))
-    SET (length,  PAGE_LENGTH,    NUMBER,  11.000in,    (Specifies the length of the page in inches, inclusive of all margins))
+    SET (length,  PAGE_LENGTH,    NUMBER,  11.000in,    (Specifies the length of the page in inches, inclusive of all margins.  Calculated automatically if -lpp is used.))
     SET (lfont,   LABEL_FONT,     STRING,  Times-Bold,  (Specifies the name of the font used to render labels on the form))
     SET (lno,     LNO_WIDTH,      NUMBER,  0.100in,     (Specifies the width of the line number column on the form; 0 to omit cols.))
     SET (lpi,     LPI,            INTEGER, 6,           (Specifies the lines per inch (vertical pitch): 6 or 8 are supported.))
+    SET (lpp,     LPP,            INTEGER, 66,          (Specifies the page length in lines.  If used, takes precedence over length.))
     SET (nfont,   LNO_FONT,       STRING,  Times-Roman, (Specifies the name of the font used to render the numbers on the form))
     SET (require, FILE_REQUIRE,   STRING,  new,         (Specifies how to treat the output file.  \nNEW will create the file, or if it exists, the file must be empty.\nAPPEND will create the file, or if it exists and is in PDF fomat, data will be appended.\nREPLACE will completely replace the contents of an existing file.))
     SET (side,    SIDE_MARGIN,    NUMBER,  0.470,       (Specifies the width of the tractor feed margin on each side of the page.))
@@ -910,12 +926,15 @@ FILE *pdf_open_exclusive (const char *filename, const char *mode) {
 
 #ifdef _WIN32
     fh = _fdopen (fd, mode);
+    if (!fh) {
+        _close (fd);
+    }
 #else
     fh = fdopen (fd, mode);
-#endif
     if (!fh) {
         close (fd);
     }
+#endif
 
     return fh;
 }
@@ -1034,9 +1053,14 @@ int pdf_print (PDF_HANDLE pdf, const char *string, size_t length) {
 
     if (!(ps->flags & PDF_WRITTEN)) {
 #define pdf ps
-        pdf->lpp = (long) (pdf->p.len * pdf->p.lpi);
+        if (pdf->p.lpp) {
+            pdf->lpp = pdf->p.lpp;
+            pdf->p.len = ((double)pdf->p.lpp) / (double)pdf->p.lpi;
+        } else {
+            pdf->lpp = (long) (pdf->p.len * pdf->p.lpi);
+        }
 
-        if (pdf->p.tof == ~1u) {
+        if (pdf->p.tof == ~0u) {
             pdf->p.tof = ((unsigned int) (pdf->p.top * pdf->p.lpi));
         }
 
@@ -1307,6 +1331,27 @@ int pdf_checkpoint (PDF_HANDLE pdf) {
     return r;
 }
 
+/* re-open an active file
+ * Checkpoints the current state.
+ * Resets to "just opened" + resumed + all sets.
+ * Allows changing forms mid-stream.
+ */
+
+int pdf_reopen (PDF_HANDLE pdf) {
+    int r;
+
+    valarg (ps);
+
+    ps->errnum = 0;
+
+    r = setjmp (ps->env);
+    if (r) {
+        return r;
+    }
+
+    return pdfreopen (ps);
+}
+
 /* Obtain a snapshot of an active file.
  *
  * Checkpoints the active file and copies it in a consistent state to
@@ -1486,6 +1531,56 @@ void pdf_clearerr (PDF_HANDLE pdf) {
 
 /* *** End of public API *** */
 
+static int pdfreopen (PDF *pdf) {
+    int r;
+
+    /* Commit everything to the current file */
+
+    r = pdfclose (pdf, 1);
+    fflush (pdf->pdf);
+
+    if (r != PDF_OK) {
+        return r;
+    }
+
+    /* Reset all state to "just opened"
+     * Exceptions:
+     *  flags - retain preferences
+     *          Suppress initial FF removal
+     *          Remember reopen to force append at first output
+     *  buffers - don't deallocate, but set current used to 0
+     */
+
+    fseek (pdf->pdf, 0, SEEK_SET);
+
+    pdf->flags = pdf->flags & (PDF_UNCOMPRESSED);
+    pdf->flags |= PDF_RESUMED | PDF_REOPENED;
+
+    pdf->newlpi = pdf->p.lpi;
+    pdf->escstate = ESC_IDLE;
+    pdf->formlen =
+        pdf->formobj =
+        pdf->prevpc =
+        pdf->anchorp =
+        pdf->anchorpp =
+        pdf->checkpp =
+        pdf->aobj =
+        pdf->obj =
+        pdf->xpos =
+        pdf->lpp =
+        pdf->page =
+        pdf->line =
+        pdf->pbase =
+        pdf->iobj =
+        pdf->parseused =
+        pdf->pbused = 
+        pdf->lzwused = 0;
+    free (pdf->trail);
+    pdf->trail = NULL;
+
+    return PDF_OK;
+}
+
 /* The work of pdf_set
  */
 
@@ -1559,7 +1654,11 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
 
     case PDF_FORM_IMAGE:
         svalue = va_arg (ap, const char *);
-        REJECT_NULL
+        if (svalue == NULL) {
+            free (pdf->p.formfile);
+            pdf->p.formfile = NULL;
+            return PDF_OK;
+        }
         if (!(fh = fopen (svalue, "rb"))){
             return errno;
         }
@@ -1675,6 +1774,10 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
         pdf->p.lpi = ivalue;
         return PDF_OK;
 
+    case PDF_LPP:
+         pdf->p.lpp = ivalue;
+        return PDF_OK;
+
     case PDF_PAGE_WIDTH:
         if (dvalue < 3.0) {
             ABORT (E(INVAL));
@@ -1721,14 +1824,18 @@ static int checkfont (const char *newfont) {
 
 static void pdfinit (PDF *pdf) {    
     int r;
+    int reopen;
 
     SHA1Reset (&pdf->sha1);
 
     if (ftell (pdf->pdf)) {
-        ABORT (errno);
+        ABORT (E(BUGCHECK));
     }
 
-    if (pdf->p.frequire == PDF_FILE_APPEND) {
+    reopen = (pdf->flags & PDF_REOPENED) != 0;
+    pdf->flags &= ~PDF_REOPENED;
+
+    if (pdf->p.frequire == PDF_FILE_APPEND || reopen) {
         r = checkupdate (pdf);
         if (r == PDF_OK) {
             return;
@@ -1793,7 +1900,7 @@ static int checkupdate (PDF *pdf) {
     /* Make sure file is seekable, if zero length, treat as new. */
 
     if (fseek (pdf->pdf, 0, SEEK_END)) {
-        ABORT (errno);
+        return errno;
     }
     end = ftell (pdf->pdf);
     if (!end) {
@@ -1804,11 +1911,10 @@ static int checkupdate (PDF *pdf) {
 
     fseek (pdf->pdf, 0, SEEK_SET);
     if (!fgets (buf, sizeof (buf), pdf->pdf)) {
-        fclose (pdf->pdf);
-        ABORT (errno);
+        return errno;
     }
     if (strncmp (buf, "%PDF-1.", 7)) {
-        ABORT (E(NOT_PDF));
+        return E(NOT_PDF);
     }
     p = buf + 7;
 
@@ -1816,7 +1922,7 @@ static int checkupdate (PDF *pdf) {
         p++;
     }
     if (*p != '\n') {
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     /* Probable PDF.  Find the XREF
      * This is painful, but will find the right place.
@@ -1841,7 +1947,7 @@ static int checkupdate (PDF *pdf) {
         fseek (pdf->pdf, amt, SEEK_CUR);
         c = fgetc (pdf->pdf);
         if (c == EOF) {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
         *--p = c;
         if ( c == '\n' ) {
@@ -1850,14 +1956,14 @@ static int checkupdate (PDF *pdf) {
         amt = -2;
     }
     if (strncmp (p, "\nstartxref\n", 11)) {
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     p += 11;
 
     pdf->xpos = 0;
     while (*p && *p != '\n') {
         if (!isdigit (*p)) {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
         pdf->xpos *= 10;
         pdf ->xpos += *p++ - '0';
@@ -1865,7 +1971,7 @@ static int checkupdate (PDF *pdf) {
     if (pdf->xpos <= 9 ||
         pdf->xpos >= ftell (pdf->pdf) ||
         strncmp (p, "\n%%EOF\n", 7)) {
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* Found the xref pointer and verified EOF
@@ -1876,7 +1982,7 @@ static int checkupdate (PDF *pdf) {
     fseek (pdf->pdf, pdf->xpos, SEEK_SET);
     fgets (buf, sizeof (buf), pdf->pdf);
     if (strcmp (buf, "xref\n")) {
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* section header - there should only be one
@@ -1890,7 +1996,7 @@ static int checkupdate (PDF *pdf) {
         objs = (objs * 10) + *p++ - '0';
     }
     if (p == buf || *p != ' ' || objs != 0) {
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     p++;
 
@@ -1899,7 +2005,7 @@ static int checkupdate (PDF *pdf) {
         objn = (objn * 10) + *p++ - '0';
     }
     if (p == buf || *p != '\n' || objn < 4) { /* Must be at least freelist, info, cat, page dir */
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* Read the xref into the context. */
@@ -1911,43 +2017,43 @@ static int checkupdate (PDF *pdf) {
         objp = 0;
         for (p = buf, i = 0; i < 10; i++) {
             if (!isdigit (*p)) {
-                ABORT (E(NO_APPEND));
+                return E(NO_APPEND);
             }
             objp = (objp * 10) + *p++ - '0';
         }
         if (*p++ != ' ') {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
 
         gen = 0;
         for (i = 0; i < 5; i++) {
             if (!isdigit (*p)) {
-                ABORT (E(NO_APPEND));
+                return E(NO_APPEND);
             }
             gen = (gen * 10) + *p++ - '0';
         }
         if (*p++ != ' ') {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
         if (p[0] == 'f' && gen == 65535 && objp == 0 && lf == 0) {
             continue;
         }
         if (gen != 0 || objp == 0 || p[0] != 'n') {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
 
         obj = addobj (pdf);
         if (obj != objs + lf) {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
         pdf->xref[obj-1]= objp;
     }
     /* Advance to the trailer */
     do {
         if (!fgets (buf, sizeof (buf), pdf->pdf) ) {
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
-    } while ( strcmp (buf, "trailer\n"));
+    } while (strcmp (buf, "trailer\n"));
 
     /* read the trailer into a buffer */
 
@@ -1956,7 +2062,7 @@ static int checkupdate (PDF *pdf) {
     do {
         if (!fgets (buf, sizeof (buf), pdf->pdf) ) {
             free (trail);
-            ABORT (E(NO_APPEND));
+            return E(NO_APPEND);
         }
         if (!strcmp (buf, "startxref\n")) {
             break;
@@ -1965,7 +2071,7 @@ static int checkupdate (PDF *pdf) {
         p = (char *) realloc (trail, tsize + ll +1);
         if (!p) {
             free (trail);
-            ABORT (errno);
+            return errno;
         }
         trail = p;
         strcpy (p + tsize, buf);
@@ -1973,14 +2079,14 @@ static int checkupdate (PDF *pdf) {
     } while ( 1 );
 
     if (!trail) {
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* Extract the data needed to navigate and to restore at close */
     q = "/ID [";
     if (!(p = strstr (trail, q))) {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     p += strlen (q);
 
@@ -1988,11 +2094,11 @@ static int checkupdate (PDF *pdf) {
             p++;
     if ( *p++ != '<') {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     if (strlen (p) < (SHA1HashSize*2) + 1 || p[SHA1HashSize*2] != '>') {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     memcpy (pdf->oid, p, SHA1HashSize*2);
     SHA1Input (&pdf->sha1, (uint8_t *)p, SHA1HashSize*2);
@@ -2005,7 +2111,7 @@ static int checkupdate (PDF *pdf) {
 
     if (pdf->pbase >= pdf->iobj) {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* Follow link to the document information object */
@@ -2013,7 +2119,7 @@ static int checkupdate (PDF *pdf) {
     (void) readobj (pdf, pdf->iobj, &trail, &tsize);
     if (!strstr (trail, "/Producer (LPTPDF Version ")) {
         free (trail);
-        ABORT (E(NOT_PRODUCED));
+        return E(NOT_PRODUCED);
     }
 
     p = getstr (pdf, trail, "/CreationDate");
@@ -2021,7 +2127,7 @@ static int checkupdate (PDF *pdf) {
         strncmp (p, "(D:", 3) || p[strlen (p) -1] != ')') {
         free (p);
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     strcpy (pdf->ctime, p+3);
     pdf->ctime[strlen (pdf->ctime) -1] ='\0';
@@ -2032,7 +2138,7 @@ static int checkupdate (PDF *pdf) {
     (void) readobj (pdf, pdf->pbase, &trail, &tsize);
     if (!strstr (trail, "/Type /Catalog")) {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* Page tree is anchor node for all previous sessions */
@@ -2040,7 +2146,7 @@ static int checkupdate (PDF *pdf) {
     pdf->aobj = getref (pdf, trail, "/Pages");
     if (pdf->aobj != pdf->pbase -1) {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
 
     /* Get current page count, confirming this is the tree root (no /Parent) */
@@ -2048,7 +2154,7 @@ static int checkupdate (PDF *pdf) {
     pdf->anchorp = readobj (pdf, pdf->aobj, &trail, &tsize);
     if (!strstr (trail, "/Type /Pages") || strstr (trail, "/Parent")) {
         free (trail);
-        ABORT (E(NO_APPEND));
+        return E(NO_APPEND);
     }
     pdf->prevpc = getint (pdf, trail, "/Count", (const char **)&q);
 
@@ -2081,7 +2187,7 @@ static void wrhdr (PDF *pdf) {
          */
         if (!pdf->checkpp) {
             if (fputs (PDF_C_HEADER, pdf->pdf) == EOF) {
-               ABORT (E(IO_ERROR));
+                ABORT (E(IO_ERROR));
             }
         }
         pdf->flags |= PDF_WRITTEN;
@@ -2785,6 +2891,7 @@ static int pdfclose (PDF *pdf, int checkpoint) {
     /* Write the xref */
 
     xref = ftell (pdf->pdf);
+
     /* Trailing space is part of required 2-byte EOL marker in xref entries */
     fprintf (pdf->pdf,"xref\n"
              "0 %u\n"

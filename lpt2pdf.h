@@ -31,7 +31,13 @@
  *
  * The API for the library is fairly straightforward:
  *  PDF_HANDLE handle = pdf_open ("pdf_file.pdf");
+ *     "-" will use stdout (which must be seekable - e.g. not a pipe.)
  *     Returns NULL on error; errno may give a clue.
+ *
+ * int pdf_reopen (handle)
+ *     write all pending data to file
+ *     start a new session (can have different parameters)
+ *     Returns PDF_OK for success
  *
  *  int pdf_set (handle, ITEM, value)
  *     optionally modify the default parameters (setup for standard US greenbar)
@@ -51,6 +57,7 @@
  *       PDF_TOP_MARGIN        Inches 1.000       White space at top of each page before bar 1
  *       PDF_TOF_OFFSET        Lines  6           Offset on form of line 1.
  *       PDF_LPI               Lines  6           Vertical pitch: lines/inch (6 or 8 useful)
+ *       PDF_LPP               Lines  66          Lines/page (calculates length using LPI)
  *       PDF_BOTTOM_MARGIN     Inches 0.500       White space at bottom of each page (after last bar)
  *       PDF_PAGE_WIDTH        Inches 14.875      Width of page (including all margins)
  *       PDF_SIDE_MARGIN       Inches 0.470       Tractor feed hole area (not useful)
@@ -158,10 +165,6 @@
  */
 
 #include <stdarg.h>
-#ifndef INT64_C
-#include <stdint.h>
-#endif
-#include <stdarg.h>
 #include <stdlib.h>
 
 #define PDF_OK (0)
@@ -175,6 +178,8 @@ PDF_HANDLE pdf_open (const char *filename);
 PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename);
 
 FILE *pdf_open_exclusive (const char *filename, const char *mode);
+
+int pdf_reopen (PDF_HANDLE);
 
 int pdf_set (PDF_HANDLE pdf, int arg,...);
 #define PDF_NO_LZW        (-1)
@@ -196,6 +201,7 @@ int pdf_set (PDF_HANDLE pdf, int arg,...);
 #define PDF_FORM_TYPE     (16)
 #define PDF_FORM_IMAGE    (17)
 #define PDF_BAR_HEIGHT    (18)
+#define PDF_LPP           (19)
 
 int pdf_print (PDF_HANDLE pdf, const char *string, size_t length);
 #define PDF_USE_STRLEN ((size_t)(~0u))
