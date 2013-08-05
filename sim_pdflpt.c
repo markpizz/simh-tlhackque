@@ -278,6 +278,10 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
         size_t k;
         char *p;
 
+        if (isspace (*cptr)) {
+            cptr++;
+            continue;
+        }
         reason = SCPE_ARG;
 
         cptr = get_glyph (cptr, gbuf, '=');
