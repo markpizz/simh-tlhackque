@@ -236,7 +236,6 @@ typedef struct {
 typedef struct {
     char key[3];            /* Handle validator */
     SETP p;                 /* User-settable parameters */
-    unsigned int newlpi;
 
     /* Below this point initialized to zero
      * Be sure to update pdf_reopen for additions.
@@ -354,7 +353,6 @@ static const PDF defaults = {
         0.500,                   /* barh */
         0,                       /* lines per page (requested) */
     },
-    6,                           /* lpi */
 };
 
 #define ps ((PDF *)pdf)
@@ -873,7 +871,6 @@ PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename) {
     /* Copy all pdf_set parameters from old handle to new */
 
     memcpy (&newpdf->p, &ps->p, sizeof (ps->p));
-    newpdf->newlpi = newpdf->p.lpi;
 
     if ((r = dupstrs (newpdf)) != PDF_OK) {
         fclose (newpdf->pdf);
@@ -1556,7 +1553,6 @@ static int pdfreopen (PDF *pdf) {
     pdf->flags = pdf->flags & (PDF_UNCOMPRESSED);
     pdf->flags |= PDF_RESUMED | PDF_REOPENED;
 
-    pdf->newlpi = pdf->p.lpi;
     pdf->escstate = ESC_IDLE;
     pdf->formlen =
         pdf->formobj =
@@ -3261,7 +3257,7 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
                     } else {
                         DISCARD;
                     }
-                    pdf->newlpi = p0;
+                    /* Change lpi */
                     DISCARD;
                 }
                 DISCARD;
