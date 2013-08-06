@@ -56,7 +56,11 @@
 #define DDCMP_RESP_OFFSET 3 /* Byte offset of response (ack) number field */
 #define DDCMP_NUM_OFFSET  4 /* Byte offset of packet number field */
 
-#define DDCMP_PACKET_TIMEOUT 3  /* Seconds before sending REP command for unacknowledged packets */
+#define DDCMP_PACKET_TIMEOUT 4  /* Seconds before sending REP command for unacknowledged packets */
+
+#define DDCMP_DBG_PXMT  TMXR_DBG_PXMT   /* Debug Transmitted Packet Header Contents */
+#define DDCMP_DBG_PRCV  TMXR_DBG_PRCV   /* Debug Received Packet Header Contents */
+#define DDCMP_DBG_PDAT  0x1000000       /* Debug Packet Data */
 
 /* Support routines */
 
@@ -81,7 +85,7 @@ return(crc);
 
 #include <ctype.h>
 
-static void ddcmp_packet_trace (uint32 reason, DEVICE *dptr, const char *txt, const uint8 *msg, int32 len, t_bool detail)
+static void ddcmp_packet_trace (uint32 reason, DEVICE *dptr, const char *txt, const uint8 *msg, int32 len)
 {
 if (sim_deb && dptr && (reason & dptr->dctrl)) {
     int i, same, group, sidx, oidx;
@@ -136,7 +140,7 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
                                         (0 == ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+DDCMP_HEADER_SIZE, 2+((msg2 << 8)| msg[1]))) ? "OK" : "BAD");
             break;
         }
-    if (detail) {
+    if (DDCMP_DBG_PDAT & dptr->dctrl) {
         for (i=same=0; i<len; i += 16) {
             if ((i > 0) && (0 == memcmp(&msg[i], &msg[i-16], 16))) {
                 ++same;
@@ -201,14 +205,14 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
         }
     lp->rxpb[lp->rxpboffset] = c;
     if ((lp->rxpboffset == 0) && ((c == DDCMP_SYN) || (c == DDCMP_DEL))) {
-        tmxr_debug (TMXR_DBG_PRCV, lp, "Ignoring Interframe Sync Character", (char *)&lp->rxpb[0], 1);
+        tmxr_debug (DDCMP_DBG_PRCV, lp, "Ignoring Interframe Sync Character", (char *)&lp->rxpb[0], 1);
         continue;
         }
     lp->rxpboffset += 1;
     if (lp->rxpboffset == 1) {
         switch (c) {
             default:
-                tmxr_debug (TMXR_DBG_PRCV, lp, "Ignoring unexpected byte in DDCMP mode", (char *)&lp->rxpb[0], 1);
+                tmxr_debug (DDCMP_DBG_PRCV, lp, "Ignoring unexpected byte in DDCMP mode", (char *)&lp->rxpb[0], 1);
                 lp->rxpboffset = 0;
             case DDCMP_SOH:
             case DDCMP_ENQ:
@@ -222,7 +226,7 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
             *pbuf = lp->rxpb;
             *psize = DDCMP_HEADER_SIZE;
             lp->rxpboffset = 0;
-            ddcmp_packet_trace (TMXR_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize, TRUE);
+            ddcmp_packet_trace (DDCMP_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize);
             return SCPE_OK;
             }
         payloadsize  = ((lp->rxpb[2] & 0x3F) << 8)| lp->rxpb[1];
@@ -230,7 +234,7 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
             ++lp->rxpcnt;
             *pbuf = lp->rxpb;
             *psize = 10 + payloadsize;
-            ddcmp_packet_trace (TMXR_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize, TRUE);
+            ddcmp_packet_trace (DDCMP_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize);
             lp->rxpboffset = 0;
             return SCPE_OK;
             }
@@ -266,7 +270,7 @@ t_stat r;
 if (!lp->conn)
     return SCPE_LOST;
 if (lp->txppoffset < lp->txppsize) {
-    tmxr_debug (TMXR_DBG_PXMT, lp, "Skipped Sending Packet - Transmit Busy", (char *)&lp->txpb[3], size);
+    tmxr_debug (DDCMP_DBG_PXMT, lp, "Skipped Sending Packet - Transmit Busy", (char *)&lp->txpb[3], size);
     return SCPE_STALL;
     }
 if (lp->txpbsize < size) {
@@ -276,7 +280,7 @@ if (lp->txpbsize < size) {
 memcpy (lp->txpb, buf, size);
 lp->txppsize = size;
 lp->txppoffset = 0;
-ddcmp_packet_trace (TMXR_DBG_PXMT, lp->mp->dptr, ">>> XMT Packet", lp->txpb, lp->txppsize, TRUE);
+ddcmp_packet_trace (DDCMP_DBG_PXMT, lp->mp->dptr, ">>> XMT Packet", lp->txpb, lp->txppsize);
 ++lp->txpcnt;
 while ((lp->txppoffset < lp->txppsize) && 
        (SCPE_OK == (r = tmxr_putc_ln (lp, lp->txpb[lp->txppoffset]))))
