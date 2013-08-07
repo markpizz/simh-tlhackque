@@ -4381,6 +4381,7 @@ for ( ;; ) {                                            /* device loop */
 for (j=0, r = SCPE_OK; j<attcnt; j++) {
     if (r == SCPE_OK) {
         struct stat fstat;
+        t_addr saved_pos;
 
         dptr = find_dev_from_unit (attunits[j]);
         if ((!force_restore) && 
@@ -4395,8 +4396,10 @@ for (j=0, r = SCPE_OK; j<attcnt; j++) {
                     }
                 continue;
                 }
+        saved_pos = attunits[j]->pos;
         sim_switches = attswitches[j];
         r = scp_attach_unit (dptr, attunits[j], attnames[j]);/* reattach unit */
+        attunits[j]->pos = saved_pos;
         if (r != SCPE_OK) {
             printf ("Error Attaching %s to %s\n", sim_dname (dptr), attnames[j]);
             if (sim_log)
