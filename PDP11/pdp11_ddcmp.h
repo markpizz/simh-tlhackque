@@ -313,6 +313,16 @@ buf[4] = sequence;
 buf[5] = 1;
 }
 
+static void ddcmp_build_maintenance_packet (uint8 *buf, size_t size)
+{
+buf[0] = DDCMP_DLE;
+buf[1] = size & 0xFF;
+buf[2] = ((size >> 8) & 0x3F) | 0x03;
+buf[3] = 0;
+buf[4] = 0;
+buf[5] = 1;
+}
+
 static t_stat ddcmp_tmxr_put_data_packet_ln (TMLN *lp, uint8 *buf, size_t size, uint8 flags, uint8 sequence, uint8 ack)
 {
 ddcmp_build_data_packet (buf, size, flags, sequence, ack);
