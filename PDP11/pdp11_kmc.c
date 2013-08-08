@@ -220,7 +220,7 @@ typedef struct queuehdr QH;
 
 #define SEL4_CI_POLL    0377                    /* DUP polling interval, 50 usec units */
 
-#define SEL4_ADDR    0177777                    /* Generic: Unibus address <15:0>
+#define SEL4_ADDR    0177777                    /* Generic: Unibus address <15:0> */
 
 /* bits, SEL6 */
 
@@ -360,7 +360,7 @@ typedef struct dupstate dupstate;
 /* State for every DUP that MIGHT be controlled.
  * A DUP can be controlled by at most one KMC.
  */
-static dupstate dupState[DUP_LINES] = { 0 };
+static dupstate dupState[DUP_LINES] = {{ 0 }};
 
 /* Flags defining sim_debug conditions. */
 
@@ -532,8 +532,10 @@ static void kmc_doMicroinstruction (int32 k, uint16 instr);
 static t_stat kmc_txService(UNIT * txup);
 static t_stat kmc_rxService(UNIT * rxup);
 
+#if KMC_UNITS > 1
 static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc);
 static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc);
+#endif
 static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc);
 static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc);
 #if KMC_TROLL
@@ -1395,7 +1397,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
     case RXIDLE:
         rxup->wait = RXPOLL_DELAY;
 
-        r = dup_get_ddcmp_packet_with_crcs (d->dupidx, &d->rxmsg, &d->rxmlen);
+        r = dup_get_ddcmp_packet_with_crcs (d->dupidx, (const uint8 **)&d->rxmsg, &d->rxmlen);
         if (r == SCPE_LOST) {
             kmc_updateDSR (d);
             break;
@@ -2307,7 +2309,6 @@ static void kmc_txComplete (int32 dupidx, int status) {
 /* Obtain a new buffer descriptor list from those queued by the host */
 
 static t_bool kmc_txNewBdl(dupstate *d) {
-    int32 k = d->kmc;
     BDL *qe;
     
     if (!(qe = (BDL *)remqueue (d->txqh.next, &d->txavail))) {
@@ -3119,8 +3120,6 @@ static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc) 
  */
 
 static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc) {
-    DEVICE *dptr = find_dev_from_unit(txup);
-    int32 k = txup->unit_kmc;
     dupstate *d;
     int32 dupidx, newspeed;
     char gbuf[CBUFSIZE];
