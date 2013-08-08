@@ -25,7 +25,7 @@
 
    LPT          12845B 2607 line printer
 
-   02-Aug-13    TL      Added support for PDF output
+   08-Aug-13    TL      Added support for PDF output
    10-Feb-12    JDB     Deprecated DEVNO in favor of SC
    28-Mar-11    JDB     Tidied up signal handling
    26-Oct-10    JDB     Changed I/O signal handler for revised signal model
@@ -301,7 +301,7 @@ if (uptr->buf & LPT_CTL) {                              /* control word? */
     lpt_lcnt = (lpt_lcnt + skip) % LPT_PAGELNT;
     }
 else pdflpt_putc (uptr, uptr->buf & 0177);              /* no, just add char */
-if (pdf_error (uptr)) {
+if (pdflpt_error (uptr)) {
     pdflpt_perror (uptr, "LPT I/O error");
     pdflpt_clearerr (uptr);
     return SCPE_IOERR;
