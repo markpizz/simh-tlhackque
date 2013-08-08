@@ -39,7 +39,8 @@
  * assumptions are made about the structure to simplify this code.
  */
 
-#define LPT2PDF_VERSION "1.0-003"
+#define LPT2PDF_VERSION "1.0-004"
+#define VERSION_REQUIRED "1."
 
 #include <ctype.h>
 #include <errno.h>
@@ -152,6 +153,341 @@ static const char *const validFonts[] = {
     NULL
 };
 
+/* Character set maps from 0x20 - 0xFF (96) or 0x21 - 0xFE (94)
+ * The 94-char maps have translations for all 96 for simplicity.
+ * 0x2426 is used for all undefined/reserved codes.
+ */
+
+typedef struct {
+    const char *name;
+    const uint16_t size;
+    const uint16_t nint;
+    const char ints[2+1];
+    const char final[1+1];
+    const short chrset[96];
+} CHARSET;
+
+static const CHARSET charsets[] = {
+
+/* CHARSET with no intermediates */
+#define CHS(name, size, final)              \
+    { #name, size, 0, {0}, {#final}, {
+
+/* CHARSET with intermediates */
+#define CHSI(name, size, int, final)        \
+    { #name, size, sizeof(#int)-1, {#int}, {#final}, {
+
+/* CHARSET with intermediates specified as quoted string (usu. " in seq) */
+#define CHSIq(name, size, int, final)        \
+    { #name, size, sizeof(int)-1, {int}, {#final}, {
+
+/* End of CHARSET data */
+#define CHSEND } },
+
+#define CHS_ASCII (charsets+0)
+CHS (ASCII, 94, B) /* Default G0, G1, GL */
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\\', ']', '^', '_',
+    /* Should 6/0 be U+2018? */
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '{', '|', '}', '~', 0x2426,
+CHSEND
+#define CHS_LATIN_1 (charsets+1)
+CHS (LATIN_1, 96, A) /* Default G2, G3, GR */
+    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+    0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
+    0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
+    0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF,
+CHSEND
+CHS (UK, 94, A)
+    ' ', '!', '"', 0xA3, '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\\', ']', '^', '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '{', '|', '}', '~', 0x2426,
+CHSEND
+CHS (FINLAND, 94, 5)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xC4, 0xD6, 0xC5, 0xDC, '_',
+    0xE9, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE4, 0xF6, 0xE5, 0xFC, 0x2426,
+CHSEND
+CHS (SWEDEN, 94, 7)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xC9, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xC4, 0xD6, 0xC5, 0xDC, '_',
+    0xE9, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE4, 0xF6, 0xE5, 0xFC, 0x2426,
+CHSEND
+CHS (NORWAY, 94, `) /* LA120: 5E:DC 60:E4 7E:FC; VT510: 5E:5E 60:60 7E:7E */
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '#', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xC6, 0xD8, 0xC5, 0xDC, '_',
+    0xE4, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE6, 0xF8, 0xE5, 0xFC, 0x2426,
+CHSEND
+CHS (GERMANY, 94, K)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xA7, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xC4, 0xD6, 0xDC, '^', '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE4, 0xF6, 0xFC, 0xDF, 0x2426,
+CHSEND
+CHS (ITALY, 94, Y)
+    ' ', '!', '"', 0xA3, '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xA7, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xB0, 0xE7, 0xE9, '^', '_',
+    0xF9, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE0, 0xF2, 0xE8, 0xEC, 0x2426,
+CHSEND
+CHS (FRANCE, 94, R)
+    ' ', '!', '"', 0xA3, '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xE0, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xB0, 0xE7, 0xA7, '^', '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE9, 0xF9, 0xE8, 0xA8, 0x2426,
+CHSEND
+CHS (SPANISH, 94, Z)
+    ' ', '!', '"', 0xA3, '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xA7, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xA1, 0xD1, 0xBF, '^', '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xB0, 0xF1, 0xE7, '~', 0x2426,
+CHSEND
+CHS (CANADA-FR, 94, 9)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xE0, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xE2, 0xE7, 0xEA, 0xEE, '_',
+    0xF4, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE9, 0xF9, 0xE8, 0xFB, 0x2426,
+CHSEND
+CHS (DUTCH, 94, 4)
+    ' ', '!', '"', 0xA3, '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xBE, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0x133, 0xBD, '|', '^', '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xA8, 0x17F, 0xBC, 0xB4, 0x2426,
+CHSEND
+CHS (SWISS, 94, =)
+    ' ', '!', '"', 0xF9, '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0xE0, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xE9, 0xE7, 0xEA, 0xEE, 0xE8,
+    0xF4, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE4, 0xF6, 0xFC, 0xFB, 0x2426,
+CHSEND
+CHSI (PORTUGAL, 94, %, 6)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0xC3, 0xC7, 0xD5, '^', '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0xE3, 0xE7, 0xF5, '~', 0x2426,
+CHSEND
+CHS (SCS, 94, z)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0x17D, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0x160, 0x110, 0x106, 0x106, '_',
+    '`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0x161, 0x111, 0x107, 0x10D, 0x2426,
+CHSEND
+CHS (LINEDRAW, 94, 0) /* These are not exact */
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\\', ']', '^', ' ',
+    0x2666, 0x25A9, 0x2409, 0x240C, 0x240D, 0x240A, 0xB0, 0xB1, 0x2424, 0x240B, 0x2518, 0x2510, 0x250C, 0x2514, 0x253C, 0x23BA,
+    0x23BB, 0x23BC, 0x23BD, 0x2500, 0x251C, 0x2524, 0x2534, 0x252C, 0x2502, 0x2264, 0x2265, 0x3C0, 0x2260, 0xA3, 0xB7, 0x2426,
+CHSEND
+CHSI (DEC_SUPP, 94, %, 5)
+    0x2426, 0xA1, 0xA2, 0xA3, 0x2426, 0xA5, 0x2426, 0xA7, 0xA4, 0xA9, 0xAA, 0xAB, 0x2426, 0x2426, 0x2426, 0x2426,
+    0xB0, 0xB1, 0xB2, 0xB3, 0x2426, 0xB5, 0xB6, 0xB7, 0x2426, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0x2426, 0xBF,
+    0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
+    0x2426, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0x152, 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0x178, 0x2426, 0xDF,
+    0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
+    0x2426, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0x153, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFF, 0x2426, 0x2426,
+CHSEND
+CHS (LATIN_2, 96, B)
+    0xA0, 0x104, 0x206, 0x141, 0xA4, 0xA13D, 0x15A, 0xA7, 0x308, 0x160, 0x15E, 0x164, 0x179, 0xAD, 0x17D, 0x17B,
+    0x30A, 0x105, 0x328, 0x142, 0x301, 0x13E, 0xB15B, 0x30C, 0x327, 0x161, 0x15F, 0x165, 0x17A, 0x30B, 0x17E, 0x17C,
+    0x154, 0xC1, 0xC2, 0x102, 0xC4, 0x139, 0x106, 0xC7, 0x10C, 0xC9, 0x118, 0xCB, 0x11A, 0xCD, 0xCE, 0x10E,
+    0x110, 0x143, 0x147, 0xD3, 0xD4, 0x150, 0xD6, 0xD7, 0x158, 0x16E, 0xDA, 0x170, 0xDC, 0xDD, 0x162, 0xDF,
+    0x155, 0xE1, 0xE2, 0x103, 0xE4, 0x13A, 0x107, 0xE7, 0x10D, 0xE9, 0x119, 0xEB, 0x11B, 0xED, 0xEE, 0x10F,
+    0x111, 0x144, 0x148, 0xF3, 0xF4, 0x151, 0xF6, 0xF7, 0x159, 0x16F, 0xFA, 0x171, 0xFC, 0xFD, 0x163, 0x307,
+CHSEND
+CHS (LATIN_CYRILLIC, 96, L)
+    0x0A0, 0x401, 0x402, 0x403, 0x404, 0x405, 0x406, 0x407, 0x408, 0x409, 0x40A, 0x40B, 0x40C, 0x0AD, 0x40E, 0x40F,
+    0x410, 0x411, 0x412, 0x413, 0x414, 0x415, 0x416, 0x417, 0x418, 0x419, 0x41A, 0x41B, 0x41C, 0x41D, 0x41E, 0x41F,
+    0x420, 0x421, 0x422, 0x423, 0x424, 0x425, 0x426, 0x427, 0x428, 0x429, 0x42A, 0x42B, 0x42C, 0x42D, 0x42E, 0x42F,
+    0x430, 0x431, 0x432, 0x433, 0x434, 0x435, 0x436, 0x437, 0x438, 0x439, 0x43A, 0x43B, 0x43C, 0x43D, 0x43E, 0x43F,
+    0x440, 0x441, 0x442, 0x443, 0x444, 0x445, 0x446, 0x447, 0x448, 0x449, 0x44A, 0x44B, 0x44C, 0x44D, 0x44E, 0x44F,
+    0x2116, 0x451, 0x452, 0x453, 0x454, 0x455, 0x456, 0x457, 0x458, 0x459, 0x45A, 0x45B, 0x45C, 0x0a7, 0x45E, 0x45F,
+CHSEND
+CHS (LATIN_GREEK, 96, F)
+    0x0A0, 0x02018, 0x02019, 0x0A3, 0x02426, 0x02426, 0x0A6, 0x0A7, 0x0A8, 0x0A9, 0x2426, 0x0AB, 0x0AC, 0x0AD, 0x2426, 0x2015,
+    0x0B0, 0x0B1, 0x0B2, 0x0B3, 0x384, 0x385, 0x386, 0x0B7, 0x388, 0x389, 0x38A, 0x0BB, 0x38C, 0x0BD, 0x38E, 0x38F,
+    0x390, 0x391, 0x392, 0x393, 0x394, 0x395, 0x396, 0x397, 0x398, 0x399, 0x39A, 0x39B, 0x39C, 0x39D, 0x39E, 0x39F,
+    0x3A0, 0x3A1, 0x2426, 0x3A3, 0x3A4, 0x3A5, 0x3A6, 0x3A7, 0x3A8, 0x3A9, 0x3AA, 0x3AB, 0x3AC, 0x3AD, 0x3AE, 0x3AF,
+    0x3B0, 0x3B1, 0x3B2, 0x3B3, 0x3B4, 0x3B5, 0x3B6, 0x3B7, 0x3B8, 0x3B9, 0x3BA, 0x3BB, 0x3BC, 0x3BD, 0x3BE, 0x3BF,
+    0x3C0, 0x3C1, 0x3C2, 0x3C3, 0x3C4, 0x3C5, 0x3C6, 0x3C7, 0x3C8, 0x3C9, 0x3CA, 0x3CB, 0x3CC, 0x3CD, 0x3CE, 0x2426,
+CHSEND
+CHS (LATIN_HEBREW, 96, H)
+    0x0A0, 0x2426, 0x0A2, 0x0A3, 0x0A4, 0x0A5, 0x0A6, 0x0A7, 0x0A8, 0x0A9, 0x0D7, 0x0AB, 0x0AC, 0x0AD, 0x0AE, 0x0AF,
+    0x0B0, 0x0B1, 0x0B2, 0x0B3, 0x0B4, 0x0B5, 0x0B6, 0x0B7, 0x0B8, 0x0B9, 0x0F7, 0x0BB, 0x0BC, 0x0BD, 0x0BE, 0x2426,
+    0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+    0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2017,
+    0x5D0, 0x5D1, 0x5D2, 0x5D3, 0x5D4, 0x5D5, 0x5D6, 0x5D7, 0x5D8, 0x5D9, 0x5DA, 0x5DB, 0x5DC, 0x5DD, 0x5DE, 0x5DF,
+    0x5E0, 0x5E1, 0x5E2, 0x5E3, 0x5E4, 0x5E5, 0x5E6, 0x5E7, 0x5E8, 0x5E9, 0x5EA, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+CHSEND
+CHS (LATIN_5, 96, M)
+    0x0A0, 0x0A1, 0x0A2, 0x0A3, 0x0A4, 0x0A5, 0x0A6, 0x0A7, 0x0A8, 0x0A9, 0x0AA, 0x0AB, 0x0AC, 0x0AD, 0x0AE, 0x0AF,
+    0x0B0, 0x0B1, 0x0B2, 0x0B3, 0x0B4, 0x0B5, 0x0B6, 0x0B7, 0x0B8, 0x0B9, 0x0BA, 0x0BB, 0x0BC, 0x0BD, 0x0BE, 0x0BF,
+    0x0C0, 0x0C1, 0x0C2, 0x0C3, 0x0C4, 0x0C5, 0x0C6, 0x0C7, 0x0C8, 0x0C9, 0x0CA, 0x0CB, 0x0CC, 0x0CD, 0x0CE, 0x0CF,
+    0x11E, 0x0D1, 0x0D2, 0x0D3, 0x0D4, 0x0D5, 0x0D6, 0x0D7, 0x0D8, 0x0D9, 0x0DA, 0x0DB, 0x0D9, 0x130, 0x15E, 0x0DF,
+    0x0E0, 0x0E1, 0x0E2, 0x0E3, 0x0E4, 0x0E5, 0x0E6, 0x0E7, 0x0E8, 0x0E9, 0x0EA, 0x0EB, 0x0EC, 0x0ED, 0x0EE, 0x0EF,
+    0x11F, 0x0F1, 0x0F2, 0x0F3, 0x0F4, 0x0F5, 0x0F6, 0x0F7, 0x0F8, 0x0F9, 0x0FA, 0x0FB, 0x0FC, 0x131, 0x15F, 0x0FF,
+CHSEND
+CHSI (KOI-8_CYRILLIC, 94, &, 4)
+    0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+    0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+    0x44E, 0x430, 0x431, 0x446, 0x434, 0x435, 0x444, 0x433, 0x445, 0x438, 0x439, 0x43A, 0x43B, 0x43C, 0x43D, 0x43E,
+    0x43F, 0x44F, 0x440, 0x441, 0x442, 0x443, 0x436, 0x432, 0x44C, 0x44B, 0x437, 0x448, 0x44D, 0x449, 0x447, 0x44A,
+    0x42E, 0x410, 0x411, 0x426, 0x414, 0x415, 0x424, 0x413, 0x425, 0x418, 0x419, 0x41A, 0x41B, 0x41C, 0x41D, 0x41E,
+    0x41F, 0x42F, 0x420, 0x421, 0x422, 0x423, 0x416, 0x412, 0x42C, 0x42B, 0x417, 0x428, 0x42D, 0x429, 0x427, 0x2426,
+CHSEND
+CHSI (KOI-7_CYRILLIC, 94, &, 5)
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\\', ']', '^', '_',
+    0x42E, 0x410, 0x411, 0x426, 0x414, 0x415, 0x424, 0x413, 0x425, 0x418, 0x419, 0x41A, 0x41B, 0x41C, 0x41D, 0x41E,
+    0x41F, 0x42F, 0x420, 0x421, 0x422, 0x423, 0x416, 0x412, 0x42C, 0x42B, 0x417, 0x428, 0x42D, 0x429, 0x427, 0x2426,
+CHSEND
+CHSIq (DEC_GREEK_SUP, 94, "\"", ?)
+    0x2426, 0x0A1, 0x0A2, 0x0A3, 0x2426, 0x0A5, 0x2426, 0x0A7, 0x0A4, 0x0A9, 0x0AA, 0x0AB, 0x2426, 0x2426, 0x2426, 0x2426,
+    0x0B0, 0x0B1, 0x0B2, 0x0B3, 0x2426, 0x0B5, 0x0B6, 0x0B7, 0x2426, 0x0B9, 0x0BA, 0x0BB, 0x0BC, 0x0BD, 0x2426, 0x0BF,
+    0x3CA, 0x391, 0x392, 0x393, 0x394, 0x395, 0x396, 0x397, 0x398, 0x399, 0x39A, 0x39B, 0x39C, 0x39D, 0x39E, 0x39F,
+    0x2426, 0x3A0, 0x3A1, 0x3A3, 0x3A4, 0x3A5, 0x3A6, 0x3A7, 0x3A8, 0x3A9, 0x3AC, 0x3AD, 0x3AE, 0x3AF, 0x2426, 0x3CC,
+    0x3CB, 0x3B1, 0x3B2, 0x3B3, 0x3B4, 0x3B5, 0x3B6, 0x3B7, 0x3B8, 0x3B9, 0x3BA, 0x3BB, 0x3BC, 0x3BD, 0x3BE, 0x3BF,
+    0x2426, 0x3C0, 0x3C1, 0x3C3, 0x3C4, 0x3C5, 0x3C6, 0x3C7, 0x3C8, 0x3C9, 0x3C2, 0x3CD, 0x3CE, 0x384, 0x2426, 0x2426,
+CHSEND
+CHSIq (DEC_GREEK, 94, "\"", >)
+    0x2426, '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0x3B9, 0x391, 0x392, 0x393, 0x394, 0x395, 0x396, 0x397, 0x398, 0x399, 0x39A, 0x39B, 0x39C, 0x39D, 0x39E, 0x39F,
+    0x2426, 0x3A0, 0x3A1, 0x3A3, 0x3A4, 0x3A5, 0x3A6, 0x3A7, 0x3A8, 0x3A9, 0x3AC, 0x3AD, 0x3AE, 0x3AF, 0x2426, 0x3CC,
+    0x3CB, 0x3B1, 0x3B2, 0x3B3, 0x3B4, 0x3B5, 0x3B6, 0x3B7, 0x3B8, 0x3B9, 0x3BA, 0x3BB, 0x3BC, 0x3BD, 0x3BE, 0x3BF,
+    0x2426, 0x3C0, 0x3C1, 0x3C3, 0x3C4, 0x3C5, 0x3C6, 0x3C7, 0x3C8, 0x3C9, 0x3C2, 0x3CD, 0x3CE, 0x384, 0x2426, 0x2426,
+CHSEND
+CHSIq (DEC_HEBREW, 94, "\"", 4)
+    0x2426, 0x0A1, 0x0A2, 0x0A3, 0x2426, 0x0A5, 0x2426, 0x0A7, 0x0A8, 0x0A9, 0x0AA, 0x0AB, 0x2426, 0x2426, 0x2426, 0x2426, 
+    0x0B0, 0x0B1, 0x0B2, 0x0B3, 0x2426, 0x0B5, 0x0B6, 0x0B7, 0x2426, 0x0B9, 0x0BA, 0x0BB, 0x0BC, 0x0BD, 0x2426, 0x0BF,
+    0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+    0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+    0x5D0, 0x5D1, 0x5D2, 0x5D3, 0x5D4, 0x5D5, 0x5D6, 0x5D7, 0x5D8, 0x5D9, 0x5DA, 0x5DB, 0x5DC, 0x5DD, 0x5DE, 0x5DF,
+    0x5E0, 0x5E1, 0x5E2, 0x5E3, 0x5E4, 0x5E5, 0x5E6, 0x5E7, 0x5E8, 0x5E9, 0x5EA, 0x2426, 0x2426, 0x2426, 0x2426, 0x2426, 
+CHSEND
+CHSI (DEC_HEBREW7BIT, 94, "%", =)
+    0x2426, '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\\', ']', '^', '_',
+    0x5D0, 0x5D1, 0x5D2, 0x5D3, 0x5D4, 0x5D5, 0x5D6, 0x5D7, 0x5D8, 0x5D9, 0x5DA, 0x5DB, 0x5DC, 0x5DD, 0x5DE, 0x5DF,
+    0x5E0, 0x5E1, 0x5E2, 0x5E3, 0x5E4, 0x5E5, 0x5E6, 0x5E7, 0x5E8, 0x5E9, 0x5EA, '{', '|', '}', '~', 0x2426,
+CHSEND
+CHSI (DEC_TURKISH, 94, "%", 0)
+    0x2426, 0x0A1, 0x0A2, 0x0A3, 0x2426, 0x0A5, 0x2426, 0x0A7, 0x0A4, 0x0A9, 0x0AA, 0x0AB, 0x2426, 0x2426, 0x130, 0x2426,
+    0x0B0, 0x0B1, 0x0B2, 0x0B3, 0x2426, 0x0B5, 0x0B6, 0x0B7, 0x2426, 0x0B9, 0x0BA, 0x0BB, 0x0BC, 0x0BD, 0x131, 0x0BF,
+    0x0C0, 0x0C1, 0x0C2, 0x0C3, 0x0C4, 0x0C5, 0x0C6, 0x0C7, 0x0C8, 0x0C9, 0x0CA, 0x0CB, 0x0CC, 0x0CD, 0x0CE, 0x0CF,
+    0x11E, 0x0D1, 0x0D2, 0x0D3, 0x0D4, 0x0D5, 0x0D6, 0x152, 0x0D8, 0x0D9, 0x0DA, 0x0DB, 0x0DC, 0x178, 0x15E, 0x0DF,
+    0x0E0, 0x0E1, 0x0E2, 0x0E3, 0x0E4, 0x0E5, 0x0E6, 0x0E7, 0x0E8, 0x0E9, 0x0EA, 0x0EB, 0x0EC, 0x0ED, 0x0EE, 0x0EF,
+    0x11F, 0x0F1, 0x0F2, 0x0F3, 0x0F4, 0x0F5, 0x0F6, 0x153, 0x0F8, 0x0F9, 0x0FA, 0x0FB, 0x0FC, 0x0FF, 0x15F, 0x2426,
+CHSEND
+CHSI (DEC_TURKISH7BIT, 94, "%", 2)
+    0x2426, 0x131, '"', '#', '$', '%', 0x11F, '\'', '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+    0x130, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0x15E, 0xD6, 0xC7, 0xDC, '_',
+    0x11E, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0x15F, 0xF6, 0xE7, 0xFC, 0x2426,
+CHSEND
+CHS (DEC_TCS, 94, >) /* DEC spec uses 2308-230B rather than 2502-23A8 */
+    0x2426, 0x23B7, 0x250C, 0x2500, 0x2320, 0x2321, 0x2502, 0x23A1, 0x23A3, 0x23A4, 0x23A6, 0x239B, 0x239D, 0x239E, 0x23A0, 0x23A8,
+    0x23AC, 0x23B2, 0x23B3, 0x2216, 0x2215, 0x231D, 0x131F, 0x232A, 0x2E2E, 0x2426, 0x2426, 0x2426, 0x2264, 0x2260, 0x2265, 0x222B,
+    0x2234, 0x221D, 0x221E, 0xF7, 0x2206, 0x2207, 0x03A6, 0x393, 0x223C, 0x2243, 0x398, 0xD7, 0x39B, 0x21D4, 0x21D2, 0x2261,
+    0x3A0, 0x3A8, 0x2426, 0x3A3, 0x2426, 0x2426, 0x221A, 0x3A9, 0x39E, 0x3A5, 0x2282, 0x2283, 0x2229, 0x222A, 0x2227, 0x2228,
+    0xAC, 0x3B1, 0x3B2, 0x3C7, 0x3B4, 0x3B5, 0x3C6, 0x3B3, 0x3B7, 0x3B9, 0x3B8, 0x3BA, 0x3BB, 0x2426, 0x3BD, 0x2202,
+    0x3C0, 0x3C8, 0x3C1, 0x3C3, 0x3C4, 0x2426, 0x192, 0x3C9, 0x3BE, 0x3C5, 0x3B6, 0x2190, 0x2191, 0x2192, 0x2193, 0x2426,
+CHSEND
+};
+
+/* Translate Unicode to PDFDocEncoding
+ * These are the exceptions.  20-7E and A1 - FF are 1:1.
+ */
+static const struct {
+    short ucode;
+    short pdfcode;
+} utran[] = {
+#define T(uc,pc) {0x##uc, 0x##pc},
+    T (2D8,18)
+    T (2C7,19)
+    T (2C6,1A)
+    T (2D9,1B)
+    T (2DD,1C)
+    T (2DB,1D)
+    T (2DA,1E)
+    T (2DC,1F)
+    T (2022,80)
+    T (2020,81)
+    T (2021,82)
+    T (2026,83)
+    T (2014,84)
+    T (2013,85)
+    T (192,86)
+    T (2044,87)
+    T (2039,88)
+    T (203A,89)
+    T (2212,8A)
+    T (2030,8B)
+    T (201E,8C)
+    T (201C,8D)
+    T (201D,8E)
+    T (2018,8F)
+    T (2019,90)
+    T (201A,91)
+    T (2122,92)
+    T (FB01,93)
+    T (FB02,94)
+    T (141,95)
+    T (152,96)
+    T (160,97)
+    T (178,98)
+    T (17D,99)
+    T (131,9A)
+    T (142,9B)
+    T (153,9C)
+    T (161,9D)
+    T (17E,9E)
+    T (20AC,A0)
+#undef T
+};
+
 /* SHA1: used for creating a document ID
  */
 /* Requires: uint32_t, uint8_t, int_least16_t */
@@ -236,11 +572,14 @@ typedef struct {
 typedef struct {
     char key[3];            /* Handle validator */
     SETP p;                 /* User-settable parameters */
-    unsigned int newlpi;
+    const CHARSET *gset[4]; /* Designated graphics sets */
+    const CHARSET *gl, *gr;
 
     /* Below this point initialized to zero
      * Be sure to update pdf_reopen for additions.
      */
+    const CHARSET *ssg;
+
     int errnum;             /* Last error */
     FILE *pdf;              /* Output file handle */
     unsigned int escstate;  /* Escape sequence parser */
@@ -255,9 +594,9 @@ typedef struct {
     char escints[4];        /* Intermediate characters of sequence */
     unsigned int escin;     /* Number of intermediates */
     char escprv;            /* Private sequence (DEC uses ?) */
-    unsigned short int escpars[16]; /* CSI parameters */
-#define ESC_PDEFAULT ((unsigned short int)(~0u))
-#define ESC_POVERFLOW ((((unsigned long)ESC_PDEFAULT) +1) >> 1)
+    uint16_t escpars[16];   /* CSI parameters */
+#define ESC_PDEFAULT ((uint16_t)(~0u))
+#define ESC_POVERFLOW ((((uint32_t)ESC_PDEFAULT) +1) >> 1)
 #define ESC_PMAX (ESC_POVERFLOW -1)
     unsigned int escpn;     /* Number of parameters */
     char *formbuf;          /* Graphics data for page */
@@ -292,7 +631,7 @@ typedef struct {
 #define PDF_INIT          0x0008 /* Initialized - metadata read if appending */
 #define PDF_WRITTEN       0x0010 /* Headers written */
 #define PDF_RESUMED       0x0020 /* Resumed from a checkpoint */
-#define PDF_REOPENED      0X0040 /* Reopened (and hence must append */
+#define PDF_REOPENED      0x0040 /* Reopened (and hence must append */
 
     unsigned int lpp;       /* Lines per page */
     short **lines;          /* Data for each line */
@@ -354,7 +693,8 @@ static const PDF defaults = {
         0.500,                   /* barh */
         0,                       /* lines per page (requested) */
     },
-    6,                           /* lpi */
+    { CHS_ASCII, CHS_ASCII, CHS_LATIN_1, CHS_LATIN_1 }, /* G0-G3 */
+    CHS_ASCII, CHS_LATIN_1,      /* GL, GR */
 };
 
 #define ps ((PDF *)pdf)
@@ -386,6 +726,8 @@ static unsigned int getint (PDF *pdf, char *buf, const char *name, const char **
 static char *getstr (PDF *pdf, char *buf, const char *name);
 static char *getstr (PDF *pdf, char *buf, const char *name);
 static int parsestr (PDF *pdf, const char *string, size_t length, int initial);
+static void designateChs (PDF *pdf, const int set, const uint16_t size,
+                          const uint16_t nint, const char *ints, const char final );
 static int pdfclose (PDF *pdf, int checkpoint);
 static void pdf_free (PDF *pdf);
 static void wrstmf (PDF *pdf, char **buf, size_t *len, size_t *used, const char *fmt, ...);
@@ -467,7 +809,7 @@ static void lzw_flushbits (t_lzw *lzw);
 static int encstm (PDF *pdf, char *stream, size_t len);
 
 
-#ifdef PDF_MAIN
+#if defined (PDF_MAIN) || defined (FONT_IMPORT)
 /* This is a very simple driver for the API, and is not optimized.
  */
 
@@ -873,7 +1215,6 @@ PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename) {
     /* Copy all pdf_set parameters from old handle to new */
 
     memcpy (&newpdf->p, &ps->p, sizeof (ps->p));
-    newpdf->newlpi = newpdf->p.lpi;
 
     if ((r = dupstrs (newpdf)) != PDF_OK) {
         fclose (newpdf->pdf);
@@ -1549,6 +1890,7 @@ static int pdfreopen (PDF *pdf) {
      *          Suppress initial FF removal
      *          Remember reopen to force append at first output
      *  buffers - don't deallocate, but set current used to 0
+     * character set selections.
      */
 
     fseek (pdf->pdf, 0, SEEK_SET);
@@ -1556,8 +1898,9 @@ static int pdfreopen (PDF *pdf) {
     pdf->flags = pdf->flags & (PDF_UNCOMPRESSED);
     pdf->flags |= PDF_RESUMED | PDF_REOPENED;
 
-    pdf->newlpi = pdf->p.lpi;
     pdf->escstate = ESC_IDLE;
+    /* Leave CHARSET *: gset, gl, gr, ssg */
+
     pdf->formlen =
         pdf->formobj =
         pdf->prevpc =
@@ -1966,7 +2309,7 @@ static int checkupdate (PDF *pdf) {
             return E(NO_APPEND);
         }
         pdf->xpos *= 10;
-        pdf ->xpos += *p++ - '0';
+        pdf->xpos += *p++ - '0';
     }
     if (pdf->xpos <= 9 ||
         pdf->xpos >= ftell (pdf->pdf) ||
@@ -2117,7 +2460,7 @@ static int checkupdate (PDF *pdf) {
     /* Follow link to the document information object */
 
     (void) readobj (pdf, pdf->iobj, &trail, &tsize);
-    if (!strstr (trail, "/Producer (LPTPDF Version ")) {
+    if (!strstr (trail, "/Producer (LPTPDF Version " VERSION_REQUIRED)) {
         free (trail);
         return E(NOT_PRODUCED);
     }
@@ -2283,6 +2626,19 @@ static void wrpage (PDF *pdf) {
                     online = 1;
                 }
                 ch = *c;
+                /* Should go thru a font. For now, map Unicode to PDF DocEncoding */
+
+                if (!((ch >= 0x20 && ch <= 0x7E) || (ch >= 0xA1 && ch <= 0xFF))) {
+                    size_t i;
+                    for (i = 0; i < DIM (utran); i++) {
+                        if (ch == utran[i].ucode) {
+                            ch = utran[i].pdfcode;
+                            break;
+                        }
+                    }
+                }
+                ch &= 0xFF;
+
                 if (ch == '\\' || ch == '(' || *c == ')') {
                     wrstm (pdf, PAGEBUF, QS("\\"));
                 } else {
@@ -2650,7 +3006,7 @@ static void imageform (PDF *pdf) {
         ABORT (E(BAD_JPEG));
     }
 
-    pdf -> formobj =
+    pdf->formobj =
         obj = addobj(pdf);
 
     /* Form images seem to be compressible, presumably due to the
@@ -3115,13 +3471,19 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
     }
 
     /* Escape and control sequence parser
-     * Not quite a full implmentation, but close enough.
+     * Not quite a full implementation of DEC std 070, but close enough.
+     * Note that in an escape/control sequence, 8-bit graphics are mapped to 7-bit.
+     * All 7-bit code extensions are mapped to 8-bit controls.
+     * All controls, escape and control sequences that are not recognized are ignored.
+     *
+     * All graphics are mapped thru the designated gsets to Unicode.
      */
 
     SHA1Input (&ps->sha1, (uint8_t *) string, length );
 
     while (length) {
         short ch = 0xFF & *string++;
+        char ch7 = ch & 0x7F;
         length--;
 
 #define STORE goto store
@@ -3129,13 +3491,23 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
 
         /* Controls */
 
+        if (pdf->ssg) { /* Cancel unless graphic, SI or SO */
+            if (!((ch >= 0x20 && ch <= 0x7F) || (ch >= 0xA0 && ch <= 0xFF))) {
+                if (ch != 0x0E && ch != 0x0F) {
+                    pdf->ssg = NULL;
+                }
+            }
+        }
+
         /* Code extension */
 
-        if (pdf -> escstate == ESC_ESCSEQ &&
+        if (pdf->escstate == ESC_ESCSEQ &&
             ch >= 0x40 && ch <= 0x5F) {
             ch += 0x40;
             pdf->escstate = ESC_IDLE;
         }
+
+        /* Controls */
 
         switch (ch) {
         case 0x0A: /* LF */
@@ -3171,7 +3543,19 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
         case 0x9d: /* OSC */
         case 0x9e: /* PM */
         case 0x9f: /* APC */
-            pdf-> escstate = ESC_BADSTR;
+            pdf->escstate = ESC_BADSTR;
+            DISCARD;
+        case 0x0F: /* SI */
+            pdf->gl = pdf->gset[0];
+            DISCARD;
+        case 0x0E: /* SO */
+            pdf->gl = pdf->gset[1];
+            DISCARD;
+        case 0x8E: /* SS2 */
+            pdf->ssg = pdf->gset[2];
+            DISCARD;
+        case 0x8F: /* SS3 */
+            pdf->ssg = pdf->gset[3];
             DISCARD;
         default:
             break;
@@ -3183,35 +3567,81 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
        
         switch (pdf->escstate) {
         case ESC_IDLE: /* Discard remaining C0 and C1 */
-            if (ch < 0x20 || (ch >= 0x7f && ch <= 0x9f)) {
+            if (ch < 0x20 || (ch >= 0x80 && ch <= 0x9F)) {
                 DISCARD;
             }
             STORE;
         case ESC_ESCSEQ:
-            if (ch >= 0x20 && ch <= 0x2F) { /* Int */
+            if (ch7 >= 0x20 && ch7 <= 0x2F) { /* Int */
                 if (pdf->escin < DIM (pdf->escpars)) {
-                    pdf->escpars[pdf->escin++] = ch;
+                    pdf->escpars[pdf->escin++] = ch7;
                 } else {
                     pdf->escstate = ESC_BADESC;
                 }
                 DISCARD;
             }
-            if (ch >= 0x30 && ch <= 0x7E) {
+            if (ch7 >= 0x30 && ch7 <= 0x7E) {
                 /* Do ESCSEQ */
+                if (pdf->escin == 0) {
+                    switch (ch) {
+                    case '~': /* LS1R */
+                        pdf->gr = pdf->gset[1];
+                        break;
+                    case 'n': /* LS2 */
+                        pdf->gl = pdf->gset[2];
+                        break;
+                    case '}': /* LS2R */
+                        pdf->gr = pdf->gset[2];
+                        break;
+                    case 'o': /* LS3 */
+                        pdf->gl = pdf->gset[3];
+                        break;
+                    case '|': /* LS3R */
+                        pdf->gr = pdf->gset[3];
+                        break;
+                    }
+                } else if (pdf->escin >= 1) {
+                    switch (pdf->escints[0]) {
+                        /* SCS - designate( gset, size, #intermediates, list, final )
+                         * Note that a 96 char set can not be installed in G0.
+                         */
+                    case '(':
+                        designateChs (pdf, 0, 94, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    case ')':
+                        designateChs (pdf, 1, 94, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    case '*':
+                        designateChs (pdf, 2, 94, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    case '+':
+                        designateChs (pdf, 3, 94, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    case '-':
+                        designateChs (pdf, 1, 96, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    case '.':
+                        designateChs (pdf, 2, 96, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    case '/':
+                        designateChs (pdf, 3, 96, pdf->escin-1, pdf->escints+1, ch7);
+                        break;
+                    }
+                }
                 pdf->escstate = ESC_IDLE;
                 DISCARD;
             }
-            STORE;
+            DISCARD; /* Unrecognized control in seq */
         case ESC_CSI:
-            if (ch >= 0x3C && ch <= 0x3F) {
+            if (ch7 >= 0x3C && ch7 <= 0x3F) {
                 pdf->escprv = (char) ch;
                 pdf->escstate = ESC_CSIP;
                 DISCARD;
             }
             pdf->escstate = ESC_CSIP;
         case ESC_CSIP:
-            if (ch >= 0x30 && ch <= 0x3F) {
-                if (ch == ';') { /* 3B */
+            if (ch7 >= 0x30 && ch7 <= 0x3F) {
+                if (ch7 == ';') { /* 3B */
                     if (pdf->escpn +1 < DIM (pdf->escpars)) {
                         pdf->escpn++;
                     } else {
@@ -3219,14 +3649,14 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
                     }
                     DISCARD;
                 }
-                if (ch <= 0x39 ) {
+                if (ch7 <= 0x39 ) {
                     if (pdf->escpars[pdf->escpn] == ESC_PDEFAULT) {
-                        pdf->escpars[pdf->escpn] = ch - 0x30;
+                        pdf->escpars[pdf->escpn] = ch7 - 0x30;
                     } else if (pdf->escpars[pdf->escpn] & ESC_POVERFLOW) {
                         pdf->escstate = ESC_BADCSI;
                     } else {
                         pdf->escpars[pdf->escpn] =
-                            (pdf->escpars[pdf->escpn] * 10) + (ch - 0x30);
+                            (pdf->escpars[pdf->escpn] * 10) + (ch7 - 0x30);
                     }
                     DISCARD;
                 }
@@ -3238,17 +3668,18 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
             }
             pdf->escstate = ESC_CSIINT;
         case ESC_CSIINT:
-            if (ch >= 0x20 && ch <= 0x2F) {
+            if (ch7 >= 0x20 && ch7 <= 0x2F) {
                 if (pdf->escin < DIM (pdf->escints)) {
-                    pdf->escints[pdf->escin++] = (char)ch;
+                    pdf->escints[pdf->escin++] = ch7;
                 } else {
                     pdf->escstate = ESC_BADCSI;
                 }
                 DISCARD;
             }
-            if (ch >= 0x40 && ch <= 0x7E) {
+            if (ch7 >= 0x40 && ch7 <= 0x7E) {
                 /* Execute CSI */
-                if (ch == 'z' && !pdf->escints && !pdf->escprv) {
+#if 0
+                if (ch7 == 'z' && !pdf->escints && !pdf->escprv) {
                     unsigned int p0 = pdf->escpars[0];
 
                     if (p0 == ESC_PDEFAULT) {
@@ -3261,39 +3692,76 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
                     } else {
                         DISCARD;
                     }
-                    pdf->newlpi = p0;
+                    /* Change lpi */
                     DISCARD;
                 }
+#endif
                 DISCARD;
             }
             STORE;
         case ESC_BADCSI:
-            if (ch >= 0x40 && ch <= 0x7E) {
+            if (ch7 >= 0x40 && ch7 <= 0x7E) {
                 pdf->escstate = ESC_IDLE;
                 DISCARD;
             }
             DISCARD;
         case ESC_BADESC:
-            if (ch >= 0x30 && ch <= 0x7E) {
+            if (ch7 >= 0x30 && ch7 <= 0x7E) {
                 pdf->escstate = ESC_IDLE;
                 DISCARD;
             }
             DISCARD;
         case ESC_BADSTR:
             DISCARD;
-        default:
-            STORE;
+        default: /* Invalid state */
+            DISCARD;
         }
 
         /* Ordinary character, more or less */
 #undef STORE
 #undef DISCARD
 
+        ch7 -= 0x20;
+        if (pdf->ssg) {                         /* SS applies to left or right input */
+            ch = pdf->ssg->chrset[ch7];
+            pdf->ssg = NULL;
+        } else if (ch >= 0x20 && ch <= 0x7F) {  /* Left? */
+            ch = pdf->gl->chrset[ch7];
+        } else if (ch >= 0xA0 && ch <= 0xFF) {  /* Redundant test, must be a (right) graphic */
+            ch = pdf->gr->chrset[ch7];
+        }
+
      store:
         initial = 0;
         wrstw (pdf, PARSEBUF, &ch, 1);
     }
     return ffseen;
+}
+
+/* SCS - Designate a character set */
+
+static void designateChs (PDF *pdf, const int set, const uint16_t size,
+                          const uint16_t nint, const char *ints, const char final ) {
+    size_t i,j;
+
+    for (i = 0; i < DIM (charsets); i++) {
+        if (charsets[i].size != size || charsets[i].nint != nint || charsets[i].final[0] != final) {
+            continue;
+        }
+        if (nint) {
+            for (j = 0; j < nint; j++) {
+                if (charsets[i].ints[j] != ints[j]) {
+                    break;
+                }
+            }
+            if (j >= nint) {
+                continue;
+            }
+        }
+        pdf->gset[set] = charsets + i;
+        return;
+    }
+    return;
 }
 
 /* Formatted output to an expandable buffer stream.
@@ -3589,7 +4057,7 @@ static int encstm (PDF *pdf, char *stream, size_t len) {
     t_lzw lzw;
 
     pdf->lzwused = 0;
-    lzw_init(&lzw, LZW_BUFFER, LZWBUF);
+    lzw_init (&lzw, LZW_BUFFER, LZWBUF);
     lzw_encode (&lzw, stream, len);
 
 #ifdef ERRDEBUG
