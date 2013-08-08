@@ -680,8 +680,8 @@ DEVICE kmc_dev = {
 
 /* Forward declarations: not referenced in simulator data */
 
-static void kmc_masterClear(uint32 k);
-static void kmc_startUcode (uint32 k);
+static void kmc_masterClear(int32 k);
+static void kmc_startUcode (int32 k);
 static void kmc_dispatchInputCmd(int32 k);
 
 /* Control functions */
@@ -786,7 +786,8 @@ static void *remqueue (QH *entry, int32 *count);
  */
 
 static t_stat kmc_reset(DEVICE* dptr) {
-    uint32 k, i;
+    int32 k;
+    size_t i;
 
     if (sim_switches & SWMASK ('P')) {
         for (i = 0; i < DIM (dupState); i++) {
@@ -795,12 +796,12 @@ static t_stat kmc_reset(DEVICE* dptr) {
             d->dupidx = -1;
             d->linespeed = DFLT_SPEED;
         }
-        for (k = 0; k < kmc_dev.numunits; k++) {
+        for (k = 0; ((uint32)k) < kmc_dev.numunits; k++) {
             trollHungerLevel = 0;
         }
     }
 
-    for (k = 0; k < kmc_dev.numunits; k++) {
+    for (k = 0; ((uint32)k) < kmc_dev.numunits; k++) {
         sim_debug (DF_INF, dptr, "KMC%d: Reset\n", k);
 
         /* One-time initialization of UNITs, one/direction/line */
@@ -1268,7 +1269,7 @@ static t_stat kmc_txService (UNIT *txup) {
 #endif
             assert (d->txmsg[d->txslen + 0] != DDCMP_ENQ);
             assert (((d->txmlen - d->txslen) > 8) &&    /* Data, length should match count */
-                    ((((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1]) ==
+                    (((size_t)(((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1])) ==
                                                              (d->txmlen - (d->txslen + 8))));
             if (!dup_put_msg_bytes (d->dupidx, d->txmsg + d->txslen, d->txmlen - d->txslen, TRUE, TRUE)) {
                 sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
@@ -1298,7 +1299,7 @@ static t_stat kmc_txService (UNIT *txup) {
             }
 
             assert (((d->txmlen - d->txslen) > 6) &&    /* Data, length should match count */
-                    ((((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1]) ==
+                    (((size_t)(((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1])) ==
                                                              (d->txmlen - (d->txslen + 6))));
             if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txslen + 6, TRUE, TRUE)) {
                 sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
@@ -1647,7 +1648,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
  * There is no guarantee that any data structures are initialized.
  */
 
-static void kmc_masterClear(uint32 k) {
+static void kmc_masterClear(int32 k) {
 
     if (sim_deb) {
         DEVICE *dptr = find_dev_from_unit (&tx_units[0][k]);
@@ -1674,7 +1675,7 @@ static void kmc_masterClear(uint32 k) {
 
 /* Initialize the KMC state that is done by microcode */
 
-static void kmc_startUcode (uint32 k) {
+static void kmc_startUcode (int32 k) {
     int i;
     const char *uname;
 
@@ -1876,7 +1877,7 @@ static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line) {
     csraddress |= IOPAGEBASE;
 
     dupidx = dup_csr_to_linenum (sel6);
-    if ((dupidx < 0) || (dupidx >= DIM(dupState))) { /* Call this a NXM so OS can recover */
+    if ((dupidx < 0) || (((size_t) dupidx) >= DIM(dupState))) { /* Call this a NXM so OS can recover */
         sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x is not an enabled DUP\n", 
                    k, line, csraddress, csraddress);
         kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, 0);
@@ -2272,7 +2273,7 @@ static void kmc_txComplete (int32 dupidx, int status) {
     UNIT *txup;
     int32 k;
 
-    assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
+    assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
 
     d = &dupState[dupidx];
     k = d->kmc;
@@ -2481,7 +2482,7 @@ static void kmc_ctrlOut (int32 k, uint8 code, uint16 rx, uint8 line, uint32 bda)
 static void kmc_modemChange (int32 dupidx) {
   dupstate *d;
 
-  assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
+  assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
   d = &dupState[dupidx];
 
   if (d->dupidx != -1) {
@@ -2684,7 +2685,7 @@ static int32 kmc_AintAck (void) {
     int32 vec = 0; /* no interrupt request active */
     int32 k;
 
-    for (k = 0; k < DIM (kmc_gflags); k++) {
+    for (k = 0; ((size_t)k) < DIM (kmc_gflags); k++) {
         if (gflags & FLG_AINT) {
             vec = kmc_dib.vec + (k*010);
             gflags &= ~FLG_AINT;
@@ -2707,7 +2708,7 @@ static int32 kmc_BintAck (void) {
     int32 vec = 0;                              /* no interrupt request active */
     int32 k;
 
-    for (k = 0; k < DIM (kmc_gflags); k++) {
+    for (k = 0; ((size_t)k) < DIM (kmc_gflags); k++) {
         if (gflags & FLG_BINT) {
             vec = kmc_dib.vec + 4 + (k*010);
             gflags &= ~FLG_BINT;
@@ -2956,7 +2957,7 @@ static t_bool kmc_feedTroll (int32 k, int32 line, uint8 *msg, t_bool rx) {
  */
 
 static const char *kmc_verifyUcode (int32 k) {
-    int i, n;
+    size_t i, n;
     uint16 crc = 'T' << 8 | 'L';
     uint8 w[2];
     static const struct {
