@@ -324,8 +324,8 @@ CHSI (DEC_SUPP, 94, %, 5)
     0x2426, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0x153, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFF, 0x2426, 0x2426,
 CHSEND
 CHS (LATIN_2, 96, B)
-    0xA0, 0x104, 0x206, 0x141, 0xA4, 0xA13D, 0x15A, 0xA7, 0x308, 0x160, 0x15E, 0x164, 0x179, 0xAD, 0x17D, 0x17B,
-    0x30A, 0x105, 0x328, 0x142, 0x301, 0x13E, 0xB15B, 0x30C, 0x327, 0x161, 0x15F, 0x165, 0x17A, 0x30B, 0x17E, 0x17C,
+    0xA0, 0x104, 0x306, 0x141, 0xA4, 0x13D, 0x15A, 0xA7, 0x308, 0x160, 0x15E, 0x164, 0x179, 0xAD, 0x17D, 0x17B,
+    0x30A, 0x105, 0x328, 0x142, 0x301, 0x13E, 0x15B, 0x30C, 0x327, 0x161, 0x15F, 0x165, 0x17A, 0x30B, 0x17E, 0x17C,
     0x154, 0xC1, 0xC2, 0x102, 0xC4, 0x139, 0x106, 0xC7, 0x10C, 0xC9, 0x118, 0xCB, 0x11A, 0xCD, 0xCE, 0x10E,
     0x110, 0x143, 0x147, 0xD3, 0xD4, 0x150, 0xD6, 0xD7, 0x158, 0x16E, 0xDA, 0x170, 0xDC, 0xDD, 0x162, 0xDF,
     0x155, 0xE1, 0xE2, 0x103, 0xE4, 0x13A, 0x107, 0xE7, 0x10D, 0xE9, 0x119, 0xEB, 0x11B, 0xED, 0xEE, 0x10F,
@@ -441,7 +441,7 @@ CHSEND
  * These are the exceptions.  20-7E and A1 - FF are 1:1.
  */
 static const struct {
-    short ucode;
+    unsigned short ucode;
     short pdfcode;
 } utran[] = {
 #define T(uc,pc) {0x##uc, 0x##pc},
@@ -999,7 +999,7 @@ int main (int argc, char **argv, char **env) {
 
 static void do_file (PDF_HANDLE pdf, FILE *fh, const char *filename) {
     int c;
-    size_t page, line;
+    size_t page = 0, line = 0;
     char lbuf[60];
     long bc = 0;
 
@@ -1377,7 +1377,7 @@ int pdf_set (PDF_HANDLE pdf, int arg, ...) {
 int pdf_print (PDF_HANDLE pdf, const char *string, size_t length) {
     int r;
     short lbuf[150];
-    long nc = 0;
+    size_t nc = 0;
     short *parsed;
 
     valarg (ps);
@@ -1826,7 +1826,7 @@ const char *pdf_strerror (int errnum) {
 
     if (errnum >= E(BASE)) {
         errnum -= E(BASE);
-        if (errnum >= DIM(errortext)) {
+        if (((size_t)errnum) >= DIM(errortext)) {
             errnum = 0;
         }
         return errortext[errnum];
@@ -1847,8 +1847,8 @@ int pdf_error (PDF_HANDLE pdf) {
         err = errno;
     }
 
-    if (err >= E(BASE)) {
-        if (err - E(BASE) >= DIM(errortext)) {
+    if (((size_t)err) >= E(BASE)) {
+        if (((size_t)(err - E(BASE))) >= DIM(errortext)) {
             err = E(BAD_ERRNO);
         }
     }
@@ -2015,7 +2015,7 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
         font = &pdf->p.title;
         oldf = tbuf;
 
-        for (r = 0; svalue[r] && r < sizeof (tbuf) -2; r++) {
+        for (r = 0; svalue[r] && r < ((int)sizeof (tbuf)) -2; r++) {
             if (svalue[r] == '\\' || svalue[r] == '(' || svalue[r] == ')') {
                 *oldf++ = '\\';
             }
@@ -2631,8 +2631,8 @@ static void wrpage (PDF *pdf) {
                 if (!((ch >= 0x20 && ch <= 0x7E) || (ch >= 0xA1 && ch <= 0xFF))) {
                     size_t i;
                     for (i = 0; i < DIM (utran); i++) {
-                        if (ch == utran[i].ucode) {
-                            ch = utran[i].pdfcode;
+                        if (((unsigned short) ch) == utran[i].ucode) {
+                            ch = (short) utran[i].pdfcode;
                             break;
                         }
                     }

@@ -766,7 +766,7 @@ for (i=(was_stepping ? sim_rem_step_line : 0);
                         }
                     sim_rem_buf[i][sim_rem_buf_ptr[i]++] = c;
                     sim_rem_buf[i][sim_rem_buf_ptr[i]] = '\0';
-                    if (sim_rem_buf_ptr[i] >= sizeof(cbuf))
+                    if (((size_t)sim_rem_buf_ptr[i]) >= sizeof(cbuf))
                         got_command = TRUE;                 /* command too long */
                     break;
                 }
