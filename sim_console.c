@@ -586,7 +586,7 @@ return SCPE_OK;
 
 t_stat sim_rem_con_data_svc (UNIT *uptr)
 {
-int32 i, j, c;
+int32 i, j, c = 0;
 t_stat stat, stat_nomessage;
 t_bool stepping = FALSE;
 int32 steps = 1;
@@ -596,7 +596,7 @@ t_bool close_session = FALSE;
 TMLN *lp;
 char cbuf[4*CBUFSIZE], gbuf[CBUFSIZE], *cptr, *argv[1] = {NULL};
 CTAB *cmdp = NULL;
-uint32 read_start_time;
+uint32 read_start_time = 0;
 t_offset cmd_log_start;
 
 tmxr_poll_rx (&sim_rem_con_tmxr);                      /* poll input */
