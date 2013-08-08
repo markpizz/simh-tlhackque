@@ -35,6 +35,7 @@
 #include "sim_tmxr.h"
 #include "sim_console.h"
 #include "sim_pdflpt.h" 
+#include <ctype.h>
 
 #define DIM(x) (sizeof (x) / sizeof ((x)[0]))
 
@@ -317,7 +318,7 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                 cptr = get_glyph_quoted (cptr, vbuf, 0);
                 if (*p == '"' || *p == '\'') {
                     if (p[strlen (p)-1] == *p) {
-                        *p++;
+                        p++;
                         p[strlen (p)-1] = '\0';
                     }
                 }
@@ -861,7 +862,7 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
     DEVICE *dptr;
     PDF_HANDLE newpdf = NULL;
     size_t n, page, line;
-    int r;
+    int r = SCPE_OK;
     char newname[CBUFSIZE];
     char devname[CBUFSIZE];
     t_bool pdf_mode;
