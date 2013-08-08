@@ -1295,10 +1295,10 @@ while (!feof(vfile)) {
     ungetc(c, vfile);
 
     /* Read a line number */
-    c = fscanf (vfile, " %u:", &line);
+    c = fscanf (vfile, " %u:", (uint32 *)&line);
     if (c == EOF)
         break;
-    if ((c < 1) || (line < 0) || (line  >= (sizeof (davfu)/sizeof davfu[0])))
+    if ((c < 1) || (line < 0) || (((uint32)line)  >= (sizeof (davfu)/sizeof davfu[0])))
         goto fmt_err;
     if (line+1 > dvlnt)
         dvlnt = line+1;
@@ -1311,7 +1311,7 @@ while (!feof(vfile)) {
         if ((c == '\n') || (c == EOF))
             break;
         ungetc(c, vfile);
-        c = fscanf (vfile, "%u", &hole);
+        c = fscanf (vfile, "%u", (uint32 *)&hole);
         if ((c == EOF) || (c < 1) || (c > 12))
             goto fmt_err;
         sum |= (davfu[line] |= 1 << (hole -1));

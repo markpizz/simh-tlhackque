@@ -7579,7 +7579,8 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
 
     TOPIC top = { 0, NULL, NULL, &top, NULL, 0, NULL, 0, 0};
     TOPIC *topic = &top;
-    int failed, match;
+    int failed;
+    size_t match;
     size_t i;
     char *p;
     t_bool flat_help = FALSE;
