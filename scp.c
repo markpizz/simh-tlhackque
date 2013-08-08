@@ -1052,7 +1052,7 @@ REG *rptr, *trptr;
 t_bool found = FALSE;
 t_bool all_unique = TRUE;
 size_t max_namelen = 0;
-DEVICE *tdptr;
+DEVICE *tdptr = NULL;
 char *tptr;
 char *namebuf;
 char rangebuf[32];
@@ -2239,7 +2239,7 @@ DEVICE *dptr;
 UNIT *uptr = NULL;
 MTAB *mptr;
 CTAB *gcmdp;
-C1TAB *ctbr, *glbr;
+C1TAB *ctbr = NULL, *glbr;
 
 static CTAB set_glob_tab[] = {
     { "CONSOLE", &sim_set_console, 0 },
@@ -4695,7 +4695,7 @@ return;
 
 t_stat exdep_cmd (int32 flag, char *cptr)
 {
-char gbuf[CBUFSIZE], *gptr, *tptr;
+char gbuf[CBUFSIZE], *gptr, *tptr = NULL;
 int32 opt;
 t_addr low, high;
 t_stat reason;
@@ -6907,7 +6907,6 @@ return debtab_nomatch;
 static const char *sim_debug_prefix (uint32 dbits, DEVICE* dptr)
 {
 char* debug_type = get_dbg_verb (dbits, dptr);
-static const char* debug_fmt     = "DBG(%.0f)%s> %s %s: ";
 char tim_t[32] = "";
 char tim_a[32] = "";
 char pc_s[64] = "";
@@ -7011,7 +7010,6 @@ if (sim_deb && (dptr->dctrl & dbits)) {
     char *buf = stackbuf;
     va_list arglist;
     int32 i, j, len;
-    char* debug_type = get_dbg_verb (dbits, dptr);
     const char* debug_prefix = sim_debug_prefix(dbits, dptr);   /* prefix to print if required */
 
     buf[bufsize-1] = '\0';

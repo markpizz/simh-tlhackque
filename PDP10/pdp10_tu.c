@@ -810,7 +810,7 @@ return;
 t_stat tu_svc (UNIT *uptr)
 {
 int32 fnc, fmt, i, j, k, wc10, ba10;
-int32 ba, fc, wc, drv, mpa10, vpn;
+int32 ba, fc, wc, drv, mpa10 = 0, vpn;
 d10 val, v[4];
 t_mtrlnt tbc;
 t_stat st, r = SCPE_OK;
