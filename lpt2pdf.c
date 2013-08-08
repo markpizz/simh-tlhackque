@@ -1934,7 +1934,7 @@ static int pdfreopen (PDF *pdf) {
 static int pdfset (PDF *pdf, int arg, va_list ap) {
     unsigned int ivalue;
     double dvalue;
-    const char *svalue;
+    const char *svalue = NULL;
     char **font = NULL;
     char *oldf;
     PDF oldvals;
@@ -3484,6 +3484,7 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
     while (length) {
         short ch = 0xFF & *string++;
         char ch7 = ch & 0x7F;
+        size_t chi = ch7 & 0xFF;                /* GCC: doesn't like char as array index */
         length--;
 
 #define STORE goto store
@@ -3721,14 +3722,14 @@ static int parsestr (PDF *pdf, const char *string, size_t length, int initial) {
 #undef STORE
 #undef DISCARD
 
-        ch7 -= 0x20;
+        chi -= 0x20;
         if (pdf->ssg) {                         /* SS applies to left or right input */
-            ch = pdf->ssg->chrset[ch7];
+            ch = pdf->ssg->chrset[chi];
             pdf->ssg = NULL;
         } else if (ch >= 0x20 && ch <= 0x7F) {  /* Left? */
-            ch = pdf->gl->chrset[ch7];
+            ch = pdf->gl->chrset[chi];
         } else if (ch >= 0xA0 && ch <= 0xFF) {  /* Redundant test, must be a (right) graphic */
-            ch = pdf->gr->chrset[ch7];
+            ch = pdf->gr->chrset[chi];
         }
 
      store:
