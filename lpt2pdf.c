@@ -98,9 +98,9 @@ typedef __int16 int_least16_t;
 #define RGB_GREEN_TEXT "0.780 0.860 0.780"
 #define RGB_GREEN_BAR  "0.880 0.960 0.880"
 
-#define RGB_BLUE_LINE  "0.794 0.900 0.900"
-#define RGB_BLUE_TEXT  "0.794 0.900 0.900"
-#define RGB_BLUE_BAR   "0.804 1.000 1.000"
+#define RGB_BLUE_LINE  "0.700 0.900 1.000"
+#define RGB_BLUE_TEXT  "0.700 0.900 1.000"
+#define RGB_BLUE_BAR   "0.800 0.940 1.000"
 
 #define RGB_YELLOW_LINE  "0.900 0.900 0.800"
 #define RGB_YELLOW_TEXT  "0.700 0.700 0.700" /* Use gray; yellow text not readable */
@@ -706,6 +706,21 @@ static const PDF defaults = {
 #define PDF_C_LINELEN (255)    /* Maximum line length (lines not in a stream object's data) */
 #define PDF_C_HEADER "%PDF-1.4\n%\0302\0245\0302\0261\0303\0253\n"
 
+/* Image characteristics */
+
+typedef struct {
+    FILE *fh;
+    double width, height;
+    unsigned char *buf;
+    size_t bufsize;
+    char *imgbuf;
+    size_t ibsize, ibused;
+    char *filter;
+    char *filterpars;
+    char *colordesc;
+    size_t ssize, sused;
+} IMG;
+
 /* Forward references */
 
 static int dupstrs (PDF *pdf);
@@ -720,6 +735,9 @@ static void wrpage (PDF *pdf);
 static void setform (PDF *pdf);
 static void barform (PDF *pdf);
 static void imageform (PDF *pdf);
+static int jpeg_image (PDF *pdf, IMG *img);
+static int png_image (PDF *pdf, IMG *img);
+static uint32_t crc32 (uint32_t initial, const uint8_t *string, uint32_t length);
 static unsigned int addobj (PDF *pdf);
 static unsigned int getref (PDF *pdf, char *buf, const char *name);
 static unsigned int getint (PDF *pdf, char *buf, const char *name, const char **end);
@@ -832,7 +850,7 @@ static const ARG argtable [] = {
     SET (cpi,     CPI,            NUMBER,  10,          (Specifies the characters per inch (horizontal pitch).  Fractional pitch is supported.))
     SET (font,    TEXT_FONT,      STRING,  Courier,     (Specifies the name of the font to use for rendering the input data.  Accepted are:%F))
     SET (form,    FORM_TYPE,      STRING,  greenbar,    (Specifies the form background to be applied. One of:%fPlain is white page.))
-    SET (image,   FORM_IMAGE,     STRING,  <none>,      (Specifies a .jpg image to be used as the form background\nIt will be scaled to fill the area within the margins.\nIt is rendered over the form; for just the image, use -form Plain.))
+    SET (image,   FORM_IMAGE,     STRING,  <none>,      (Specifies a .jpg or .png image to be used as the form background\nIt will be scaled to fill the area within the margins.\nIt is rendered over the form; for just the image, use -form Plain.))
     SET (length,  PAGE_LENGTH,    NUMBER,  11.000in,    (Specifies the length of the page in inches, inclusive of all margins.  Calculated automatically if -lpp is used.))
     SET (lfont,   LABEL_FONT,     STRING,  Times-Bold,  (Specifies the name of the font used to render labels on the form))
     SET (lno,     LNO_WIDTH,      NUMBER,  0.100in,     (Specifies the width of the line number column on the form; 0 to omit cols.))
@@ -2728,7 +2746,7 @@ static void wrpage (PDF *pdf) {
     } else {
         fprintf (pdf->pdf, "%u 0 obj\n"
                  "  << /Length %u /DL %u /Filter /LZWDecode"
-                 " /DecodeParams << /EarlyChange 0 >> >>\n"
+                 " /DecodeParms << /EarlyChange 0 >> >>\n"
                  "stream\n", obj, pdf->lzwused, pdf->pbused);
         fwrite (pdf->lzwbuf, pdf->lzwused, 1, pdf->pdf);
     }
@@ -2801,7 +2819,7 @@ static void setform (PDF *pdf) {
 
     /* Line numbers */
 
-    if (pdf->p.lno) {
+   if (pdf->p.lno) {
         wrstmf (pdf, FORMBUF, 
             " q 1 w BT 0 Tr %s rg"
             " /F3 %u Tf 55 Tz 1 0 0 1 %f %f Tm %u TL (6)' /F2 %u Tf",
@@ -2902,147 +2920,83 @@ static void barform (PDF *pdf) {
  */
 
 static void imageform (PDF *pdf) {
-    unsigned int obj, len;
-    t_fpos fs;
-    FILE *fh;
-    int c;
-    double imgwid, imghgt, pw, sh, scale, vpos;
-    size_t n;
-    unsigned char *buf;
-    char *jbuf;
-    size_t jbsize, jbused;
+    unsigned int obj;
+    double pw, sh, scale, vpos;
+    IMG img;
+    int r;
 
-    if (!(fh = fopen (pdf->p.formfile, "rb"))) {
+    memset (&img, 0, sizeof (IMG));
+
+    if (!(img.fh = fopen (pdf->p.formfile, "rb"))) {
         ABORT (errno);
     }
 
-    buf = (unsigned char *) malloc (COPY_BUFSIZE);
-    if (!buf) {
-        fclose (fh);
+    img.buf = (unsigned char *) malloc (COPY_BUFSIZE);
+    if (!img.buf) {
+        fclose (img.fh);
         ABORT (errno);
     }
+    img.bufsize = COPY_BUFSIZE;
 
-    /* Parse the JPEG to get the dimensions of the image.
-     */
+    /* Identify and decode image file */
 
-    if (fread (buf, 4, 1, fh) != 1) {
-        fclose (fh);
-        free (buf);
-        ABORT (E(BAD_JPEG));
+    r = jpeg_image (pdf, &img);
+    if (r != PDF_OK) {
+        r = png_image (pdf, &img);
     }
-    if (!(buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF &&
-          (buf[3] & ~0x01) == 0xE0)) {
-        fclose (fh);
-        free (buf);
-        ABORT (E(BAD_JPEG));
-    }
-    c = buf[3];
-    fseek (fh, -2, SEEK_CUR);
-
-    while (1) {
-        if (c == 0xDA) {
-            fclose (fh);
-            free (buf);
-            ABORT (E(BAD_JPEG));
-        }
-        while (1) {
-            c = fgetc (fh);
-            if (c == EOF) {
-                fclose (fh);
-                free (buf);
-                ABORT (E(BAD_JPEG));
-            }
-            if (c == 0xFF)
-                break;
-        }
-        while (1) {
-            c = fgetc (fh);
-            if (c == EOF) {
-                fclose (fh);
-                free (buf);
-                ABORT (E(BAD_JPEG));
-            }
-            if (c != 0xFF)
-                break;
-        }
-        if (c >= 0xC0 && c <= 0xC3) {
-            if (fread (buf, 7, 1, fh) != 1) {
-                fclose (fh);
-                free (buf);
-                ABORT (E(BAD_JPEG));
-            }
-            imgwid = (double) ((buf[5] << 8) | buf[6]);
-            imghgt = (double) ((buf[3] << 8) | buf[4]);
-            break;
-        }
-        if (fread (buf, 2, 1, fh) != 1 ) {
-            fclose (fh);
-            free (buf);
-            ABORT (E(BAD_JPEG));
-        }
-        len = (buf[0] << 8) | buf[1];
-        if (len < 2) {
-            fclose (fh);
-            free (buf);
-            ABORT (E(BAD_JPEG));
-        }
-        fseek (fh, len -2, SEEK_CUR);
+    if (r != PDF_OK) {
+        fclose (img.fh);
+        free (img.buf);
+        free (img.imgbuf);
+        ABORT (r);
     }
 
-    /* Get the file size */
-
-    fseek (fh, 0, SEEK_END);
-    fs = ftell (fh);
+    if (ferror (img.fh)) {
+        fclose (img.fh);
+        free (img.buf);
+        free (img.imgbuf);
+        ABORT (E(OTHER_IO_ERROR));
+    }
+    if (fclose (img.fh) == EOF) {
+        free (img.buf);
+        free (img.imgbuf);
+        ABORT (E(OTHER_IO_ERROR));
+    }
 
     /* Write an XObject dictionary and stream
-     * Note: This is NOT bufferered; there is one per session.
+     * Note: This is NOT buffered; there is one per session.
      */
-
-    fseek (fh, 0, SEEK_SET);
-
-    if (errno || ferror (fh)) {
-        fclose (fh);
-        free (buf);
-        ABORT (E(BAD_JPEG));
-    }
 
     pdf->formobj =
         obj = addobj(pdf);
 
-    /* Form images seem to be compressible, presumably due to the
-     * large amount of constant background.
+    fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
+             " /Width %u /Height %u %s", obj, ((unsigned int)img.width),
+             ((unsigned int)img.height), img.colordesc);
+
+    /* JPEG form images seem to be compressible, presumably due to the
+     * large amount of constant background.  Watch PDF_C_LINELEN.
      */
-    jbuf = NULL;
-    jbsize = 0;
-    jbused = 0;
 
-    while ((n = fread (buf, 1, COPY_BUFSIZE, fh)) > 0) {
-        wrstm (pdf, &jbuf, &jbsize, &jbused, (char *) buf, n);
-    }
-
-    if ((pdf->flags & PDF_UNCOMPRESSED) || encstm (pdf, jbuf, jbused)) {
-        fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
-                 " /Width %u /Height %u /Length %u /Filter /DCTDecode"
-                 " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
-                 obj, ((unsigned int)imgwid), ((unsigned int)imghgt), jbused);
-        fwrite (jbuf, jbused, 1, pdf->pdf);
+    if ((pdf->flags & PDF_UNCOMPRESSED) || encstm (pdf, img.imgbuf, img.ibused)) {
+        fprintf (pdf->pdf, " /Length %u /Filter %s", img.ibused, img.filter);
+        if (img.filterpars) {
+            fprintf (pdf->pdf, " /DecodeParms %s", img.filterpars);
+        }
+        fprintf (pdf->pdf, " >>\nstream\n");
+        fwrite (img.imgbuf, img.ibused, 1, pdf->pdf);
     } else {
-        /* Close to PDF_C_LINELEN */
-        fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
-                 " /Width %u /Height %u /Length %u /DL %u"
-                 " /Filter [ /LZWDecode /DCTDecode ]"
-                 " /DecodeParams [ << /EarlyChange 0 >> null ]"
-                 " /BitsPerComponent 8 /ColorSpace /DeviceRGB >>\nstream\n",
-                 obj, ((unsigned int)imgwid), ((unsigned int)imghgt),
-                 pdf->lzwused, jbused);
+        fprintf (pdf->pdf, " /Length %u /DL %u /Filter [ /LZWDecode %s ]"
+                 " /DecodeParms [ << /EarlyChange 0 >> %s ]",
+                 pdf->lzwused, img.ibused, img.filter,
+                 (img.filterpars? img.filterpars: "null"));
+        fprintf (pdf->pdf, " >>\nstream\n");
         fwrite (pdf->lzwbuf, pdf->lzwused, 1, pdf->pdf);
     }
-    free (jbuf);
-    free (buf);
-
-    if (ferror (fh) || fclose (fh) == EOF) {
-        ABORT (E(OTHER_IO_ERROR));
-    }
+    free (img.colordesc);
+    free (img.filterpars);
+    free (img.imgbuf);
+    free (img.buf);
     fprintf (pdf->pdf, "\nendstream\nendobj\n\n");
 
     /* Add a graphics state dictionary for rendering the image.
@@ -3058,8 +3012,8 @@ static void imageform (PDF *pdf) {
      */
 
     pw = pdf->p.wid-(2*(pdf->p.margin +(1/PT)));
-    scale = pw / imgwid;
-    sh = imghgt * scale * PT;
+    scale = pw / img.width;
+    sh = img.height * scale * PT;
     vpos = ((pdf->p.len *PT) - sh)/2;
     wrstmf (pdf, FORMBUF, " q /igs gs %f 0 0 %f %f %f cm /form Do Q",
             xp(pw)-2, sh, xp(pdf->p.margin) +1, vpos);
@@ -3067,6 +3021,345 @@ static void imageform (PDF *pdf) {
     pdf->pbase = obj +1;
 
     return;
+}
+
+/* Import a JPEG image */
+
+static int jpeg_image (PDF *pdf, IMG *img) {
+    int c;
+    size_t len, n;
+    unsigned char *buf = img->buf;
+    FILE *fh = img->fh;
+
+    /* Parse the JPEG to get the dimensions of the image.
+     */
+
+    rewind (fh);
+    if (fread (buf, 4, 1, fh) != 1) {
+        return E(UNKNOWN_IMAGE);
+    }
+    if (!(buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF &&
+          (buf[3] & ~0x01) == 0xE0)) {
+        return E(UNKNOWN_IMAGE);
+    }
+    c = buf[3];
+    fseek (fh, -2, SEEK_CUR);
+
+    while (1) {
+        if (c == 0xDA) {
+            return E(BAD_JPEG);
+        }
+        while (1) {
+            c = fgetc (fh);
+            if (c == EOF) {
+                return E(BAD_JPEG);
+            }
+            if (c == 0xFF)
+                break;
+        }
+        while (1) {
+            c = fgetc (fh);
+            if (c == EOF) {
+                return E(BAD_JPEG);
+            }
+            if (c != 0xFF)
+                break;
+        }
+        if (c >= 0xC0 && c <= 0xC3) {
+            if (fread (buf, 7, 1, fh) != 1) {
+                return E(BAD_JPEG);
+            }
+            img->width = (double) ((buf[5] << 8) | buf[6]);
+            img->height = (double) ((buf[3] << 8) | buf[4]);
+            break;
+        }
+        if (fread (buf, 2, 1, fh) != 1 ) {
+            return E(BAD_JPEG);
+        }
+        len = (buf[0] << 8) | buf[1];
+        if (len < 2) {
+            return E(BAD_JPEG);
+        }
+        fseek (fh, len -2, SEEK_CUR);
+    }
+
+    /* Include the entire file as stream data */
+
+    fseek (fh, 0, SEEK_SET);
+
+    if (errno || ferror (fh)) {
+        return E(BAD_JPEG);
+    }
+
+    while ((n = fread (buf, 1, img->bufsize, fh)) > 0) {
+        wrstm (pdf, &img->imgbuf, &img->ibsize, &img->ibused, (char *) buf, n);
+    }
+
+    img->filter = "/DCTDecode";
+    img->ssize =
+        img->sused = 0;
+    wrstm (pdf, &img->colordesc, &img->ssize, &img->sused,
+           (char *)"/BitsPerComponent 8 /ColorSpace /DeviceRGB", PDF_USE_STRLEN);
+    img->colordesc[img->sused] = '\0';
+
+    return PDF_OK;
+}
+
+/* Import a PNG image */
+
+static int png_image (PDF *pdf, IMG *img) {
+    static const unsigned char sig [8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    unsigned char *buf = img->buf;
+    FILE    *fh = img->fh;
+    uint32_t flags = 0;
+    uint32_t len;
+    uint32_t xppu = 1, yppu = 1;
+    uint32_t palent = 0;
+    uint8_t  unit = 0;
+    uint8_t  bpp = 0;
+    uint8_t  color = 0;
+    char     palette[256 * 3];
+
+#define PNGINT(p) ((uint32_t)(((p)[0]<<24)+((p)[1]<<16)+((p)[2]<<8)+(p)[3]))
+
+#define PNG_CRC (0xFFFFFFFF)
+#define png_IHDR (1)
+#define png_PLTE (2)
+#define png_pHYs (4)
+
+    /* Parse the PNG to get the dimensions and attributes of the image.
+     */
+
+    rewind (fh);
+
+    /* Verify the signature */
+
+    if (fread (buf, sizeof (sig), 1, fh) != 1) {
+        return E(UNKNOWN_IMAGE);
+    }
+    if (memcmp (buf, sig, sizeof (sig))) {
+        return E(UNKNOWN_IMAGE);
+    }
+
+    /* Inspect each chunk.
+     * 4 Bytes: length
+     * 4 Bytes: tag name (start of CRC)
+     * <length> bytes of data
+     * 4 Bytes: CRC32
+     */
+
+    while (1) {
+        if (fread (buf, 8, 1, fh) != 1) {       /* Length and tag */
+            return E(BAD_PNG);
+        }
+        len = PNGINT (buf);
+        if (!memcmp (buf+4, "IHDR", 4)) {       /* File header */
+            if ((flags & png_IHDR) || len != 13)
+                return E(BAD_PNG);
+            flags |= png_IHDR;
+            if (fread (buf+8, len+4, 1, fh) != 1) {/* IHDR + CRC */
+                return E(BAD_PNG);
+            }
+            if (crc32 (PNG_CRC, buf+4, 4+len) != ~PNGINT (buf+8+len)) {
+                return E(BAD_PNG);
+            }
+            img->width = PNGINT (buf+8+0);      /* pixels */
+            img->height = PNGINT (buf+8+4);
+            bpp = buf[8+8];                     /* bits per sample (per channel) */
+            color = buf[8+9];                   /* 0 = Greyscale; 2 = Truecolor; 3 = indexed;
+                                                 * 4 = grey + alpha; 6 = truecolor + alpha
+                                                 */
+            if (buf[8+8] > 8 || buf[8+10] || buf[8+11] || buf[8+12]) { /* 8-bit only, Compression, filter, interlace */
+                return E(BAD_PNG);
+            }
+            continue;
+        }
+        if (!(flags & png_IHDR)) {              /* IHDR must be first */
+            return E(BAD_PNG);
+        }
+        if(!memcmp(buf+4, "PLTE", 4)) {
+            if ((flags & png_PLTE) || len > sizeof (palette) || len % 3 || !color) {
+                return E(BAD_PNG);
+            }
+            flags |= png_PLTE;
+            if (fread (palette, len, 1, fh) != 1) { /* Palette - read into array */
+                return E(BAD_PNG);
+            }
+            palent = len / 3;                   /* # entries in palette (R, G, B) * n */
+            if (fread (buf+8, 4, 1, fh) != 1) { /* Get CRC */
+                return E(BAD_PNG);
+            }
+            if (crc32 (crc32 (PNG_CRC, buf+4, 4), 
+                       (uint8_t *)palette, len) != ~PNGINT (buf+8)) {
+                return E(BAD_PNG);
+            }
+            continue;
+        }
+        if(!memcmp(buf+4, "pHYs",4)) {
+            if(flags & png_pHYs || len != 9) {
+                return E(BAD_PNG);
+            }
+            flags |= png_pHYs;
+            if (fread (buf+8, len+4, 1, fh) != 1) {
+                return E(BAD_PNG);
+            }
+            if (crc32 (PNG_CRC, buf+4, 4+len) != ~PNGINT (buf+8+len)) {
+                return E(BAD_PNG);
+            }
+            xppu = PNGINT(buf+8+0);             /* Pixels/unit (x) */
+            yppu = PNGINT(buf+8+4);             /* Pixels/unit (y) */
+            unit = buf[8+8];                    /* 0 = relative; 1 = m (meter) */
+            continue;
+        }
+        if(!memcmp(buf+4, "IDAT",4)) {          /* Image data is penultimate */
+            fseek (fh, -8, SEEK_CUR);
+            break;
+        }
+        if (!(buf[4] & (1u << 5))) {            /* Unknown critical chunk */
+            return E(UNSUP_PNG);
+        }
+        fseek (fh,len+4,SEEK_CUR);
+    }
+
+    /* PLTE required for color 3, optional 2 & 6, forbidden 0 & 4
+     * 4 & 6 have alpha channel - extracting requires decompressing image.
+     */
+    switch (color) {
+    case 0:                                     /* Grayscale */
+        if ((flags & png_PLTE)) {
+            return E(BAD_PNG);
+        }
+        break;
+    case 2:                                     /* Truecolor */
+        break;
+    case 3:                                     /* Indexed palette */
+        if (!(flags & png_PLTE)) {
+            return E(BAD_PNG);
+        }
+        break;
+    default:
+        return E(UNSUP_PNG);
+    }
+
+    /* Extract the data.  There may be more than one IDAT chunk. */
+
+    while (1) {
+        uint8_t chdr[12];
+        uint32_t crc;
+
+        if (fread (chdr, 8, 1, fh) != 1) {
+            return E(BAD_PNG);
+        }
+        len = PNGINT (chdr);
+        if (!memcmp (chdr+4, "IEND", 4)) {
+            if (len != 0) {
+                return E(BAD_PNG);
+            }
+            if (fread (chdr+8, 4, 1, fh) != 1) {
+                return E(BAD_PNG);
+            }
+            crc = crc32 (PNG_CRC, chdr+4, 4);
+            if (crc != ~PNGINT (chdr+8)) {
+                return E(BAD_PNG);
+            }
+            break;
+        }
+        if (memcmp (chdr+4, "IDAT", 4)) {       /* If not image data, skip chunk */
+            fseek (fh, len+4, SEEK_CUR);
+            continue;
+        }
+        crc = crc32 (PNG_CRC, chdr+4, 4);
+        while (len) {
+            if (len > img->bufsize) {
+                if (fread (buf, img->bufsize, 1, fh) != 1) {
+                    return E(BAD_PNG);
+                }
+                crc = crc32 (crc, buf, img->bufsize);
+                wrstm (pdf, &img->imgbuf, &img->ibsize, &img->ibused,
+                       (char *) buf, img->bufsize);
+                len -= img->bufsize;
+            } else {
+                if (fread (buf, len, 1, fh) != 1) {
+                    return E(BAD_PNG);
+                }
+                crc = crc32 (crc, buf, len);
+                if (fread (chdr+8, 4, 1, fh) != 1) {
+                    return E(BAD_PNG);
+                }
+                if (crc != ~PNGINT (chdr+8)) {
+                    return E(BAD_PNG);
+                }
+                wrstm (pdf, &img->imgbuf, &img->ibsize, &img->ibused,
+                       (char *) buf, len);
+                break;
+            }
+        }
+    }
+    if (ferror (fh)) {
+        return E(BAD_PNG);
+    }
+
+    /* Setup PDF dictionaries for the image */
+
+    img->filter ="/FlateDecode";
+    img->ssize =
+        img->sused = 0;
+    wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+            "/BitsPerComponent %u", (uint32_t)bpp);
+    if (palent) {
+        size_t i;
+
+        wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+                " /ColorSpace [ /Indexed /DeviceRGB %u <\n", palent -1); /* Max index */
+        for (i = 0; i < palent; i++) {          /* Color map: index -> RGB */
+            if (i && !(i % (PDF_C_LINELEN/6))) {
+                wrstm (pdf, &img->colordesc, &img->ssize, &img->sused, "\n", 1);
+            }
+            wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+                    "%02x%02x%02x",
+                    (0xFF & (uint32_t)palette[(i*3)+0]),
+                    (0xFF & (uint32_t)palette[(i*3)+1]),
+                    (0xFF & (uint32_t)palette[(i*3)+2]));
+        }
+        wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+                "\n> ]");
+    } else {
+         wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+                 " /ColorSpace %s", ((color == 0 || color ==4)? "/DeviceGray": "/DeviceRGB"));
+    }
+    img->colordesc[img->sused] = '\0';
+
+    img->ssize =
+        img->sused = 0;
+    wrstmf (pdf, &img->filterpars, &img->ssize, &img->sused,
+            "<< /Columns %u /Colors %u /BitsPerComponent %u /Predictor 15 >>",
+            ((uint32_t)img->width), ((palent || color == 0 || color == 4)? 1 : 3), bpp);
+
+    img->filterpars[img->sused] = '\0';
+
+    if (xppu != yppu) {                         /* Pixels not square */
+        if (xppu > yppu) {
+            img->height *= ((double)xppu) / ((double)yppu);
+        } else {
+            img->width *= ((double)yppu) / ((double)xppu);
+        }
+    }
+    return PDF_OK;
+#undef PNGINT
+}
+
+static uint32_t crc32 (uint32_t initial, const uint8_t *string, uint32_t length) {
+    static const uint32_t crctab[16] = {
+        0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac, 0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+        0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c, 0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c,
+    };
+
+    while (length--) {
+        initial ^= (*string++ & 0xFF);
+        initial = (initial >> 4) ^ crctab[initial & 0x0F];
+        initial = (initial >> 4) ^ crctab[initial & 0x0F];
+    }
+    return initial;
 }
 
 /* The work of close.
@@ -3803,6 +4096,7 @@ static void wrstmf (PDF *pdf, char **buf, size_t *len, size_t *used, const char 
                 c = va_arg (ap, int);
                 break;
             case 'u':
+            case 'x':
                 i = va_arg (ap, unsigned int);
                 p += sprintf (tbuf, fbuf, i);
                 continue;
@@ -4129,6 +4423,9 @@ static void lzw_encode (t_lzw *lzw, char *stream, size_t len) {
         if (nc == TREE_NULL) {
             t_lzwCode tmp;
 
+            if (lzw->assigned == (1 << lzw->codesize)) {
+                    lzw->codesize++;
+            }
             lzw_writebits (lzw, code, lzw->codesize);
 
             tmp = lzw_add_str (lzw, code, c);
@@ -4136,12 +4433,16 @@ static void lzw_encode (t_lzw *lzw, char *stream, size_t len) {
                 lzw_writebits (lzw, LZW_CLRCODE, lzw->codesize);
                 lzw_init (lzw, LZW_REINIT);
             }
+                    
             code = c;
         } else {
             code = nc;
         }
     }
 
+    if (lzw->assigned == (1 << lzw->codesize)) {
+        lzw->codesize++;
+    }
     lzw_writebits (lzw, code, lzw->codesize);
     lzw_writebits (lzw, LZW_EODCODE, lzw->codesize);
     lzw_flushbits(lzw);
@@ -4157,12 +4458,6 @@ static t_lzwCode lzw_add_str (t_lzw *lzw, t_lzwCode code, char c) {
 
     if (nc >= LZW_DSIZE) {
         return TREE_NULL;
-    }
-    /* Codesize changes when last code allocated, except if
-     * it's the last code in MAXBITS.
-     */
-    if (nc == (1 << lzw->codesize)-1 && lzw->codesize != LZW_MAXBITS) {
-        lzw->codesize++;
     }
     lzw->dict[nc].ch = c;
     lzw->dict[nc].prev = code;
@@ -4459,12 +4754,12 @@ int SHA1Input(    SHA1Context    *context,
  *
  */
 void SHA1ProcessMessageBlock(SHA1Context *context) {
-    const uint32_t K[] =    {       /* Constants defined in SHA-1   */
-                            0x5A827999,
-                            0x6ED9EBA1,
-                            0x8F1BBCDC,
-                            0xCA62C1D6
-                            };
+    const uint32_t K[] = {       /* Constants defined in SHA-1   */
+        0x5A827999,
+        0x6ED9EBA1,
+        0x8F1BBCDC,
+        0xCA62C1D6
+    };
     int           t;                 /* Loop counter                */
     uint32_t      temp;              /* Temporary word value        */
     uint32_t      W[80];             /* Word sequence               */
@@ -4491,7 +4786,7 @@ void SHA1ProcessMessageBlock(SHA1Context *context) {
     E = context->Intermediate_Hash[4];
 
     for(t = 0; t < 20; t++) {
-        temp =  SHA1CircularShift(5,A) +
+        temp = SHA1CircularShift(5,A) +
                 ((B & C) | ((~B) & D)) + E + W[t] + K[0];
         E = D;
         D = C;

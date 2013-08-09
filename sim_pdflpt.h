@@ -186,7 +186,7 @@
  * Parameters:     Default
  *   Parameter      Value       Description
  *   FORM         GREENBAR      Form to be printed: PLAIN, GREENBAR, BLUEBAR, YELLOWBAR, GRAYBAR
- *   IMAGE                      .JPG file printed over FORM.
+ *   IMAGE                      .JPG or .PNG file printed over FORM.
  *   TITLE    Lineprinter data  Title of PDF document
  *   FONT     Courier           Font for text; must be PDF standard, monospace.
  *   TOP-MARGIN     1.0in       Space above first bar; start of normal print area
