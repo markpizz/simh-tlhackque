@@ -78,6 +78,7 @@
    tmxr_set_modem_control_passthru -    enable modem control on a multiplexer
    tmxr_clear_modem_control_passthru -  disable modem control on a multiplexer
    tmxr_set_get_modem_bits -            set and/or get a line modem bits
+   tmxr_set_line_loopback -             enable or disable loopback mode on a line
    tmxr_set_config_line -               set port speed, character size, parity and stop bits
    tmxr_open_master -                   open master connection
    tmxr_close_master -                  close master connection
@@ -549,6 +550,53 @@ tmxr_linemsgf (lp, "\nDisconnected from the %s simulator\n\n", sim_name);/* repo
 return;
 }
 
+static int32 loop_write (TMLN *lp, char *buf, int32 length)
+{
+int32 written = 0;
+while (length) {
+    int32 loopfree = lp->lpbsz - (lp->lpbpi - lp->lpbpr + ((lp->lpbpi < lp->lpbpr)? lp->lpbsz: 0));
+    int32 chunksize;
+
+    if (loopfree == 0)
+        break;
+    if (loopfree < length)
+        length = loopfree;
+    if (lp->lpbpi >= lp->lpbpr)
+        chunksize = lp->lpbsz - lp->lpbpi;
+    else
+        chunksize = lp->lpbpr - lp->lpbsz;
+    memcpy (&lp->lpb[lp->lpbpi], buf, chunksize);
+    buf += chunksize;
+    length -= chunksize;
+    written += chunksize;
+    lp->lpbpi = (lp->lpbpi + chunksize) % lp->lpbsz;
+    }
+return written;
+}
+
+static int32 loop_read (TMLN *lp, char *buf, int32 bufsize)
+{
+int32 bytesread = 0;
+while (bufsize > 0) {
+    int32 loopused = (lp->lpbpi - lp->lpbpr + ((lp->lpbpi < lp->lpbpr)? lp->lpbsz: 0));
+    int32 chunksize;
+
+    if (loopused < bufsize)
+        bufsize = loopused;
+    if (loopused == 0)
+        break;
+    if (lp->lpbpi > lp->lpbpr)
+        chunksize = lp->lpbpi - lp->lpbpr;
+    else
+        chunksize = lp->lpbsz - lp->lpbpr;
+    memcpy (buf, &lp->lpb[lp->lpbpr], chunksize);
+    buf += chunksize;
+    bufsize -= chunksize;
+    bytesread += chunksize;
+    lp->lpbpr = (lp->lpbpr + chunksize) % lp->lpbsz;
+    }
+return bytesread;
+}
 
 /* Read from a line.
 
@@ -566,6 +614,8 @@ static int32 tmxr_read (TMLN *lp, int32 length)
 {
 int32 i = lp->rxbpi;
 
+if (lp->loopback)
+    return loop_read (lp, &(lp->rxb[i]), length);
 if (lp->serport)                                        /* serial port connection? */
     return sim_read_serial (lp->serport, &(lp->rxb[i]), length, &(lp->rbr[i]));
 else                                                    /* Telnet connection */
@@ -584,6 +634,9 @@ static int32 tmxr_write (TMLN *lp, int32 length)
 {
 int32 written;
 int32 i = lp->txbpr;
+
+if (lp->loopback)
+    return loop_write (lp, &(lp->txb[i]), length);
 
 if (lp->serport)                                        /* serial port connection? */
     return sim_write_serial (lp->serport, &(lp->txb[i]), length);
@@ -1254,7 +1307,7 @@ if ((bits_to_set & ~(TMXR_MDM_OUTGOING)) ||         /* Assure only settable bits
 before_modem_bits = lp->modembits;
 lp->modembits |= bits_to_set;
 lp->modembits &= ~(bits_to_clear | TMXR_MDM_INCOMING);
-if ((lp->sock) || (lp->serport)) {
+if ((lp->sock) || (lp->serport) || (lp->loopback)) {
     if (lp->modembits & TMXR_MDM_DTR)
         incoming_state = TMXR_MDM_DCD | TMXR_MDM_CTS | TMXR_MDM_DSR;
     else
@@ -1271,6 +1324,13 @@ if (incoming_bits)
     *incoming_bits = incoming_state;
 if (lp->mp && lp->modem_control) {                  /* This API ONLY works on modem_control enabled multiplexer lines */
     if (bits_to_set | bits_to_clear) {              /* Anything to do? */
+        if (lp->loopback) {
+            if ((lp->modembits ^ before_modem_bits) & TMXR_MDM_DTR) { /* DTR changed? */
+                lp->ser_connect_pending = (lp->modembits & TMXR_MDM_DTR);
+                lp->conn = !(lp->modembits & TMXR_MDM_DTR);
+                }
+            return SCPE_OK;
+            }
         if (lp->serport)
             return sim_control_serial (lp->serport, bits_to_set, bits_to_clear, incoming_bits);
         if ((lp->sock) || (lp->connecting)) {
@@ -1291,11 +1351,49 @@ if (lp->mp && lp->modem_control) {                  /* This API ONLY works on mo
         }
     return SCPE_OK;
     }
-if (lp->serport)
+if ((lp->serport) && (!lp->loopback))
     sim_control_serial (lp->serport, 0, 0, incoming_bits);
 return SCPE_IERR;
 }
 
+/* Enable or Disable loopback mode on a line
+
+   Inputs:
+        lp -                the line to change
+        enable_loopback -   enable or disable flag
+
+   Output:
+        none
+
+   Implementation note:
+
+    1) When enabling loopback mode, this API will disconnect any currently 
+       connected TCP or Serial session.
+    2) When disabling loopback mode, prior network connections and/or 
+       serial port connections will be restored.
+
+*/
+t_stat tmxr_set_line_loopback (TMLN *lp, t_bool enable_loopback)
+{
+if (lp->loopback == enable_loopback)
+    return SCPE_OK;                 /* Nothing to do */
+lp->loopback = enable_loopback;
+if (lp->loopback) {
+    lp->lpbsz = TMXR_MAXBUF;
+    lp->lpb = (char *)malloc(TMXR_MAXBUF);
+    lp->lpbpi = lp->lpbpr = 0;
+    }
+else {
+    free (lp->lpb);
+    lp->lpb = NULL;
+    }
+return SCPE_OK;
+}
+
+t_bool tmxr_get_line_loopback (TMLN *lp)
+{
+return (lp->loopback != 0);
+}
 t_stat tmxr_set_config_line (TMLN *lp, char *config)
 {
 t_stat r;

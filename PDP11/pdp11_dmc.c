@@ -1657,7 +1657,10 @@ return *controller->csrs->sel0 & DMC_SEL0_M_MCLEAR;
 
 int dmc_is_lu_loop_set(CTLR *controller)
 {
-return *controller->csrs->sel0 & DMC_SEL0_M_LU_LOOP;
+if (dmc_is_dmc(controller))
+    return ((*controller->csrs->sel0 & DMC_SEL0_M_LU_LOOP) != 0);
+else
+    return FALSE;
 }
 
 int dmc_is_run_set(CTLR *controller)
@@ -2905,6 +2908,9 @@ else {
         dmc_start_control_output_transfer(controller);
         dmc_start_transfer_buffer(controller);
         }
+    }
+if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller)) {
+    tmxr_set_line_loopback (controller->line, dmc_is_lu_loop_set (controller));
     }
 }
 
