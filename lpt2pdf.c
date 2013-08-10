@@ -3115,7 +3115,6 @@ static int png_image (PDF *pdf, IMG *img) {
     uint32_t len;
     uint32_t xppu = 1, yppu = 1;
     uint32_t palent = 0;
-    uint8_t  unit = 0;
     uint8_t  bpp = 0;
     uint8_t  color = 0;
     char     palette[256 * 3];
@@ -3208,7 +3207,7 @@ static int png_image (PDF *pdf, IMG *img) {
             }
             xppu = PNGINT(buf+8+0);             /* Pixels/unit (x) */
             yppu = PNGINT(buf+8+4);             /* Pixels/unit (y) */
-            unit = buf[8+8];                    /* 0 = relative; 1 = m (meter) */
+            /* unit = buf[8+8]; */              /* 0 = relative; 1 = m (meter) */
             continue;
         }
         if(!memcmp(buf+4, "IDAT",4)) {          /* Image data is penultimate */
