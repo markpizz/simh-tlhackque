@@ -3480,8 +3480,11 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         if (pdf->formobj) { /* Form image resources */
             fprintf (pdf->pdf, " /XObject << /form %u 0 R >>", pdf->formobj);
             fprintf (pdf->pdf, " /ExtGState << /igs %u 0 R >>", pdf->formobj +1);
+            fprintf (pdf->pdf, " >> /Group << /S /Transparency /CS /DeviceRGB >>");
+        } else {
+            fprintf (pdf->pdf, " >>");
         }
-        fprintf (pdf->pdf, " >> /MediaBox [0 0 %f %f] /Contents %u 0 R >>\n"
+        fprintf (pdf->pdf, " /MediaBox [0 0 %f %f] /Contents %u 0 R >>\n"
                  "endobj\n\n", pdf->p.wid * PT, pdf->p.len * PT,
                  pdf->pbase + p );
     }
