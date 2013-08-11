@@ -455,6 +455,14 @@ if ((!lp->mp->buffered) && (!lp->txbfd)) {
     lp->txbfd = 0;
     lp->txbsz = TMXR_MAXBUF;
     lp->txb = (char *)realloc (lp->txb, lp->txbsz);
+    lp->rxbsz = TMXR_MAXBUF;
+    lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+    lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
+    }
+if (lp->loopback) {
+    lp->lpbsz = lp->rxbsz;
+    lp->lpb = (char *)realloc(lp->lpb, lp->lpbsz);
+    lp->lpbcnt = lp->lpbpi = lp->lpbpr = 0;
     }
 if (lp->rxpb) {
     lp->rxpboffset = lp->rxpbsize = 0;
@@ -1389,13 +1397,16 @@ if (lp->loopback == enable_loopback)
     return SCPE_OK;                 /* Nothing to do */
 lp->loopback = enable_loopback;
 if (lp->loopback) {
-    lp->lpbsz = TMXR_MAXBUF;
-    lp->lpb = (char *)malloc(TMXR_MAXBUF);
+    lp->lpbsz = lp->rxbsz;
+    lp->lpb = (char *)realloc(lp->lpb, lp->lpbsz);
     lp->lpbcnt = lp->lpbpi = lp->lpbpr = 0;
+    if (!lp->conn)
+        lp->ser_connect_pending = TRUE;
     }
 else {
     free (lp->lpb);
     lp->lpb = NULL;
+    lp->lpbsz = 0;
     }
 return SCPE_OK;
 }
@@ -1544,10 +1555,10 @@ for (i = 0; i < mp->lines; i++) {                       /* loop thru lines */
     nbytes = 0;
     if (lp->rxbpi == 0)                                 /* need input? */
         nbytes = tmxr_read (lp,                         /* yes, read */
-            TMXR_MAXBUF - TMXR_GUARD);                  /* leave spc for Telnet cruft */
+            lp->rxbsz - TMXR_GUARD);                  /* leave spc for Telnet cruft */
     else if (lp->tsta)                                  /* in Telnet seq? */
         nbytes = tmxr_read (lp,                         /* yes, read to end */
-            TMXR_MAXBUF - lp->rxbpi);
+            lp->rxbsz - lp->rxbpi);
 
     if (nbytes < 0) {                                   /* line error? */
         if (!lp->txbfd || lp->notelnet) 
@@ -1682,7 +1693,7 @@ return;
 
 int32 tmxr_rqln (TMLN *lp)
 {
-return (lp->rxbpi - lp->rxbpr + ((lp->rxbpi < lp->rxbpr)? TMXR_MAXBUF: 0));
+return (lp->rxbpi - lp->rxbpr + ((lp->rxbpi < lp->rxbpr)? lp->rxbsz: 0));
 }
 
 
@@ -1923,6 +1934,7 @@ if (lp->serport) {                          /* close current serial connection *
     free (lp->destination);
     lp->destination = NULL;
     }
+tmxr_set_line_loopback (lp, FALSE);
 }
 
 t_stat tmxr_detach_ln (TMLN *lp)
@@ -2138,6 +2150,9 @@ while (*tptr) {
                 mp->buffered = 0;
                 for (i = 0; i < mp->lines; i++) { /* default line buffers */
                     lp = mp->ldsc + i;
+                    lp->rxbsz = TMXR_MAXBUF;
+                    lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+                    lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
                     lp->txbsz = TMXR_MAXBUF;
                     lp->txb = (char *)realloc(lp->txb, lp->txbsz);
                     lp->txbfd = lp->txbpi = lp->txbpr = 0;
@@ -2152,6 +2167,9 @@ while (*tptr) {
                 lp->txbfd = 1;
                 lp->txb = (char *)realloc(lp->txb, lp->txbsz);
                 lp->txbpi = lp->txbpr = 0;
+                lp->rxbsz = mp->buffered;
+                lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+                lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
                 }
             }
         if (nolog) {
@@ -2164,12 +2182,6 @@ while (*tptr) {
                     sim_close_logfile (&lp->txlogref);
                     lp->txlog = NULL;
                     }
-                }
-            }
-        if (loopback) {
-            for (i = 0; i < mp->lines; i++) {
-                lp = mp->ldsc + i;
-                tmxr_set_line_loopback (lp, loopback);
                 }
             }
         if (listen[0]) {
@@ -2205,6 +2217,17 @@ while (*tptr) {
                     }
                 tmxr_init_line (lp);                        /* initialize line state */
                 lp->sock = 0;                               /* clear the socket */
+                }
+            }
+        if (loopback) {
+            if (mp->lines > 1)
+                return SCPE_ARG;                            /* ambiguous */
+            printf ("Operating in loopback mode\n");
+            if (sim_log)
+                fprintf (sim_log, "Operating in loopback mode\n");
+            for (i = 0; i < mp->lines; i++) {
+                lp = mp->ldsc + i;
+                tmxr_set_line_loopback (lp, loopback);
                 }
             }
         if (destination[0]) {
@@ -2279,12 +2302,18 @@ while (*tptr) {
             lp->txbsz = TMXR_MAXBUF;
             lp->txb = (char *)realloc (lp->txb, lp->txbsz);
             lp->txbfd = lp->txbpi = lp->txbpr = 0;
+            lp->rxbsz = lp->txbsz;
+            lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+            lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
             }
         if (buffered[0]) {
             lp->txbsz = atoi(buffered);
             lp->txbfd = 1;
             lp->txb = (char *)realloc (lp->txb, lp->txbsz);
             lp->txbpi = lp->txbpr = 0;
+            lp->rxbsz = lp->txbsz;
+            lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+            lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
             }
         if (nolog) {
             free(lp->txlogname);
@@ -2294,8 +2323,6 @@ while (*tptr) {
                 lp->txlog = NULL;
                 }
             }
-        if (loopback)
-            tmxr_set_line_loopback (lp, loopback);
         if (listen[0]) {
             if ((mp->lines == 1) && (mp->master))           /* single line mux can have either line specific OR mux listener but NOT both */
                 return SCPE_ARG;
@@ -2353,6 +2380,12 @@ while (*tptr) {
                 else
                     return SCPE_ARG;
                 }
+            }
+        if (loopback) {
+            tmxr_set_line_loopback (lp, loopback);
+            printf ("Line %d operating in loopback mode\n", line);
+            if (sim_log)
+                fprintf (sim_log, "Line %d operating in loopback mode\n", line);
             }
         lp->modem_control = modem_control;
         r = SCPE_OK;
@@ -3221,6 +3254,10 @@ for (i = 0; i < mp->lines; i++) {  /* loop thru conn */
         }
     free (lp->txb);
     lp->txb = NULL;
+    free (lp->rxb);
+    lp->rxb = NULL;
+    free (lp->rbr);
+    lp->rbr = NULL;
     lp->modembits = 0;
     }
 

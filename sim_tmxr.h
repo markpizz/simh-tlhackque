@@ -117,6 +117,7 @@ struct tmln {
     t_bool              notelnet;                       /* raw binary data (no telnet interpretation) */
     int32               rxbpr;                          /* rcv buf remove */
     int32               rxbpi;                          /* rcv buf insert */
+    int32               rxbsz;                          /* rcv buffer size */
     int32               rxcnt;                          /* rcv count */
     int32               rxpcnt;                         /* rcv packet count */
     int32               txbpr;                          /* xmt buf remove */
@@ -131,8 +132,8 @@ struct tmln {
     FILE                *txlog;                         /* xmt log file */
     FILEREF             *txlogref;                      /* xmt log file reference */
     char                *txlogname;                     /* xmt log file name */
-    char                rxb[TMXR_MAXBUF];               /* rcv buffer */
-    char                rbr[TMXR_MAXBUF];               /* rcv break */
+    char                *rxb;                           /* rcv buffer */
+    char                *rbr;                           /* rcv break */
     char                *txb;                           /* xmt buffer */
     uint8               *rxpb;                          /* rcv packet buffer */
     uint32              rxpbsize;                       /* rcv packet buffer size */
