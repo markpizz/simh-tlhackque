@@ -2986,7 +2986,7 @@ static void imageform (PDF *pdf) {
         fprintf (pdf->pdf, " >>\nstream\n");
         fwrite (img.imgbuf, img.ibused, 1, pdf->pdf);
     } else {
-        fprintf (pdf->pdf, " /Length %u /DL %u /Filter [ /LZWDecode %s ]"
+        fprintf (pdf->pdf, " /Length %u /DL %u /Filter [ /LZWDecode %s ]\n"
                  " /DecodeParms [ << /EarlyChange 0 >> %s ]",
                  pdf->lzwused, img.ibused, img.filter,
                  (img.filterpars? img.filterpars: "null"));
@@ -3480,7 +3480,7 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         if (pdf->formobj) { /* Form image resources */
             fprintf (pdf->pdf, " /XObject << /form %u 0 R >>", pdf->formobj);
             fprintf (pdf->pdf, " /ExtGState << /igs %u 0 R >>", pdf->formobj +1);
-            fprintf (pdf->pdf, " >> /Group << /S /Transparency /CS /DeviceRGB >>");
+            fprintf (pdf->pdf, " >>\n /Group << /S /Transparency /CS /DeviceRGB >>");
         } else {
             fprintf (pdf->pdf, " >>");
         }
