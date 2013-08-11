@@ -901,6 +901,9 @@ int main (int argc, char **argv, char **env) {
         }
     }
 
+    if (!outfile) {
+        outfile = "-";
+    }
     pdf = pdf_open (outfile);
     if (!pdf) {
         pdf_perror (NULL, outfile);
@@ -1063,9 +1066,13 @@ The defaults are for a standard lineprinter - 14.875 x 11.000 in,\n\
 \n\
 Default is to read from stdin and write to stdout.  Because PDF is\n\
 a binary format, the output file must not be a tty.  It must be capable\n\
-of random access in update mode.  A pipe will not work.\n\n\
-'-' for either input or output is interpreted as stdin/stdout respectivey.\n\
-Any output file must be seekable, generally a disk\n\
+of random access in update mode.  A pipe will not work.\n\n"
+#ifdef _WIN32
+"'-' may be used to specify stdin for input, but stdout must be a file.\n"
+#else
+"'-' for either input or output is interpreted as stdin/stdout respectivey.\n"
+#endif
+"Any output file must be seekable, generally a disk\n\
 \n\
 Options, naturally are optional:\n");
 
@@ -1170,28 +1177,6 @@ PDF_HANDLE pdf_open (const char *filename) {
         errno = E(BAD_FILENAME);
         return NULL;
     }
-    
-    p = strrchr (filename, '.');
-    if (p) {
-        const char *fn, *ext = "pdf";
-        int islc = islower (p[1]);
-        for (fn = p + 1;
-#if defined (VMS)
-                       (*fn && (*fn != ';'));
-#else
-                        *fn;
-#endif
-                         fn++, ext++) {
-            if ((islc? (*fn != *ext): (*fn != toupper (*ext)))) {
-                errno = E(BAD_FILENAME);
-                return NULL;
-            }
-        }
-        if (*ext) {
-            errno = E(BAD_FILENAME);
-            return NULL;
-        }
-    }
 
     pdf = (PDF *) malloc (sizeof (PDF));
     if (!pdf) {
@@ -1199,16 +1184,56 @@ PDF_HANDLE pdf_open (const char *filename) {
     }
     memcpy (pdf, &defaults, sizeof (PDF));
 
-    if ((r = dupstrs (ps)) != PDF_OK) {
+    if (!strcmp (filename, "-")) {
+#ifdef _WIN32
+        /* _setmode will set binary mode, but there doesn't seem to be a way to change
+         * stdout to update (rb+).
+         */
+        free (pdf);
+        errno = E (BAD_FILENAME);
+        return NULL;
+#else
+        pdf->pdf = freopen (NULL, "rb+", stdout);
+#endif
+    } else {    
+        p = strrchr (filename, '.');
+        if (p) {
+            const char *fn, *ext = "pdf";
+            int islc = islower (p[1]);
+            for (fn = p + 1;
+#if defined (VMS)
+                           (*fn && (*fn != ';'));
+#else
+                            *fn;
+#endif
+                             fn++, ext++) {
+                if ((islc? (*fn != *ext): (*fn != toupper (*ext)))) {
+                    free (pdf);
+                    errno = E(BAD_FILENAME);
+                    return NULL;
+                }
+            }
+            if (*ext) {
+                free (pdf);
+                errno = E(BAD_FILENAME);
+                return NULL;
+            }
+        } else {
+            free (pdf);
+            errno = E(BAD_FILENAME);
+        }
+        pdf->pdf = pdf_open_exclusive (filename, "rb+");
+    }
+
+    if (!pdf->pdf) {
+        r = errno;
         free (pdf);
         errno = r;
         return NULL;
     }
 
-    pdf->pdf = pdf_open_exclusive (filename, "rb+");
-    if (!pdf->pdf) {
-        r = errno;
-        pdf_free (pdf);
+    if ((r = dupstrs (ps)) != PDF_OK) {
+        free (pdf);
         errno = r;
         return NULL;
     }
@@ -1678,7 +1703,6 @@ int pdf_checkpoint (PDF_HANDLE pdf) {
         fseek (ps->pdf, ps->checkpp, SEEK_SET);
         ps->obj = obj;
         ps->line = line;
-        fflush (ps->pdf);
 
         ps->flags &= ~PDF_WRITTEN;
         ps->flags |= PDF_RESUMED;
@@ -1896,7 +1920,6 @@ static int pdfreopen (PDF *pdf) {
     /* Commit everything to the current file */
 
     r = pdfclose (pdf, 1);
-    fflush (pdf->pdf);
 
     if (r != PDF_OK) {
         return r;
@@ -3592,6 +3615,8 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         fprintf (pdf->pdf, "%010u", aobj);
     }
 
+    fflush (pdf->pdf);
+
     if (ferror (pdf->pdf)) {
         r = E(IO_ERROR);
     }
@@ -3600,7 +3625,7 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         return r;
     }
 
-    if (fclose (pdf->pdf) == EOF) {
+    if (pdf->pdf != stdout && fclose (pdf->pdf) == EOF) {
         if (r == PDF_OK) {
             r = errno;
         }
