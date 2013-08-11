@@ -6925,7 +6925,7 @@ if (sim_deb_switches & SWMASK ('T')) {
     sprintf(tim_t, "%02d:%02d:%02d.%03d ", now->tm_hour, now->tm_min, now->tm_sec, (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('A')) {
-    sprintf(tim_t, "%lld.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
+    sprintf(tim_t, "%" LL_FMT "d.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('P')) {
     t_value val = get_rval (sim_deb_PC, 0);
