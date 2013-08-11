@@ -150,6 +150,7 @@ struct tmln {
     t_bool              loopback;                       /* Line in loopback mode */
     int32               lpbpr;                          /* loopback buf remove */
     int32               lpbpi;                          /* loopback buf insert */
+    int32               lpbcnt;                         /* loopback buf used count */
     int32               lpbsz;                          /* loopback buffer size */
     char                *lpb;                           /* loopback buffer */
     UNIT                *uptr;                          /* input polling unit (default to mp->uptr) */

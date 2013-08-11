@@ -553,9 +553,10 @@ return;
 static int32 loop_write (TMLN *lp, char *buf, int32 length)
 {
 int32 written = 0;
+
 while (length) {
-    int32 loopfree = lp->lpbsz - (lp->lpbpi - lp->lpbpr + ((lp->lpbpi < lp->lpbpr)? lp->lpbsz: 0));
     int32 chunksize;
+    int32 loopfree = lp->lpbsz - lp->lpbcnt;
 
     if (loopfree == 0)
         break;
@@ -564,22 +565,26 @@ while (length) {
     if (lp->lpbpi >= lp->lpbpr)
         chunksize = lp->lpbsz - lp->lpbpi;
     else
-        chunksize = lp->lpbpr - lp->lpbsz;
+        chunksize = lp->lpbpr - lp->lpbpi;
+    if (chunksize > length)
+        chunksize = length;
     memcpy (&lp->lpb[lp->lpbpi], buf, chunksize);
     buf += chunksize;
     length -= chunksize;
     written += chunksize;
     lp->lpbpi = (lp->lpbpi + chunksize) % lp->lpbsz;
     }
+lp->lpbcnt += written;
 return written;
 }
 
 static int32 loop_read (TMLN *lp, char *buf, int32 bufsize)
 {
 int32 bytesread = 0;
+
 while (bufsize > 0) {
-    int32 loopused = (lp->lpbpi - lp->lpbpr + ((lp->lpbpi < lp->lpbpr)? lp->lpbsz: 0));
     int32 chunksize;
+    int32 loopused = lp->lpbcnt;
 
     if (loopused < bufsize)
         bufsize = loopused;
@@ -589,12 +594,15 @@ while (bufsize > 0) {
         chunksize = lp->lpbpi - lp->lpbpr;
     else
         chunksize = lp->lpbsz - lp->lpbpr;
+    if (chunksize > bufsize)
+        chunksize = bufsize;
     memcpy (buf, &lp->lpb[lp->lpbpr], chunksize);
     buf += chunksize;
     bufsize -= chunksize;
     bytesread += chunksize;
     lp->lpbpr = (lp->lpbpr + chunksize) % lp->lpbsz;
     }
+lp->lpbcnt -= bytesread;
 return bytesread;
 }
 
@@ -857,6 +865,8 @@ if (lp->destination || lp->port || lp->txlogname) {
         sprintf (growstring(&tptr, 12 + strlen (lp->port)), ",%s%s", lp->port, (lp->mp->notelnet != lp->notelnet) ? (lp->notelnet ? ";notelnet" : ";telnet") : "");
     if (lp->txlogname)
         sprintf (growstring(&tptr, 12 + strlen (lp->txlogname)), ",Log=%s", lp->txlogname);
+    if (lp->loopback)
+        sprintf (growstring(&tptr, 12 ), ",Loopback");
     }
 if (*tptr == '\0') {
     free (tptr);
@@ -1381,7 +1391,7 @@ lp->loopback = enable_loopback;
 if (lp->loopback) {
     lp->lpbsz = TMXR_MAXBUF;
     lp->lpb = (char *)malloc(TMXR_MAXBUF);
-    lp->lpbpi = lp->lpbpr = 0;
+    lp->lpbcnt = lp->lpbpi = lp->lpbpr = 0;
     }
 else {
     free (lp->lpb);
@@ -1943,7 +1953,7 @@ char tbuf[CBUFSIZE], listen[CBUFSIZE], destination[CBUFSIZE],
 SOCKET sock;
 SERHANDLE serport;
 char *tptr = cptr;
-t_bool nolog, notelnet, listennotelnet, unbuffered, modem_control;
+t_bool nolog, notelnet, listennotelnet, unbuffered, modem_control, loopback;
 TMLN *lp;
 t_stat r = SCPE_ARG;
 
@@ -1961,7 +1971,7 @@ while (*tptr) {
     memset(buffered,    '\0', sizeof(buffered));
     memset(port,        '\0', sizeof(port));
     memset(option,      '\0', sizeof(option));
-    nolog = notelnet = listennotelnet = unbuffered = FALSE;
+    nolog = notelnet = listennotelnet = unbuffered = loopback = FALSE;
     if (line != -1)
         notelnet = listennotelnet = mp->notelnet;
     modem_control = mp->modem_control;
@@ -1989,7 +1999,13 @@ while (*tptr) {
                 strncpy(logfiletmpl, cptr, sizeof(logfiletmpl)-1);
                 continue;
                 }
-            if ((0 == MATCH_CMD (gbuf, "NOBUFFERED")) || 
+             if (0 == MATCH_CMD (gbuf, "LOOPBACK")) {
+                if ((NULL != cptr) && ('\0' != *cptr))
+                    return SCPE_2MARG;
+                loopback = TRUE;
+                continue;
+                }
+           if ((0 == MATCH_CMD (gbuf, "NOBUFFERED")) || 
                 (0 == MATCH_CMD (gbuf, "UNBUFFERED"))) {
                 if ((NULL != cptr) && ('\0' != *cptr))
                     return SCPE_2MARG;
@@ -2150,6 +2166,12 @@ while (*tptr) {
                     }
                 }
             }
+        if (loopback) {
+            for (i = 0; i < mp->lines; i++) {
+                lp = mp->ldsc + i;
+                tmxr_set_line_loopback (lp, loopback);
+                }
+            }
         if (listen[0]) {
             sock = sim_master_sock (listen, &r);            /* make master socket */
             if (r != SCPE_OK)
@@ -2272,6 +2294,8 @@ while (*tptr) {
                 lp->txlog = NULL;
                 }
             }
+        if (loopback)
+            tmxr_set_line_loopback (lp, loopback);
         if (listen[0]) {
             if ((mp->lines == 1) && (mp->master))           /* single line mux can have either line specific OR mux listener but NOT both */
                 return SCPE_ARG;
@@ -3134,6 +3158,8 @@ else {
                     fprintf (st, " - Unit: %s", sim_uname (lp->uptr));
                 if (mp->modem_control != lp->modem_control)
                     fprintf(st, ", ModemControl=%s", lp->modem_control ? "enabled" : "disabled");
+                if (lp->loopback)
+                    fprintf(st, ", Loopback");
                 fprintf (st, "\n");
                 }
             if ((!lp->sock) && (!lp->connecting) && (!lp->serport) && (!lp->master)) {
@@ -3413,6 +3439,17 @@ else {
 fprintf (st, "When symmetric virtual connections are configured, incoming connections\n");
 fprintf (st, "on the specified listening port are checked to assure that they actually\n");
 fprintf (st, "come from the specified connection destination host system.\n\n");
+if (single_line) {          /* Single Line Multiplexer */
+    fprintf (st, "The %s device can be attached in LOOPBACK mode:\n\n", dptr->name);
+    fprintf (st, "   sim> ATTACH %s Loopback\n\n", dptr->name);
+    }
+else {
+    fprintf (st, "A line on the %s device can be attached in LOOPBACK mode:\n\n", dptr->name);
+    fprintf (st, "   sim> ATTACH %s Line=n,Loopback\n\n", dptr->name);
+    }
+fprintf (st, "When operating in LOOPBACK mode, all outgoing data arrives as input and\n");
+fprintf (st, "outgoing modem signals (if enabled) (DTR and RTS) are reflected in the\n");
+fprintf (st, "incoming modem signals (DTR->(DCD and DSR), RTS->CTS)\n\n");
 if (single_line)            /* Single Line Multiplexer */
     fprintf (st, "The connection configured for the %s device is unconfigured by:\n\n", dptr->name);
 else
