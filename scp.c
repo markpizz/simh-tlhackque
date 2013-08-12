@@ -6190,13 +6190,12 @@ t_stat fprint_val (FILE *stream, t_value val, uint32 radix,
     uint32 width, uint32 format)
 {
 char dbuf[MAX_WIDTH + 1];
-t_stat r;
 
 if (!stream)
     return sprint_val (NULL, val, radix, width, format);
 if (width > MAX_WIDTH)
     width = MAX_WIDTH;
-r = sprint_val (dbuf, val, radix, width, format);
+sprint_val (dbuf, val, radix, width, format);
 if (fputs (dbuf, stream) == EOF)
     return SCPE_IOERR;
 return SCPE_OK;
@@ -6926,7 +6925,7 @@ if (sim_deb_switches & SWMASK ('T')) {
     sprintf(tim_t, "%02d:%02d:%02d.%03d ", now->tm_hour, now->tm_min, now->tm_sec, (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('A')) {
-    sprintf(tim_t, "%lld.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
+    sprintf(tim_t, "%" LL_FMT "d.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('P')) {
     t_value val = get_rval (sim_deb_PC, 0);
@@ -7177,7 +7176,6 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
 #define VSMAX 100
     char *vstrings[VSMAX];
     size_t vsnum = 0;
-    size_t vsbase = 0;
     char *astrings[VSMAX+1];
     size_t asnum = 0;
     char *const *hblock;
@@ -7413,7 +7411,6 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
             }
             FAIL (SCPE_ARG, Unknown line type);     /* Unknown line */
         } /* htext not at end */
-        vsbase = vsnum;
         memset (vstrings, 0, VSMAX * sizeof (char *));
         vsnum = 0;
     } /* all strings */

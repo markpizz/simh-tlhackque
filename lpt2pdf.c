@@ -39,7 +39,7 @@
  * assumptions are made about the structure to simplify this code.
  */
 
-#define LPT2PDF_VERSION "1.0-004"
+#define LPT2PDF_VERSION "1.0-005"
 #define VERSION_REQUIRED "1."
 
 #include <ctype.h>
@@ -582,6 +582,11 @@ typedef struct {
 
     int errnum;             /* Last error */
     FILE *pdf;              /* Output file handle */
+    FILE *outf;             /* Final output */
+#ifdef _WIN32
+    char *tmpname;          /* Temporary file name */
+#endif
+
     unsigned int escstate;  /* Escape sequence parser */
 #define ESC_IDLE     (0)
 #define ESC_ESCSEQ   (1)
@@ -632,6 +637,7 @@ typedef struct {
 #define PDF_WRITTEN       0x0010 /* Headers written */
 #define PDF_RESUMED       0x0020 /* Resumed from a checkpoint */
 #define PDF_REOPENED      0x0040 /* Reopened (and hence must append */
+#define PDF_TMPFILE       0x0080 /* Using tmpfile for non-seekable output (e.g. stdout) */
 
     unsigned int lpp;       /* Lines per page */
     short **lines;          /* Data for each line */
@@ -901,6 +907,9 @@ int main (int argc, char **argv, char **env) {
         }
     }
 
+    if (!outfile) {
+        outfile = "-";
+    }
     pdf = pdf_open (outfile);
     if (!pdf) {
         pdf_perror (NULL, outfile);
@@ -1062,10 +1071,15 @@ The defaults are for a standard lineprinter - 14.875 x 11.000 in,\n\
 6LPI, 10 CPI.  (Lines and Characters per inch.)\n\
 \n\
 Default is to read from stdin and write to stdout.  Because PDF is\n\
-a binary format, the output file must not be a tty.  It must be capable\n\
-of random access in update mode.  A pipe will not work.\n\n\
-'-' for either input or output is interpreted as stdin/stdout respectivey.\n\
-Any output file must be seekable, generally a disk\n\
+a binary format, the output file must not be a terminal.\n\n"
+#ifdef _WIN32
+"If the output file is stdout, an intermediate temporary files is used\n"
+#else
+"If the output file is not a regular file, an intermediate temporary file\n\
+is used.\n"
+#endif
+"'-' for either input or output is interpreted as stdin/stdout respectivey.\n"
+"Any output file must be seekable, generally a disk\n\
 \n\
 Options, naturally are optional:\n");
 
@@ -1159,38 +1173,24 @@ static void print_hlplist (FILE *file, const char *const *list, int adjcase) {
  * returns handle.  If NULL, see errno.
  * Attempts to open for update
  * Will not write until first output.
+ * If I/O has to be done to a temporary file, the temporary
+ * file is created.  In this case, the semantics are replace,
+ * since temporary files are used only when output is a special file.
  */
 
 PDF_HANDLE pdf_open (const char *filename) {
     PDF *pdf;
     int r;
     const char *p;
+ #ifdef _WIN32
+    struct _stati64 statbuf;
+#else
+   struct stat statbuf;
+#endif
 
     if (!filename) {
         errno = E(BAD_FILENAME);
         return NULL;
-    }
-    
-    p = strrchr (filename, '.');
-    if (p) {
-        const char *fn, *ext = "pdf";
-        int islc = islower (p[1]);
-        for (fn = p + 1;
-#if defined (VMS)
-                       (*fn && (*fn != ';'));
-#else
-                        *fn;
-#endif
-                         fn++, ext++) {
-            if ((islc? (*fn != *ext): (*fn != toupper (*ext)))) {
-                errno = E(BAD_FILENAME);
-                return NULL;
-            }
-        }
-        if (*ext) {
-            errno = E(BAD_FILENAME);
-            return NULL;
-        }
     }
 
     pdf = (PDF *) malloc (sizeof (PDF));
@@ -1199,16 +1199,111 @@ PDF_HANDLE pdf_open (const char *filename) {
     }
     memcpy (pdf, &defaults, sizeof (PDF));
 
-    if ((r = dupstrs (ps)) != PDF_OK) {
+    if (!strcmp (filename, "-")) {
+#ifdef _WIN32                                   /* stdout is probably not seekable */
+        pdf->flags |= PDF_TMPFILE;
+        _setmode (_fileno (stdout), _O_BINARY);
+#endif
+        pdf->pdf = stdout;
+    } else {    
+        p = strrchr (filename, '.');
+        if (p) {
+            const char *fn, *ext = "pdf";
+            int islc = islower (p[1]);
+            for (fn = p + 1;
+#if defined (VMS)
+                           (*fn && (*fn != ';'));
+#else
+                            *fn;
+#endif
+                             fn++, ext++) {
+                if ((islc? (*fn != *ext): (*fn != toupper (*ext)))) {
+                    free (pdf);
+                    errno = E(BAD_FILENAME);
+                    return NULL;
+                }
+            }
+            if (*ext) {
+                free (pdf);
+                errno = E(BAD_FILENAME);
+                return NULL;
+            }
+        } else {
+            free (pdf);
+            errno = E(BAD_FILENAME);
+        }
+        pdf->pdf = pdf_open_exclusive (filename, "rb+");
+    }
+
+    r = PDF_OK;
+ #ifdef _WIN32
+    if (pdf->pdf && !_fstati64 (_fileno (pdf->pdf), &statbuf)) {
+       if (statbuf.st_mode & _S_IFDIR) {
+           r = E(BAD_FILENAME);
+       } else {
+           if (!(statbuf.st_mode & _S_IFREG)) {
+               pdf->flags |= PDF_TMPFILE;
+           }
+       }
+    }
+#else
+    if (pdf->pdf && !fstat (fileno (pdf->pdf), &statbuf)) {
+        if (S_ISDIR (statbuf.st_mode)) {
+            r = E(BAD_FILENAME);
+        } else {
+            if (!S_ISREG (statbuf.st_mode)) {
+                pdf->flags |= PDF_TMPFILE;
+            }
+        }
+    }
+#endif
+    if (r != PDF_OK) {
+        if (pdf->pdf != stdout) {
+            fclose (pdf->pdf);
+        }
+        free (pdf);
+        errno = r;
+        return NULL;
+    }
+    if (pdf->pdf && (pdf->flags & PDF_TMPFILE)) {
+#ifdef _WIN32
+        char *tname;
+        /* tmpfile() will only create files in the root directory, which is protected.
+         */
+        pdf->outf = pdf->pdf;
+        tname = _tempnam (NULL, "lpt2pdf");
+        if (tname) {
+            pdf->pdf = pdf_open_exclusive (tname, "xrb+");
+            if (pdf->pdf) {
+                pdf->tmpname = tname;
+            }
+        } else {
+            pdf->pdf = NULL;
+            errno = EINVAL;
+        }
+#else
+        pdf->outf = pdf->pdf;
+        pdf->pdf = tmpfile();
+#endif
+    }
+
+    if (!pdf->pdf) {
+        r = errno;
+        if (pdf->outf && pdf->outf != stdout) {
+            fclose (pdf->outf);
+        }
         free (pdf);
         errno = r;
         return NULL;
     }
 
-    pdf->pdf = pdf_open_exclusive (filename, "rb+");
-    if (!pdf->pdf) {
-        r = errno;
-        pdf_free (pdf);
+    /* pdf->pdf is the file that will be processed.
+     * If it is a temporary file,
+     * pdf->outf is the file that will receive the final pdf.
+     */
+
+    if ((r = dupstrs (ps)) != PDF_OK) {
+        free (pdf);
         errno = r;
         return NULL;
     }
@@ -1240,7 +1335,8 @@ PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename) {
         errno = r;
         return NULL;
     }
-    newpdf->flags = ps->flags & (PDF_ACTIVE | PDF_UNCOMPRESSED);
+    newpdf->flags &= PDF_TMPFILE;
+    newpdf->flags |= ps->flags & (PDF_ACTIVE | PDF_UNCOMPRESSED);
 
     return (PDF_HANDLE)newpdf;
 }
@@ -1259,13 +1355,24 @@ PDF_HANDLE pdf_newfile (PDF_HANDLE pdf, const char *filename) {
 FILE *pdf_open_exclusive (const char *filename, const char *mode) {
     int fd;
     FILE *fh;
+    int omode;
 
 #ifdef _WIN32
-    fd = _sopen (filename, _O_BINARY|_O_CREAT|_O_RDWR, _SH_DENYRW, _S_IREAD | _S_IWRITE);
+    omode = _O_BINARY|_O_CREAT|_O_RDWR;
+    if (mode[0] == 'x') {
+        omode |= _O_EXCL;
+        mode++;
+    }
+    fd = _sopen (filename, omode, _SH_DENYRW, _S_IREAD | _S_IWRITE);
 #else
-    fd = open (filename, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR |
-                                           S_IRGRP | S_IWGRP |
-                                           S_IROTH | S_IWOTH
+    omode =  O_CREAT | O_RDWR;
+    if (mode[0] == 'x') {
+        omode |= O_EXCL;
+        mode++;
+    }
+    fd = open (filename, omode, S_IRUSR | S_IWUSR |
+                                S_IRGRP | S_IWGRP |
+                                S_IROTH | S_IWOTH
     #ifdef VMS
                        , "alq=32", "deq=4096",
                          "mbf=6", "mbc=127", "fop=cbt,tef",
@@ -1678,7 +1785,6 @@ int pdf_checkpoint (PDF_HANDLE pdf) {
         fseek (ps->pdf, ps->checkpp, SEEK_SET);
         ps->obj = obj;
         ps->line = line;
-        fflush (ps->pdf);
 
         ps->flags &= ~PDF_WRITTEN;
         ps->flags |= PDF_RESUMED;
@@ -1896,7 +2002,6 @@ static int pdfreopen (PDF *pdf) {
     /* Commit everything to the current file */
 
     r = pdfclose (pdf, 1);
-    fflush (pdf->pdf);
 
     if (r != PDF_OK) {
         return r;
@@ -1913,7 +2018,7 @@ static int pdfreopen (PDF *pdf) {
 
     fseek (pdf->pdf, 0, SEEK_SET);
 
-    pdf->flags = pdf->flags & (PDF_UNCOMPRESSED);
+    pdf->flags = pdf->flags & (PDF_TMPFILE | PDF_UNCOMPRESSED);
     pdf->flags |= PDF_RESUMED | PDF_REOPENED;
 
     pdf->escstate = ESC_IDLE;
@@ -1975,10 +2080,6 @@ static int pdfset (PDF *pdf, int arg, va_list ap) {
             pdf->p.frequire = PDF_FILE_APPEND;
         } else if (!xstrcasecmp (svalue, "REPLACE")) {
             pdf->p.frequire = PDF_FILE_REPLACE;
-#if 0
-        } else if (!xstrcasecmp (svalue, "AUTO")) {
-            pdf->p.frequire = PDF_FILE_AUTO;
-#endif
         } else {
             return E(BAD_SET);
         }
@@ -2819,7 +2920,7 @@ static void setform (PDF *pdf) {
 
     /* Line numbers */
 
-   if (pdf->p.lno) {
+    if (pdf->p.lno) {
         wrstmf (pdf, FORMBUF, 
             " q 1 w BT 0 Tr %s rg"
             " /F3 %u Tf 55 Tz 1 0 0 1 %f %f Tm %u TL (6)' /F2 %u Tf",
@@ -2986,7 +3087,7 @@ static void imageform (PDF *pdf) {
         fprintf (pdf->pdf, " >>\nstream\n");
         fwrite (img.imgbuf, img.ibused, 1, pdf->pdf);
     } else {
-        fprintf (pdf->pdf, " /Length %u /DL %u /Filter [ /LZWDecode %s ]"
+        fprintf (pdf->pdf, " /Length %u /DL %u /Filter [ /LZWDecode %s ]\n"
                  " /DecodeParms [ << /EarlyChange 0 >> %s ]",
                  pdf->lzwused, img.ibused, img.filter,
                  (img.filterpars? img.filterpars: "null"));
@@ -3115,7 +3216,6 @@ static int png_image (PDF *pdf, IMG *img) {
     uint32_t len;
     uint32_t xppu = 1, yppu = 1;
     uint32_t palent = 0;
-    uint8_t  unit = 0;
     uint8_t  bpp = 0;
     uint8_t  color = 0;
     char     palette[256 * 3];
@@ -3208,7 +3308,7 @@ static int png_image (PDF *pdf, IMG *img) {
             }
             xppu = PNGINT(buf+8+0);             /* Pixels/unit (x) */
             yppu = PNGINT(buf+8+4);             /* Pixels/unit (y) */
-            unit = buf[8+8];                    /* 0 = relative; 1 = m (meter) */
+            /* unit = buf[8+8]; */              /* 0 = relative; 1 = m (meter) */
             continue;
         }
         if(!memcmp(buf+4, "IDAT",4)) {          /* Image data is penultimate */
@@ -3428,11 +3528,24 @@ static int pdfclose (PDF *pdf, int checkpoint) {
     }
 
     if (!(pdf->flags & PDF_WRITTEN)) {
+        r = PDF_OK;
         if (!checkpoint) {
-            fclose (pdf->pdf);
+            if (pdf->pdf != stdout) {
+                fclose (pdf->pdf);
+            }
+            if (pdf->outf && pdf->outf != stdout) {
+                fclose (pdf->outf);
+            }
+#ifdef _WIN32
+            if (pdf->tmpname) {
+                if (remove (pdf->tmpname)) {
+                    r = errno;
+                }
+            }
+#endif
             pdf_free (pdf);
         }
-        return PDF_OK;
+        return r;
     }
 
     /* Force out last page if anything was written on it */
@@ -3481,8 +3594,11 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         if (pdf->formobj) { /* Form image resources */
             fprintf (pdf->pdf, " /XObject << /form %u 0 R >>", pdf->formobj);
             fprintf (pdf->pdf, " /ExtGState << /igs %u 0 R >>", pdf->formobj +1);
+            fprintf (pdf->pdf, " >>\n /Group << /S /Transparency /CS /DeviceRGB >>");
+        } else {
+            fprintf (pdf->pdf, " >>");
         }
-        fprintf (pdf->pdf, " >> /MediaBox [0 0 %f %f] /Contents %u 0 R >>\n"
+        fprintf (pdf->pdf, " /MediaBox [0 0 %f %f] /Contents %u 0 R >>\n"
                  "endobj\n\n", pdf->p.wid * PT, pdf->p.len * PT,
                  pdf->pbase + p );
     }
@@ -3590,6 +3706,8 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         fprintf (pdf->pdf, "%010u", aobj);
     }
 
+    fflush (pdf->pdf);
+
     if (ferror (pdf->pdf)) {
         r = E(IO_ERROR);
     }
@@ -3598,11 +3716,59 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         return r;
     }
 
-    if (fclose (pdf->pdf) == EOF) {
+    /* Actually close the file.
+     * If a temporary file has been used, copy it over
+     * the real output file.  (This may be surprising, but the
+     * real output file is a pipe, socket or other special file.
+     * If it was possible to read and write the real file, a temporary
+     * file would not be used.)
+     */
+    if (pdf->outf && r == PDF_OK) {
+        unsigned char *buf = malloc (COPY_BUFSIZE);
+        size_t n;
+
+        if (!buf) {
+            r = errno;
+        } else {
+            fseek (pdf->pdf, 0, SEEK_SET);
+            while ((n = fread (buf, 1, COPY_BUFSIZE, pdf->pdf)) > 0) {
+                if (fwrite (buf, n, 1, pdf->outf) != 1) {
+                    r = errno;
+                    break;
+                }
+            }
+            free (buf);
+            fflush (pdf->outf);
+#ifdef _WIN32
+            if (_chsize (_fileno (pdf->outf), ftell (pdf->outf)) == -1) {
+                r = E(IO_ERROR);
+            }
+#else
+            if (ftruncate (fileno (pdf->outf), ftell (pdf->outf)) == -1) {
+                r = E(IO_ERROR);
+            }
+#endif
+            if (ferror (pdf->pdf) || ferror (pdf->outf)) {
+                r = errno;
+            }
+            if (pdf->outf != stdout && fclose (pdf->outf) == EOF) {
+                r = errno;
+            }
+        }
+    }
+    if (pdf->pdf != stdout && fclose (pdf->pdf) == EOF) {
         if (r == PDF_OK) {
             r = errno;
         }
     }
+#ifdef _WIN32
+    if (pdf->tmpname) {
+        if (remove (pdf->tmpname)) {
+            r = errno;
+        }
+    }
+#endif
+
     pdf_free (pdf);
     return r;
 }
