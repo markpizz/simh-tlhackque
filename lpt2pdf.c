@@ -39,7 +39,7 @@
  * assumptions are made about the structure to simplify this code.
  */
 
-#define LPT2PDF_VERSION "1.0-005"
+#define LPT2PDF_VERSION "1.0-006"
 #define VERSION_REQUIRED "1."
 
 #include <ctype.h>
@@ -636,7 +636,7 @@ typedef struct {
 #define PDF_INIT          0x0008 /* Initialized - metadata read if appending */
 #define PDF_WRITTEN       0x0010 /* Headers written */
 #define PDF_RESUMED       0x0020 /* Resumed from a checkpoint */
-#define PDF_REOPENED      0x0040 /* Reopened (and hence must append */
+#define PDF_REOPENED      0x0040 /* Reopened (and thus must append) */
 #define PDF_TMPFILE       0x0080 /* Using tmpfile for non-seekable output (e.g. stdout) */
 
     unsigned int lpp;       /* Lines per page */
@@ -724,6 +724,7 @@ typedef struct {
     char *filter;
     char *filterpars;
     char *colordesc;
+    size_t cdlength;
     size_t ssize, sused;
 } IMG;
 
@@ -2920,7 +2921,7 @@ static void setform (PDF *pdf) {
 
     /* Line numbers */
 
-   if (pdf->p.lno) {
+    if (pdf->p.lno) {
         wrstmf (pdf, FORMBUF, 
             " q 1 w BT 0 Tr %s rg"
             " /F3 %u Tf 55 Tz 1 0 0 1 %f %f Tm %u TL (6)' /F2 %u Tf",
@@ -3072,10 +3073,11 @@ static void imageform (PDF *pdf) {
         obj = addobj(pdf);
 
     fprintf (pdf->pdf, "%u 0 obj\n<< /Type /XObject /Subtype /Image"
-             " /Width %u /Height %u %s", obj, ((unsigned int)img.width),
-             ((unsigned int)img.height), img.colordesc);
+             " /Width %u /Height %u ", obj, ((unsigned int)img.width),
+             ((unsigned int)img.height) );
+    fwrite (img.colordesc, img.cdlength, 1, pdf->pdf);
 
-    /* JPEG form images seem to be compressible, presumably due to the
+    /* JPEG & PNG form images often are compressible, presumably due to the
      * large amount of constant background.  Watch PDF_C_LINELEN.
      */
 
@@ -3198,10 +3200,9 @@ static int jpeg_image (PDF *pdf, IMG *img) {
 
     img->filter = "/DCTDecode";
     img->ssize =
-        img->sused = 0;
-    wrstm (pdf, &img->colordesc, &img->ssize, &img->sused,
+        img->cdlength = 0;
+    wrstm (pdf, &img->colordesc, &img->ssize, &img->cdlength,
            (char *)"/BitsPerComponent 8 /ColorSpace /DeviceRGB", PDF_USE_STRLEN);
-    img->colordesc[img->sused] = '\0';
 
     return PDF_OK;
 }
@@ -3215,7 +3216,7 @@ static int png_image (PDF *pdf, IMG *img) {
     uint32_t flags = 0;
     uint32_t len;
     uint32_t xppu = 1, yppu = 1;
-    uint32_t palent = 0;
+    uint32_t palsize = 0;
     uint8_t  bpp = 0;
     uint8_t  color = 0;
     char     palette[256 * 3];
@@ -3285,7 +3286,7 @@ static int png_image (PDF *pdf, IMG *img) {
             if (fread (palette, len, 1, fh) != 1) { /* Palette - read into array */
                 return E(BAD_PNG);
             }
-            palent = len / 3;                   /* # entries in palette (R, G, B) * n */
+            palsize = len / 3;                  /* size of palette (R, G, B) * n */
             if (fread (buf+8, 4, 1, fh) != 1) { /* Get CRC */
                 return E(BAD_PNG);
             }
@@ -3403,37 +3404,67 @@ static int png_image (PDF *pdf, IMG *img) {
 
     img->filter ="/FlateDecode";
     img->ssize =
-        img->sused = 0;
-    wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+        img->cdlength = 0;
+    wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength,
             "/BitsPerComponent %u", (uint32_t)bpp);
-    if (palent) {
-        size_t i;
+    if (palsize) {
+        size_t i, enc_size = 0, enc_len = 0;
+        char *enc_palette = NULL;
 
-        wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
-                " /ColorSpace [ /Indexed /DeviceRGB %u <\n", palent -1); /* Max index */
-        for (i = 0; i < palent; i++) {          /* Color map: index -> RGB */
-            if (i && !(i % (PDF_C_LINELEN/6))) {
-                wrstm (pdf, &img->colordesc, &img->ssize, &img->sused, "\n", 1);
+        wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength,
+                " /ColorSpace [ /Indexed /DeviceRGB %u ", palsize -1); /* Max index */
+
+        /* Encode palette as a string */
+
+        wrstmf (pdf, &enc_palette, &enc_size, &enc_len, "(");
+
+        for (i = 0; i < palsize * 3; i++) {
+            char c = palette[i];
+            if (i && !(enc_len % (PDF_C_LINELEN-6))) {
+                wrstmf (pdf, &enc_palette, &enc_size, &enc_len, "\\\n");
             }
-            wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
-                    "%02x%02x%02x",
-                    (0xFF & (uint32_t)palette[(i*3)+0]),
-                    (0xFF & (uint32_t)palette[(i*3)+1]),
-                    (0xFF & (uint32_t)palette[(i*3)+2]));
+            if (c == '(' || c == ')' || c == '\\') {
+                wrstmf (pdf, &enc_palette, &enc_size, &enc_len, "\\");
+            }
+            wrstm (pdf, &enc_palette, &enc_size, &enc_len, &c, 1);
         }
-        wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
-                "\n> ]");
+        wrstmf (pdf, &enc_palette, &enc_size, &enc_len, ")");
+
+        /* Determine if hex would be shorter */
+
+        if ((pdf->flags & PDF_UNCOMPRESSED) ||
+            enc_len > (size_t)(2 + (palsize * (2 * 3))
+                                + (palsize/(PDF_C_LINELEN/6)) +1)) {
+            wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength, "<\n");
+            for (i = 0; i < palsize; i++) {     /* Color map: index -> RGB */
+                if (i && !(i % (PDF_C_LINELEN/6))) {
+                    wrstm (pdf, &img->colordesc, &img->ssize, &img->cdlength, "\n", 1);
+                }
+                wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength,
+                        "%02x%02x%02x",
+                        (0xFF & (uint32_t)palette[(i*3)+0]),
+                        (0xFF & (uint32_t)palette[(i*3)+1]),
+                        (0xFF & (uint32_t)palette[(i*3)+2]));
+            }
+            wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength,
+                    "\n> ]");
+        } else {
+            wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength, "\n");
+            wrstm (pdf, &img->colordesc, &img->ssize, &img->cdlength, 
+                   enc_palette, enc_len);
+            wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength, "\n ]");
+        }
+        free (enc_palette);
     } else {
-         wrstmf (pdf, &img->colordesc, &img->ssize, &img->sused,
+         wrstmf (pdf, &img->colordesc, &img->ssize, &img->cdlength,
                  " /ColorSpace %s", ((color == 0 || color ==4)? "/DeviceGray": "/DeviceRGB"));
     }
-    img->colordesc[img->sused] = '\0';
 
     img->ssize =
         img->sused = 0;
     wrstmf (pdf, &img->filterpars, &img->ssize, &img->sused,
             "<< /Columns %u /Colors %u /BitsPerComponent %u /Predictor 15 >>",
-            ((uint32_t)img->width), ((palent || color == 0 || color == 4)? 1 : 3), bpp);
+            ((uint32_t)img->width), ((palsize || color == 0 || color == 4)? 1 : 3), bpp);
 
     img->filterpars[img->sused] = '\0';
 
