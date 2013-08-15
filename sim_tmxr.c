@@ -78,6 +78,7 @@
    tmxr_set_modem_control_passthru -    enable modem control on a multiplexer
    tmxr_clear_modem_control_passthru -  disable modem control on a multiplexer
    tmxr_set_get_modem_bits -            set and/or get a line modem bits
+   tmxr_set_line_loopback -             enable or disable loopback mode on a line
    tmxr_set_config_line -               set port speed, character size, parity and stop bits
    tmxr_open_master -                   open master connection
    tmxr_close_master -                  close master connection
@@ -454,6 +455,14 @@ if ((!lp->mp->buffered) && (!lp->txbfd)) {
     lp->txbfd = 0;
     lp->txbsz = TMXR_MAXBUF;
     lp->txb = (char *)realloc (lp->txb, lp->txbsz);
+    lp->rxbsz = TMXR_MAXBUF;
+    lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+    lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
+    }
+if (lp->loopback) {
+    lp->lpbsz = lp->rxbsz;
+    lp->lpb = (char *)realloc(lp->lpb, lp->lpbsz);
+    lp->lpbcnt = lp->lpbpi = lp->lpbpr = 0;
     }
 if (lp->rxpb) {
     lp->rxpboffset = lp->rxpbsize = 0;
@@ -549,6 +558,61 @@ tmxr_linemsgf (lp, "\nDisconnected from the %s simulator\n\n", sim_name);/* repo
 return;
 }
 
+static int32 loop_write (TMLN *lp, char *buf, int32 length)
+{
+int32 written = 0;
+
+while (length) {
+    int32 chunksize;
+    int32 loopfree = lp->lpbsz - lp->lpbcnt;
+
+    if (loopfree == 0)
+        break;
+    if (loopfree < length)
+        length = loopfree;
+    if (lp->lpbpi >= lp->lpbpr)
+        chunksize = lp->lpbsz - lp->lpbpi;
+    else
+        chunksize = lp->lpbpr - lp->lpbpi;
+    if (chunksize > length)
+        chunksize = length;
+    memcpy (&lp->lpb[lp->lpbpi], buf, chunksize);
+    buf += chunksize;
+    length -= chunksize;
+    written += chunksize;
+    lp->lpbpi = (lp->lpbpi + chunksize) % lp->lpbsz;
+    }
+lp->lpbcnt += written;
+return written;
+}
+
+static int32 loop_read (TMLN *lp, char *buf, int32 bufsize)
+{
+int32 bytesread = 0;
+
+while (bufsize > 0) {
+    int32 chunksize;
+    int32 loopused = lp->lpbcnt;
+
+    if (loopused < bufsize)
+        bufsize = loopused;
+    if (loopused == 0)
+        break;
+    if (lp->lpbpi > lp->lpbpr)
+        chunksize = lp->lpbpi - lp->lpbpr;
+    else
+        chunksize = lp->lpbsz - lp->lpbpr;
+    if (chunksize > bufsize)
+        chunksize = bufsize;
+    memcpy (buf, &lp->lpb[lp->lpbpr], chunksize);
+    buf += chunksize;
+    bufsize -= chunksize;
+    bytesread += chunksize;
+    lp->lpbpr = (lp->lpbpr + chunksize) % lp->lpbsz;
+    }
+lp->lpbcnt -= bytesread;
+return bytesread;
+}
 
 /* Read from a line.
 
@@ -566,6 +630,8 @@ static int32 tmxr_read (TMLN *lp, int32 length)
 {
 int32 i = lp->rxbpi;
 
+if (lp->loopback)
+    return loop_read (lp, &(lp->rxb[i]), length);
 if (lp->serport)                                        /* serial port connection? */
     return sim_read_serial (lp->serport, &(lp->rxb[i]), length, &(lp->rbr[i]));
 else                                                    /* Telnet connection */
@@ -584,6 +650,9 @@ static int32 tmxr_write (TMLN *lp, int32 length)
 {
 int32 written;
 int32 i = lp->txbpr;
+
+if (lp->loopback)
+    return loop_write (lp, &(lp->txb[i]), length);
 
 if (lp->serport)                                        /* serial port connection? */
     return sim_write_serial (lp->serport, &(lp->txb[i]), length);
@@ -804,6 +873,8 @@ if (lp->destination || lp->port || lp->txlogname) {
         sprintf (growstring(&tptr, 12 + strlen (lp->port)), ",%s%s", lp->port, (lp->mp->notelnet != lp->notelnet) ? (lp->notelnet ? ";notelnet" : ";telnet") : "");
     if (lp->txlogname)
         sprintf (growstring(&tptr, 12 + strlen (lp->txlogname)), ",Log=%s", lp->txlogname);
+    if (lp->loopback)
+        sprintf (growstring(&tptr, 12 ), ",Loopback");
     }
 if (*tptr == '\0') {
     free (tptr);
@@ -1254,7 +1325,7 @@ if ((bits_to_set & ~(TMXR_MDM_OUTGOING)) ||         /* Assure only settable bits
 before_modem_bits = lp->modembits;
 lp->modembits |= bits_to_set;
 lp->modembits &= ~(bits_to_clear | TMXR_MDM_INCOMING);
-if ((lp->sock) || (lp->serport)) {
+if ((lp->sock) || (lp->serport) || (lp->loopback)) {
     if (lp->modembits & TMXR_MDM_DTR)
         incoming_state = TMXR_MDM_DCD | TMXR_MDM_CTS | TMXR_MDM_DSR;
     else
@@ -1271,6 +1342,13 @@ if (incoming_bits)
     *incoming_bits = incoming_state;
 if (lp->mp && lp->modem_control) {                  /* This API ONLY works on modem_control enabled multiplexer lines */
     if (bits_to_set | bits_to_clear) {              /* Anything to do? */
+        if (lp->loopback) {
+            if ((lp->modembits ^ before_modem_bits) & TMXR_MDM_DTR) { /* DTR changed? */
+                lp->ser_connect_pending = (lp->modembits & TMXR_MDM_DTR);
+                lp->conn = !(lp->modembits & TMXR_MDM_DTR);
+                }
+            return SCPE_OK;
+            }
         if (lp->serport)
             return sim_control_serial (lp->serport, bits_to_set, bits_to_clear, incoming_bits);
         if ((lp->sock) || (lp->connecting)) {
@@ -1291,11 +1369,52 @@ if (lp->mp && lp->modem_control) {                  /* This API ONLY works on mo
         }
     return SCPE_OK;
     }
-if (lp->serport)
+if ((lp->serport) && (!lp->loopback))
     sim_control_serial (lp->serport, 0, 0, incoming_bits);
 return SCPE_IERR;
 }
 
+/* Enable or Disable loopback mode on a line
+
+   Inputs:
+        lp -                the line to change
+        enable_loopback -   enable or disable flag
+
+   Output:
+        none
+
+   Implementation note:
+
+    1) When enabling loopback mode, this API will disconnect any currently 
+       connected TCP or Serial session.
+    2) When disabling loopback mode, prior network connections and/or 
+       serial port connections will be restored.
+
+*/
+t_stat tmxr_set_line_loopback (TMLN *lp, t_bool enable_loopback)
+{
+if (lp->loopback == enable_loopback)
+    return SCPE_OK;                 /* Nothing to do */
+lp->loopback = enable_loopback;
+if (lp->loopback) {
+    lp->lpbsz = lp->rxbsz;
+    lp->lpb = (char *)realloc(lp->lpb, lp->lpbsz);
+    lp->lpbcnt = lp->lpbpi = lp->lpbpr = 0;
+    if (!lp->conn)
+        lp->ser_connect_pending = TRUE;
+    }
+else {
+    free (lp->lpb);
+    lp->lpb = NULL;
+    lp->lpbsz = 0;
+    }
+return SCPE_OK;
+}
+
+t_bool tmxr_get_line_loopback (TMLN *lp)
+{
+return (lp->loopback != 0);
+}
 t_stat tmxr_set_config_line (TMLN *lp, char *config)
 {
 t_stat r;
@@ -1436,10 +1555,10 @@ for (i = 0; i < mp->lines; i++) {                       /* loop thru lines */
     nbytes = 0;
     if (lp->rxbpi == 0)                                 /* need input? */
         nbytes = tmxr_read (lp,                         /* yes, read */
-            TMXR_MAXBUF - TMXR_GUARD);                  /* leave spc for Telnet cruft */
+            lp->rxbsz - TMXR_GUARD);                  /* leave spc for Telnet cruft */
     else if (lp->tsta)                                  /* in Telnet seq? */
         nbytes = tmxr_read (lp,                         /* yes, read to end */
-            TMXR_MAXBUF - lp->rxbpi);
+            lp->rxbsz - lp->rxbpi);
 
     if (nbytes < 0) {                                   /* line error? */
         if (!lp->txbfd || lp->notelnet) 
@@ -1574,7 +1693,7 @@ return;
 
 int32 tmxr_rqln (TMLN *lp)
 {
-return (lp->rxbpi - lp->rxbpr + ((lp->rxbpi < lp->rxbpr)? TMXR_MAXBUF: 0));
+return (lp->rxbpi - lp->rxbpr + ((lp->rxbpi < lp->rxbpr)? lp->rxbsz: 0));
 }
 
 
@@ -1815,6 +1934,7 @@ if (lp->serport) {                          /* close current serial connection *
     free (lp->destination);
     lp->destination = NULL;
     }
+tmxr_set_line_loopback (lp, FALSE);
 }
 
 t_stat tmxr_detach_ln (TMLN *lp)
@@ -1845,7 +1965,7 @@ char tbuf[CBUFSIZE], listen[CBUFSIZE], destination[CBUFSIZE],
 SOCKET sock;
 SERHANDLE serport;
 char *tptr = cptr;
-t_bool nolog, notelnet, listennotelnet, unbuffered, modem_control;
+t_bool nolog, notelnet, listennotelnet, unbuffered, modem_control, loopback;
 TMLN *lp;
 t_stat r = SCPE_ARG;
 
@@ -1863,7 +1983,7 @@ while (*tptr) {
     memset(buffered,    '\0', sizeof(buffered));
     memset(port,        '\0', sizeof(port));
     memset(option,      '\0', sizeof(option));
-    nolog = notelnet = listennotelnet = unbuffered = FALSE;
+    nolog = notelnet = listennotelnet = unbuffered = loopback = FALSE;
     if (line != -1)
         notelnet = listennotelnet = mp->notelnet;
     modem_control = mp->modem_control;
@@ -1891,7 +2011,13 @@ while (*tptr) {
                 strncpy(logfiletmpl, cptr, sizeof(logfiletmpl)-1);
                 continue;
                 }
-            if ((0 == MATCH_CMD (gbuf, "NOBUFFERED")) || 
+             if (0 == MATCH_CMD (gbuf, "LOOPBACK")) {
+                if ((NULL != cptr) && ('\0' != *cptr))
+                    return SCPE_2MARG;
+                loopback = TRUE;
+                continue;
+                }
+           if ((0 == MATCH_CMD (gbuf, "NOBUFFERED")) || 
                 (0 == MATCH_CMD (gbuf, "UNBUFFERED"))) {
                 if ((NULL != cptr) && ('\0' != *cptr))
                     return SCPE_2MARG;
@@ -2024,6 +2150,9 @@ while (*tptr) {
                 mp->buffered = 0;
                 for (i = 0; i < mp->lines; i++) { /* default line buffers */
                     lp = mp->ldsc + i;
+                    lp->rxbsz = TMXR_MAXBUF;
+                    lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+                    lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
                     lp->txbsz = TMXR_MAXBUF;
                     lp->txb = (char *)realloc(lp->txb, lp->txbsz);
                     lp->txbfd = lp->txbpi = lp->txbpr = 0;
@@ -2038,6 +2167,9 @@ while (*tptr) {
                 lp->txbfd = 1;
                 lp->txb = (char *)realloc(lp->txb, lp->txbsz);
                 lp->txbpi = lp->txbpr = 0;
+                lp->rxbsz = mp->buffered;
+                lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+                lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
                 }
             }
         if (nolog) {
@@ -2085,6 +2217,17 @@ while (*tptr) {
                     }
                 tmxr_init_line (lp);                        /* initialize line state */
                 lp->sock = 0;                               /* clear the socket */
+                }
+            }
+        if (loopback) {
+            if (mp->lines > 1)
+                return SCPE_ARG;                            /* ambiguous */
+            printf ("Operating in loopback mode\n");
+            if (sim_log)
+                fprintf (sim_log, "Operating in loopback mode\n");
+            for (i = 0; i < mp->lines; i++) {
+                lp = mp->ldsc + i;
+                tmxr_set_line_loopback (lp, loopback);
                 }
             }
         if (destination[0]) {
@@ -2159,12 +2302,18 @@ while (*tptr) {
             lp->txbsz = TMXR_MAXBUF;
             lp->txb = (char *)realloc (lp->txb, lp->txbsz);
             lp->txbfd = lp->txbpi = lp->txbpr = 0;
+            lp->rxbsz = lp->txbsz;
+            lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+            lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
             }
         if (buffered[0]) {
             lp->txbsz = atoi(buffered);
             lp->txbfd = 1;
             lp->txb = (char *)realloc (lp->txb, lp->txbsz);
             lp->txbpi = lp->txbpr = 0;
+            lp->rxbsz = lp->txbsz;
+            lp->rxb = (char *)realloc(lp->rxb, lp->rxbsz);
+            lp->rbr = (char *)realloc(lp->rbr, lp->rxbsz);
             }
         if (nolog) {
             free(lp->txlogname);
@@ -2231,6 +2380,12 @@ while (*tptr) {
                 else
                     return SCPE_ARG;
                 }
+            }
+        if (loopback) {
+            tmxr_set_line_loopback (lp, loopback);
+            printf ("Line %d operating in loopback mode\n", line);
+            if (sim_log)
+                fprintf (sim_log, "Line %d operating in loopback mode\n", line);
             }
         lp->modem_control = modem_control;
         r = SCPE_OK;
@@ -3036,6 +3191,8 @@ else {
                     fprintf (st, " - Unit: %s", sim_uname (lp->uptr));
                 if (mp->modem_control != lp->modem_control)
                     fprintf(st, ", ModemControl=%s", lp->modem_control ? "enabled" : "disabled");
+                if (lp->loopback)
+                    fprintf(st, ", Loopback");
                 fprintf (st, "\n");
                 }
             if ((!lp->sock) && (!lp->connecting) && (!lp->serport) && (!lp->master)) {
@@ -3097,6 +3254,10 @@ for (i = 0; i < mp->lines; i++) {  /* loop thru conn */
         }
     free (lp->txb);
     lp->txb = NULL;
+    free (lp->rxb);
+    lp->rxb = NULL;
+    free (lp->rbr);
+    lp->rbr = NULL;
     lp->modembits = 0;
     }
 
@@ -3315,6 +3476,17 @@ else {
 fprintf (st, "When symmetric virtual connections are configured, incoming connections\n");
 fprintf (st, "on the specified listening port are checked to assure that they actually\n");
 fprintf (st, "come from the specified connection destination host system.\n\n");
+if (single_line) {          /* Single Line Multiplexer */
+    fprintf (st, "The %s device can be attached in LOOPBACK mode:\n\n", dptr->name);
+    fprintf (st, "   sim> ATTACH %s Loopback\n\n", dptr->name);
+    }
+else {
+    fprintf (st, "A line on the %s device can be attached in LOOPBACK mode:\n\n", dptr->name);
+    fprintf (st, "   sim> ATTACH %s Line=n,Loopback\n\n", dptr->name);
+    }
+fprintf (st, "When operating in LOOPBACK mode, all outgoing data arrives as input and\n");
+fprintf (st, "outgoing modem signals (if enabled) (DTR and RTS) are reflected in the\n");
+fprintf (st, "incoming modem signals (DTR->(DCD and DSR), RTS->CTS)\n\n");
 if (single_line)            /* Single Line Multiplexer */
     fprintf (st, "The connection configured for the %s device is unconfigured by:\n\n", dptr->name);
 else

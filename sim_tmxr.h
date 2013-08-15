@@ -96,6 +96,11 @@ typedef int SERHANDLE;
 
 typedef struct tmln TMLN;
 typedef struct tmxr TMXR;
+struct loopbuf {
+    int32               bpr;                          /* xmt buf remove */
+    int32               bpi;                          /* xmt buf insert */
+    int32               size;
+    };
 
 struct tmln {
     int                 conn;                           /* line connected flag */
@@ -112,6 +117,7 @@ struct tmln {
     t_bool              notelnet;                       /* raw binary data (no telnet interpretation) */
     int32               rxbpr;                          /* rcv buf remove */
     int32               rxbpi;                          /* rcv buf insert */
+    int32               rxbsz;                          /* rcv buffer size */
     int32               rxcnt;                          /* rcv count */
     int32               rxpcnt;                         /* rcv packet count */
     int32               txbpr;                          /* xmt buf remove */
@@ -126,8 +132,8 @@ struct tmln {
     FILE                *txlog;                         /* xmt log file */
     FILEREF             *txlogref;                      /* xmt log file reference */
     char                *txlogname;                     /* xmt log file name */
-    char                rxb[TMXR_MAXBUF];               /* rcv buffer */
-    char                rbr[TMXR_MAXBUF];               /* rcv break */
+    char                *rxb;                           /* rcv buffer */
+    char                *rbr;                           /* rcv break */
     char                *txb;                           /* xmt buffer */
     uint8               *rxpb;                          /* rcv packet buffer */
     uint32              rxpbsize;                       /* rcv packet buffer size */
@@ -142,6 +148,12 @@ struct tmln {
     t_bool              ser_connect_pending;            /* serial connection notice pending */
     SOCKET              connecting;                     /* Outgoing socket while connecting */
     char                *destination;                   /* Outgoing destination address:port */
+    t_bool              loopback;                       /* Line in loopback mode */
+    int32               lpbpr;                          /* loopback buf remove */
+    int32               lpbpi;                          /* loopback buf insert */
+    int32               lpbcnt;                         /* loopback buf used count */
+    int32               lpbsz;                          /* loopback buffer size */
+    char                *lpb;                           /* loopback buffer */
     UNIT                *uptr;                          /* input polling unit (default to mp->uptr) */
     UNIT                *o_uptr;                        /* output polling unit (default to lp->uptr)*/
     };
@@ -186,6 +198,8 @@ char *tmxr_line_attach_string(TMLN *lp);
 t_stat tmxr_set_modem_control_passthru (TMXR *mp);
 t_stat tmxr_clear_modem_control_passthru (TMXR *mp);
 t_stat tmxr_set_get_modem_bits (TMLN *lp, int32 bits_to_set, int32 bits_to_clear, int32 *incoming_bits);
+t_stat tmxr_set_line_loopback (TMLN *lp, t_bool enable_loopback);
+t_bool tmxr_get_line_loopback (TMLN *lp);
 t_stat tmxr_set_config_line (TMLN *lp, char *config);
 t_stat tmxr_set_line_unit (TMXR *mp, int line, UNIT *uptr_poll);
 t_stat tmxr_set_line_output_unit (TMXR *mp, int line, UNIT *uptr_poll);

@@ -1166,6 +1166,7 @@ if (sim_log) {
     }
 time(&now);
 fprintf (sim_deb, "Debug output to \"%s\" at %s", sim_logfile_name (sim_deb, sim_deb_ref), ctime(&now));
+show_version (sim_deb, NULL, NULL, 0, NULL);
 
 return SCPE_OK;
 }

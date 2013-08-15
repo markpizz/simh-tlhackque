@@ -56,6 +56,12 @@
 #define DDCMP_RESP_OFFSET 3 /* Byte offset of response (ack) number field */
 #define DDCMP_NUM_OFFSET  4 /* Byte offset of packet number field */
 
+#define DDCMP_PACKET_TIMEOUT 4  /* Seconds before sending REP command for unacknowledged packets */
+
+#define DDCMP_DBG_PXMT  TMXR_DBG_PXMT   /* Debug Transmitted Packet Header Contents */
+#define DDCMP_DBG_PRCV  TMXR_DBG_PRCV   /* Debug Received Packet Header Contents */
+#define DDCMP_DBG_PDAT  0x1000000       /* Debug Packet Data */
+
 /* Support routines */
 
 /* crc16 polynomial x^16 + x^15 + x^2 + 1 (0xA001) CCITT LSB */
@@ -79,62 +85,62 @@ return(crc);
 
 #include <ctype.h>
 
-static void ddcmp_packet_trace (uint32 reason, DEVICE *dptr, const char *txt, const uint8 *msg, int32 len, t_bool detail)
+static void ddcmp_packet_trace (uint32 reason, DEVICE *dptr, const char *txt, const uint8 *msg, int32 len)
 {
 if (sim_deb && dptr && (reason & dptr->dctrl)) {
-    sim_debug(reason, dptr, "%s  len: %d\n", txt, len);
-    if (detail) {
-        int i, same, group, sidx, oidx;
-        char outbuf[80], strbuf[18];
-        static const char hex[] = "0123456789ABCDEF";
-        static const char *const flags [4] = { "..", ".Q", "S.", "SQ" };
-        static const char *const nak[18] = { "", " (HCRC)", " (DCRC)", " (REPREPLY)", /* 0-3 */
-                                             "", "", "", "",                          /* 4-7 */
-                                             " (NOBUF)", " (RXOVR)", "", "",          /* 8-11 */
-                                             "", "", "", "",                          /* 12-15 */
-                                             " (TOOLONG)", " (HDRFMT)" };             /* 16-17 */
-        const char *flag = flags[msg[2]>>6];
-        int msg2 = msg[2] & 0x3F;
+    int i, same, group, sidx, oidx;
+    char outbuf[80], strbuf[18];
+    static const char hex[] = "0123456789ABCDEF";
+    static const char *const flags [4] = { "..", ".Q", "S.", "SQ" };
+    static const char *const nak[18] = { "", " (HCRC)", " (DCRC)", " (REPREPLY)", /* 0-3 */
+                                            "", "", "", "",                          /* 4-7 */
+                                            " (NOBUF)", " (RXOVR)", "", "",          /* 8-11 */
+                                            "", "", "", "",                          /* 12-15 */
+                                            " (TOOLONG)", " (HDRFMT)" };             /* 16-17 */
+    const char *flag = flags[msg[2]>>6];
+    int msg2 = msg[2] & 0x3F;
 
-        switch (msg[0]) {
-            case DDCMP_SOH:   /* Data Message */
-                sim_debug (reason, dptr, "Data Message, Flags: %s, Count: %d, Resp: %d, Num: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)|msg[1], msg[3], msg[4], 
-                                            (0 == ddcmp_crc16 (0, msg, 8)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+8, 2+((msg2 << 8)|msg[1]))) ? "OK" : "BAD");
-                break;
-            case DDCMP_ENQ:   /* Control Message */
-                sim_debug (reason, dptr, "Control: Type: %d ", msg[1]);
-                switch (msg[1]) {
-                    case DDCMP_CTL_ACK: /* ACK */
-                        sim_debug (reason, dptr, "(ACK) ACKSUB: %d, Flags: %s, Resp: %d\n", msg2, flag, msg[3]);
-                        break;
-                    case DDCMP_CTL_NAK: /* NAK */
-                        sim_debug (reason, dptr, "(NAK) Reason: %d%s, Flags: %s, Resp: %d\n", msg2, ((msg2 > 17)? "": nak[msg2]), flag, msg[3]);
-                        break;
-                    case DDCMP_CTL_REP: /* REP */
-                        sim_debug (reason, dptr, "(REP) REPSUB: %d, Flags: %s, Num: %d\n", msg2, flag, msg[4]);
-                        break;
-                    case DDCMP_CTL_STRT: /* STRT */
-                        sim_debug (reason, dptr, "(STRT) STRTSUB: %d, Flags: %s\n", msg2, flag);
-                        break;
-                    case DDCMP_CTL_STACK: /* STACK */
-                        sim_debug (reason, dptr, "(STACK) STCKSUB: %d, Flags: %s\n", msg2, flag);
-                        break;
-                    default: /* Unknown */
-                        sim_debug (reason, dptr, "(Unknown=0%o)\n", msg[1]);
-                        break;
-                    }
-                if (len != DDCMP_HEADER_SIZE) {
-                    sim_debug (reason, dptr, "Unexpected Control Message Length: %d expected %d\n", len, DDCMP_HEADER_SIZE);
-                    }
-                if (0 != ddcmp_crc16 (0, msg, len)) {
-                    sim_debug (reason, dptr, "Unexpected Message CRC\n");
-                    }
-                break;
-            case DDCMP_DLE:   /* Maintenance Message */
-                sim_debug (reason, dptr, "Maintenance Message, Flags: %s, Count: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)| msg[1], 
-                                            (0 == ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+DDCMP_HEADER_SIZE, 2+((msg2 << 8)| msg[1]))) ? "OK" : "BAD");
-                break;
-            }
+    sim_debug(reason, dptr, "%s  len: %d\n", txt, len);
+    switch (msg[0]) {
+        case DDCMP_SOH:   /* Data Message */
+            sim_debug (reason, dptr, "Data Message, Flags: %s, Count: %d, Resp: %d, Num: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)|msg[1], msg[3], msg[4], 
+                                        (0 == ddcmp_crc16 (0, msg, 8)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+8, 2+((msg2 << 8)|msg[1]))) ? "OK" : "BAD");
+            break;
+        case DDCMP_ENQ:   /* Control Message */
+            sim_debug (reason, dptr, "Control: Type: %d ", msg[1]);
+            switch (msg[1]) {
+                case DDCMP_CTL_ACK: /* ACK */
+                    sim_debug (reason, dptr, "(ACK) ACKSUB: %d, Flags: %s, Resp: %d\n", msg2, flag, msg[3]);
+                    break;
+                case DDCMP_CTL_NAK: /* NAK */
+                    sim_debug (reason, dptr, "(NAK) Reason: %d%s, Flags: %s, Resp: %d\n", msg2, ((msg2 > 17)? "": nak[msg2]), flag, msg[3]);
+                    break;
+                case DDCMP_CTL_REP: /* REP */
+                    sim_debug (reason, dptr, "(REP) REPSUB: %d, Flags: %s, Num: %d\n", msg2, flag, msg[4]);
+                    break;
+                case DDCMP_CTL_STRT: /* STRT */
+                    sim_debug (reason, dptr, "(STRT) STRTSUB: %d, Flags: %s\n", msg2, flag);
+                    break;
+                case DDCMP_CTL_STACK: /* STACK */
+                    sim_debug (reason, dptr, "(STACK) STCKSUB: %d, Flags: %s\n", msg2, flag);
+                    break;
+                default: /* Unknown */
+                    sim_debug (reason, dptr, "(Unknown=0%o)\n", msg[1]);
+                    break;
+                }
+            if (len != DDCMP_HEADER_SIZE) {
+                sim_debug (reason, dptr, "Unexpected Control Message Length: %d expected %d\n", len, DDCMP_HEADER_SIZE);
+                }
+            if (0 != ddcmp_crc16 (0, msg, len)) {
+                sim_debug (reason, dptr, "Unexpected Message CRC\n");
+                }
+            break;
+        case DDCMP_DLE:   /* Maintenance Message */
+            sim_debug (reason, dptr, "Maintenance Message, Flags: %s, Count: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)| msg[1], 
+                                        (0 == ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+DDCMP_HEADER_SIZE, 2+((msg2 << 8)| msg[1]))) ? "OK" : "BAD");
+            break;
+        }
+    if (DDCMP_DBG_PDAT & dptr->dctrl) {
         for (i=same=0; i<len; i += 16) {
             if ((i > 0) && (0 == memcmp(&msg[i], &msg[i-16], 16))) {
                 ++same;
@@ -199,14 +205,14 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
         }
     lp->rxpb[lp->rxpboffset] = c;
     if ((lp->rxpboffset == 0) && ((c == DDCMP_SYN) || (c == DDCMP_DEL))) {
-        tmxr_debug (TMXR_DBG_PRCV, lp, "Ignoring Interframe Sync Character", (char *)&lp->rxpb[0], 1);
+        tmxr_debug (DDCMP_DBG_PRCV, lp, "Ignoring Interframe Sync Character", (char *)&lp->rxpb[0], 1);
         continue;
         }
     lp->rxpboffset += 1;
     if (lp->rxpboffset == 1) {
         switch (c) {
             default:
-                tmxr_debug (TMXR_DBG_PRCV, lp, "Ignoring unexpected byte in DDCMP mode", (char *)&lp->rxpb[0], 1);
+                tmxr_debug (DDCMP_DBG_PRCV, lp, "Ignoring unexpected byte in DDCMP mode", (char *)&lp->rxpb[0], 1);
                 lp->rxpboffset = 0;
             case DDCMP_SOH:
             case DDCMP_ENQ:
@@ -220,7 +226,7 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
             *pbuf = lp->rxpb;
             *psize = DDCMP_HEADER_SIZE;
             lp->rxpboffset = 0;
-            ddcmp_packet_trace (TMXR_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize, TRUE);
+            ddcmp_packet_trace (DDCMP_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize);
             return SCPE_OK;
             }
         payloadsize  = ((lp->rxpb[2] & 0x3F) << 8)| lp->rxpb[1];
@@ -228,7 +234,7 @@ while (TMXR_VALID & (c = tmxr_getc_ln (lp))) {
             ++lp->rxpcnt;
             *pbuf = lp->rxpb;
             *psize = 10 + payloadsize;
-            ddcmp_packet_trace (TMXR_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize, TRUE);
+            ddcmp_packet_trace (DDCMP_DBG_PRCV, lp->mp->dptr, "<<< RCV Packet", lp->rxpb, *psize);
             lp->rxpboffset = 0;
             return SCPE_OK;
             }
@@ -264,7 +270,7 @@ t_stat r;
 if (!lp->conn)
     return SCPE_LOST;
 if (lp->txppoffset < lp->txppsize) {
-    tmxr_debug (TMXR_DBG_PXMT, lp, "Skipped Sending Packet - Transmit Busy", (char *)&lp->txpb[3], size);
+    tmxr_debug (DDCMP_DBG_PXMT, lp, "Skipped Sending Packet - Transmit Busy", (char *)&lp->txpb[3], size);
     return SCPE_STALL;
     }
 if (lp->txpbsize < size) {
@@ -274,7 +280,7 @@ if (lp->txpbsize < size) {
 memcpy (lp->txpb, buf, size);
 lp->txppsize = size;
 lp->txppoffset = 0;
-ddcmp_packet_trace (TMXR_DBG_PXMT, lp->mp->dptr, ">>> XMT Packet", lp->txpb, lp->txppsize, TRUE);
+ddcmp_packet_trace (DDCMP_DBG_PXMT, lp->mp->dptr, ">>> XMT Packet", lp->txpb, lp->txppsize);
 ++lp->txpcnt;
 while ((lp->txppoffset < lp->txppsize) && 
        (SCPE_OK == (r = tmxr_putc_ln (lp, lp->txpb[lp->txppoffset]))))
@@ -290,9 +296,9 @@ uint16 hdr_crc16 = ddcmp_crc16(0, buf, DDCMP_HEADER_SIZE-DDCMP_CRC_SIZE);
 buf[DDCMP_HEADER_SIZE-DDCMP_CRC_SIZE] = hdr_crc16 & 0xFF;
 buf[DDCMP_HEADER_SIZE-DDCMP_CRC_SIZE+1] = (hdr_crc16>>8) & 0xFF;
 if (size > DDCMP_HEADER_SIZE) {
-    uint16 data_crc16 = ddcmp_crc16(0, buf+DDCMP_HEADER_SIZE, (size-DDCMP_HEADER_SIZE)-DDCMP_CRC_SIZE);;
-    buf[size-DDCMP_CRC_SIZE] = hdr_crc16 & 0xFF;
-    buf[size-DDCMP_CRC_SIZE+1] = (hdr_crc16>>8) & 0xFF;
+    uint16 data_crc16 = ddcmp_crc16(0, buf+DDCMP_HEADER_SIZE, size-(DDCMP_HEADER_SIZE+DDCMP_CRC_SIZE));
+    buf[size-DDCMP_CRC_SIZE] = data_crc16 & 0xFF;
+    buf[size-DDCMP_CRC_SIZE+1] = (data_crc16>>8) & 0xFF;
     }
 return ddcmp_tmxr_put_packet_ln (lp, buf, size);
 }
@@ -304,6 +310,16 @@ buf[1] = size & 0xFF;
 buf[2] = ((size >> 8) & 0x3F) | flags;
 buf[3] = ack;
 buf[4] = sequence;
+buf[5] = 1;
+}
+
+static void ddcmp_build_maintenance_packet (uint8 *buf, size_t size)
+{
+buf[0] = DDCMP_DLE;
+buf[1] = size & 0xFF;
+buf[2] = ((size >> 8) & 0x3F) | 0x03;
+buf[3] = 0;
+buf[4] = 0;
 buf[5] = 1;
 }
 

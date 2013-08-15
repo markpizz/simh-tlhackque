@@ -365,7 +365,6 @@ t_stat show_dev_debug (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cpt
 t_stat show_dev_logicals (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat show_dev_modifiers (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat show_dev_show_commands (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
-t_stat show_version (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat show_default (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat show_break (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat show_on (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
@@ -4384,6 +4383,7 @@ for ( ;; ) {                                            /* device loop */
 for (j=0, r = SCPE_OK; j<attcnt; j++) {
     if (r == SCPE_OK) {
         struct stat fstat;
+        t_addr saved_pos;
 
         dptr = find_dev_from_unit (attunits[j]);
         if ((!force_restore) && 
@@ -4398,8 +4398,10 @@ for (j=0, r = SCPE_OK; j<attcnt; j++) {
                     }
                 continue;
                 }
+        saved_pos = attunits[j]->pos;
         sim_switches = attswitches[j];
         r = scp_attach_unit (dptr, attunits[j], attnames[j]);/* reattach unit */
+        attunits[j]->pos = saved_pos;
         if (r != SCPE_OK) {
             printf ("Error Attaching %s to %s\n", sim_dname (dptr), attnames[j]);
             if (sim_log)
@@ -7078,7 +7080,7 @@ if (sim_deb && (dptr->dctrl & dbits)) {
 
 /* Set unterminated flag for next time */
 
-    debug_unterm = (len && (buf[len-1]=='\n')) ? 0 : 1;
+    debug_unterm = len ? (((buf[len-1]=='\n')) ? 0 : 1) : debug_unterm;
     if (buf != stackbuf)
         free (buf);
     }
