@@ -3572,6 +3572,7 @@ static int pdfclose (PDF *pdf, int checkpoint) {
                 if (remove (pdf->tmpname)) {
                     r = errno;
                 }
+                free (pdf->tmpname);
             }
 #endif
             pdf_free (pdf);
@@ -3797,6 +3798,7 @@ static int pdfclose (PDF *pdf, int checkpoint) {
         if (remove (pdf->tmpname)) {
             r = errno;
         }
+        free (pdf->tmpname);
     }
 #endif
 
