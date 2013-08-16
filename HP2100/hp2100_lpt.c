@@ -1,6 +1,6 @@
 /* hp2100_lpt.c: HP 2100 12845B line printer simulator
 
-   Copyright (c) 1993-2012, Robert M. Supnik
+   Copyright (c) 1993-2013, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    LPT          12845B 2607 line printer
 
+   08-Aug-13    TL      Added support for PDF output
    10-Feb-12    JDB     Deprecated DEVNO in favor of SC
    28-Mar-11    JDB     Tidied up signal handling
    26-Oct-10    JDB     Changed I/O signal handler for revised signal model
@@ -300,7 +301,7 @@ if (uptr->buf & LPT_CTL) {                              /* control word? */
     lpt_lcnt = (lpt_lcnt + skip) % LPT_PAGELNT;
     }
 else pdflpt_putc (uptr, uptr->buf & 0177);              /* no, just add char */
-if (pdf_error (uptr)) {
+if (pdflpt_error (uptr)) {
     pdflpt_perror (uptr, "LPT I/O error");
     pdflpt_clearerr (uptr);
     return SCPE_IOERR;

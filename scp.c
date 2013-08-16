@@ -228,6 +228,8 @@
 #include <time.h>
 #if defined(_WIN32)
 #include <direct.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <unistd.h>
 #endif
@@ -1051,7 +1053,7 @@ REG *rptr, *trptr;
 t_bool found = FALSE;
 t_bool all_unique = TRUE;
 size_t max_namelen = 0;
-DEVICE *tdptr;
+DEVICE *tdptr = NULL;
 char *tptr;
 char *namebuf;
 char rangebuf[32];
@@ -2238,7 +2240,7 @@ DEVICE *dptr;
 UNIT *uptr = NULL;
 MTAB *mptr;
 CTAB *gcmdp;
-C1TAB *ctbr, *glbr;
+C1TAB *ctbr = NULL, *glbr;
 
 static CTAB set_glob_tab[] = {
     { "CONSOLE", &sim_set_console, 0 },
@@ -3669,16 +3671,18 @@ if (dptr == NULL)                                       /* found dev? */
     return SCPE_NXDEV;
 if (uptr == NULL)                                       /* valid unit? */
     return SCPE_NXUN;
-if (uptr->flags & UNIT_ATT)                             /* already attached? */
+if (uptr->flags & UNIT_ATT) {                           /* already attached? */
     if (!(uptr->dynflags & UNIT_ATTMULT) &&             /* and only single attachable */
         !(dptr->flags & DEV_DONTAUTO)) {                /* and auto detachable */
         r = scp_detach_unit (dptr, uptr);               /* detach it */
         if (r != SCPE_OK)                               /* error? */
             return r;
         }
-    else
+    else {
         if (!(uptr->dynflags & UNIT_ATTMULT))
             return SCPE_ALATT;                          /* Already attached */
+        }
+    }
 sim_trim_endspc (cptr);                                 /* trim trailing spc */
 return scp_attach_unit (dptr, uptr, cptr);              /* attach */
 }
@@ -4697,7 +4701,7 @@ return;
 
 t_stat exdep_cmd (int32 flag, char *cptr)
 {
-char gbuf[CBUFSIZE], *gptr, *tptr;
+char gbuf[CBUFSIZE], *gptr, *tptr = NULL;
 int32 opt;
 t_addr low, high;
 t_stat reason;
@@ -6190,13 +6194,12 @@ t_stat fprint_val (FILE *stream, t_value val, uint32 radix,
     uint32 width, uint32 format)
 {
 char dbuf[MAX_WIDTH + 1];
-t_stat r;
 
 if (!stream)
     return sprint_val (NULL, val, radix, width, format);
 if (width > MAX_WIDTH)
     width = MAX_WIDTH;
-r = sprint_val (dbuf, val, radix, width, format);
+sprint_val (dbuf, val, radix, width, format);
 if (fputs (dbuf, stream) == EOF)
     return SCPE_IOERR;
 return SCPE_OK;
@@ -6909,7 +6912,6 @@ return debtab_nomatch;
 static const char *sim_debug_prefix (uint32 dbits, DEVICE* dptr)
 {
 char* debug_type = get_dbg_verb (dbits, dptr);
-static const char* debug_fmt     = "DBG(%.0f)%s> %s %s: ";
 char tim_t[32] = "";
 char tim_a[32] = "";
 char pc_s[64] = "";
@@ -6927,7 +6929,7 @@ if (sim_deb_switches & SWMASK ('T')) {
     sprintf(tim_t, "%02d:%02d:%02d.%03d ", now->tm_hour, now->tm_min, now->tm_sec, (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('A')) {
-    sprintf(tim_t, "%lld.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
+    sprintf(tim_t, "%" LL_FMT "d.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('P')) {
     t_value val = get_rval (sim_deb_PC, 0);
@@ -7013,7 +7015,6 @@ if (sim_deb && (dptr->dctrl & dbits)) {
     char *buf = stackbuf;
     va_list arglist;
     int32 i, j, len;
-    char* debug_type = get_dbg_verb (dbits, dptr);
     const char* debug_prefix = sim_debug_prefix(dbits, dptr);   /* prefix to print if required */
 
     buf[bufsize-1] = '\0';
@@ -7179,7 +7180,6 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
 #define VSMAX 100
     char *vstrings[VSMAX];
     size_t vsnum = 0;
-    size_t vsbase = 0;
     char *astrings[VSMAX+1];
     size_t asnum = 0;
     char *const *hblock;
@@ -7415,7 +7415,6 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
             }
             FAIL (SCPE_ARG, Unknown line type);     /* Unknown line */
         } /* htext not at end */
-        vsbase = vsnum;
         memset (vstrings, 0, VSMAX * sizeof (char *));
         vsnum = 0;
     } /* all strings */
@@ -7469,9 +7468,23 @@ static char *helpPrompt ( TOPIC *topic, const char *pstring, t_bool oneword ) {
 }
 
 static void displayMagicTopic (FILE *st, struct sim_device *dptr, TOPIC *topic) {
-    FILE *tmp = tmpfile();
     char tbuf[CBUFSIZE];
     size_t i, skiplines;
+#ifdef _WIN32
+    FILE *tmp;
+    char *tmpnam;
+    do {
+        int fd;
+        tmpnam = _tempnam (NULL, "simh");
+        fd = _open (tmpnam, _O_CREAT | _O_RDWR | _O_EXCL, _S_IREAD | _S_IWRITE);
+        if (fd != -1) {
+            tmp = _fdopen (fd, "w+");
+            break;
+        }
+    } while (1);
+#else
+    FILE *tmp = tmpfile();
+#endif
 
     if (!tmp) {
         fprintf (st, "Unable to create temporary file: %s\n", strerror (errno));
@@ -7507,6 +7520,10 @@ static void displayMagicTopic (FILE *st, struct sim_device *dptr, TOPIC *topic) 
         fputs (tbuf, st);
     }
     fclose (tmp);
+#ifdef _WIN32
+    remove (tmpnam);
+    free (tmpnam);
+#endif
     return;
 }
 /* Flatten and display help for those who say they prefer it.
@@ -7581,7 +7598,8 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
 
     TOPIC top = { 0, NULL, NULL, &top, NULL, 0, NULL, 0, 0};
     TOPIC *topic = &top;
-    int failed, match;
+    int failed;
+    size_t match;
     size_t i;
     char *p;
     t_bool flat_help = FALSE;

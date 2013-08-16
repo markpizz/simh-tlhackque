@@ -102,7 +102,7 @@
 /* Unibus adapter data */
 
 int32 ubcs[UBANUM] = { 0 };                             /* status registers */
-int32 ubmap[UBANUM][UMAP_MEMSIZE] = { 0 };              /* Unibus maps */
+int32 ubmap[UBANUM][UMAP_MEMSIZE] = {{ 0 }};            /* Unibus maps */
 int32 int_req = 0;                                      /* interrupt requests */
 
 int32 autcon_enb = 1;                                   /* auto configure enabled */
@@ -612,7 +612,7 @@ int32 Map_ReadB (uint32 ba, int32 bc, uint8 *buf)
 {
 uint32 ea, ofs, cp, np;
 int32 seg;
-a10 pa10;
+a10 pa10 = ~0u;
 d10 m;
 
 if ((ba & ~((IO_M_UBA<<IO_V_UBA)|0017777)) == 0760000) {
@@ -732,7 +732,7 @@ int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf)
 {
 uint32 ea, cp, np;
 int32 seg;
-a10 pa10;
+a10 pa10 = ~0u;
 d10 m;
 
 if ((ba & ~((IO_M_UBA<<IO_V_UBA)|0017777)) == 0760000) {
@@ -832,7 +832,7 @@ int32 Map_ReadW18 (uint32 ba, int32 bc, uint32 *buf)
 {
 uint32 ea, cp, np;
 int32 seg;
-a10 pa10;
+a10 pa10 = ~0u;
 d10 m;
 
 if ((ba & ~((IO_M_UBA<<IO_V_UBA)|0017777)) == 0760000) {
@@ -927,8 +927,8 @@ return 0;
 int32 Map_WriteB (uint32 ba, int32 bc, uint8 *buf)
 {
 uint32 ea, ofs, cp, np;
-int32 seg, ubm;
-a10 pa10;
+int32 seg, ubm = 0;
+a10 pa10 = ~0u;
 d10 m;
 
 if ((ba & ~((IO_M_UBA<<IO_V_UBA)|0017777)) == 0760000) {
@@ -1061,8 +1061,8 @@ return 0;
 int32 Map_WriteW (uint32 ba, int32 bc, uint16 *buf)
 {
 uint32 ea, cp, np;
-int32 seg, ubm;
-a10 pa10;
+int32 seg, ubm = 0;
+a10 pa10 = ~0u;
 
 if ((ba & ~((IO_M_UBA<<IO_V_UBA)|0017777)) == 0760000) {
     /* IOPAGE: device register write */
@@ -1159,8 +1159,8 @@ return 0;
 int32 Map_WriteW18 (uint32 ba, int32 bc, uint32 *buf)
 {
 uint32 ea, cp, np;
-int32 seg, ubm;
-a10 pa10;
+int32 seg, ubm = 0;
+a10 pa10 = ~0u;
 
 if ((ba & ~((IO_M_UBA<<IO_V_UBA)|0017777)) == 0760000)
 { /* IOPAGE: device register write */

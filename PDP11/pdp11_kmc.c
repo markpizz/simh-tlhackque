@@ -7,7 +7,7 @@
    Adapted to SIMH 3.? by Robert M. A. Jarratt in 2013
 
    Completely rewritten by Timothe Litt <litt@acm.org> for SimH 4.0 in 2013.
-   Implements all DDCMP functions except half-duplex.
+   Implements all DDCMP functions, although the DUP11 doesn't currently support half-duplex.
 
    DUP separated into separate devices, the DUPs were created by Mark Pizzolato.
 
@@ -37,38 +37,6 @@
  *       Working-around W3 jumper choice (prevents RTS/DTR/SexTxD from clearing
  *       on device reset.)
  * Select final speed limit.
- * Remove toy help & replace with real info.
- */
-
-/* The KMC11-A is a general purpose microprocessor that is used in several
- * DEC products.  It came in versions that had ROM microcode, which were
- * used in such devices as the DMC1 and DMR11 communications devices.
- *
- * In each case, it is a Unibus master and operates under OS control as
- * an asynchronous IO processor.  In some versions, it uses a private
- * communications bus to an associated unit, typically a line card.  In
- * others, it controls some other device over the Unibus, accessing the
- * slave devices CSRs as though it were a CPU doing polled IO.
- *
- * It also was produced with RAM microcode, and served as a general-purpose
- * DMA engine.  Microcodes exist for this version to allow it to:
- *  * Provide DMA for DZ11 asynchronous lines (COMM IOP-DZ)
- *  * Provide DMA for line printers
- *  * Provide DMA and message framing for DUP-11 sync lines (COMM IOP-DUP)
- *  * Provide an Arpanet IMP interface (AN22 on the KS10/TOPS-10)
- *
- * The device was also embedded in other products, such as the DX20 Massbus
- * to IBM channel adapter.
- *
- * This is an emulation of one of those products: COMM IOP-DUP.  It does
- * not execute the KMC microcode, but rather provides a functional emulation.
- *
- * Some of the microcode operators are emulated because system loaders and
- * OS diagnostics would execute single instructions to initialize or dump
- * the device.
- *
- * The KMC11-B is an enhanced version of the KMC11-A.  Note that microcode
- * loading is handled differently in that version, which is NOT emulated.
  */
 
 #if defined (VM_PDP10)                          /* PDP10 version */
@@ -220,7 +188,7 @@ typedef struct queuehdr QH;
 
 #define SEL4_CI_POLL    0377                    /* DUP polling interval, 50 usec units */
 
-#define SEL4_ADDR    0177777                    /* Generic: Unibus address <15:0>
+#define SEL4_ADDR    0177777                    /* Generic: Unibus address <15:0> */
 
 /* bits, SEL6 */
 
@@ -360,7 +328,7 @@ typedef struct dupstate dupstate;
 /* State for every DUP that MIGHT be controlled.
  * A DUP can be controlled by at most one KMC.
  */
-static dupstate dupState[DUP_LINES] = { 0 };
+static dupstate dupState[DUP_LINES] = {{ 0 }};
 
 /* Flags defining sim_debug conditions. */
 
@@ -532,8 +500,10 @@ static void kmc_doMicroinstruction (int32 k, uint16 instr);
 static t_stat kmc_txService(UNIT * txup);
 static t_stat kmc_rxService(UNIT * rxup);
 
+#if KMC_UNITS > 1
 static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc);
 static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc);
+#endif
 static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc);
 static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc);
 #if KMC_TROLL
@@ -543,7 +513,7 @@ static t_stat kmc_showTrollHunger (FILE *st, UNIT *txup, int32 val, void *desc);
 static t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v, void *dp);
 
 static t_stat kmc_help (FILE *st, struct sim_device *dptr,
-                            struct sim_unit *uptr, int32 flag, char *cptr); 
+                        struct sim_unit *uptr, int32 flag, char *cptr); 
 static char *kmc_description (DEVICE *dptr);
 
 /* Global data */
@@ -678,8 +648,8 @@ DEVICE kmc_dev = {
 
 /* Forward declarations: not referenced in simulator data */
 
-static void kmc_masterClear(uint32 k);
-static void kmc_startUcode (uint32 k);
+static void kmc_masterClear(int32 k);
+static void kmc_startUcode (int32 k);
 static void kmc_dispatchInputCmd(int32 k);
 
 /* Control functions */
@@ -784,7 +754,8 @@ static void *remqueue (QH *entry, int32 *count);
  */
 
 static t_stat kmc_reset(DEVICE* dptr) {
-    uint32 k, i;
+    int32 k;
+    size_t i;
 
     if (sim_switches & SWMASK ('P')) {
         for (i = 0; i < DIM (dupState); i++) {
@@ -793,12 +764,12 @@ static t_stat kmc_reset(DEVICE* dptr) {
             d->dupidx = -1;
             d->linespeed = DFLT_SPEED;
         }
-        for (k = 0; k < kmc_dev.numunits; k++) {
+        for (k = 0; ((uint32)k) < kmc_dev.numunits; k++) {
             trollHungerLevel = 0;
         }
     }
 
-    for (k = 0; k < kmc_dev.numunits; k++) {
+    for (k = 0; ((uint32)k) < kmc_dev.numunits; k++) {
         sim_debug (DF_INF, dptr, "KMC%d: Reset\n", k);
 
         /* One-time initialization of UNITs, one/direction/line */
@@ -1266,7 +1237,7 @@ static t_stat kmc_txService (UNIT *txup) {
 #endif
             assert (d->txmsg[d->txslen + 0] != DDCMP_ENQ);
             assert (((d->txmlen - d->txslen) > 8) &&    /* Data, length should match count */
-                    ((((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1]) ==
+                    (((size_t)(((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1])) ==
                                                              (d->txmlen - (d->txslen + 8))));
             if (!dup_put_msg_bytes (d->dupidx, d->txmsg + d->txslen, d->txmlen - d->txslen, TRUE, TRUE)) {
                 sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
@@ -1296,7 +1267,7 @@ static t_stat kmc_txService (UNIT *txup) {
             }
 
             assert (((d->txmlen - d->txslen) > 6) &&    /* Data, length should match count */
-                    ((((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1]) ==
+                    (((size_t)(((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1])) ==
                                                              (d->txmlen - (d->txslen + 6))));
             if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txslen + 6, TRUE, TRUE)) {
                 sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
@@ -1395,7 +1366,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
     case RXIDLE:
         rxup->wait = RXPOLL_DELAY;
 
-        r = dup_get_ddcmp_packet_with_crcs (d->dupidx, &d->rxmsg, &d->rxmlen);
+        r = dup_get_ddcmp_packet_with_crcs (d->dupidx, (const uint8 **)&d->rxmsg, &d->rxmlen);
         if (r == SCPE_LOST) {
             kmc_updateDSR (d);
             break;
@@ -1645,7 +1616,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
  * There is no guarantee that any data structures are initialized.
  */
 
-static void kmc_masterClear(uint32 k) {
+static void kmc_masterClear(int32 k) {
 
     if (sim_deb) {
         DEVICE *dptr = find_dev_from_unit (&tx_units[0][k]);
@@ -1672,7 +1643,7 @@ static void kmc_masterClear(uint32 k) {
 
 /* Initialize the KMC state that is done by microcode */
 
-static void kmc_startUcode (uint32 k) {
+static void kmc_startUcode (int32 k) {
     int i;
     const char *uname;
 
@@ -1874,7 +1845,7 @@ static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line) {
     csraddress |= IOPAGEBASE;
 
     dupidx = dup_csr_to_linenum (sel6);
-    if ((dupidx < 0) || (dupidx >= DIM(dupState))) { /* Call this a NXM so OS can recover */
+    if ((dupidx < 0) || (((size_t) dupidx) >= DIM(dupState))) { /* Call this a NXM so OS can recover */
         sim_debug (DF_ERR, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x is not an enabled DUP\n", 
                    k, line, csraddress, csraddress);
         kmc_ctrlOut (k, SEL6_CO_NXM, 0, line, 0);
@@ -2270,7 +2241,7 @@ static void kmc_txComplete (int32 dupidx, int status) {
     UNIT *txup;
     int32 k;
 
-    assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
+    assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
 
     d = &dupState[dupidx];
     k = d->kmc;
@@ -2307,7 +2278,6 @@ static void kmc_txComplete (int32 dupidx, int status) {
 /* Obtain a new buffer descriptor list from those queued by the host */
 
 static t_bool kmc_txNewBdl(dupstate *d) {
-    int32 k = d->kmc;
     BDL *qe;
     
     if (!(qe = (BDL *)remqueue (d->txqh.next, &d->txavail))) {
@@ -2480,7 +2450,7 @@ static void kmc_ctrlOut (int32 k, uint8 code, uint16 rx, uint8 line, uint32 bda)
 static void kmc_modemChange (int32 dupidx) {
   dupstate *d;
 
-  assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
+  assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
   d = &dupState[dupidx];
 
   if (d->dupidx != -1) {
@@ -2683,7 +2653,7 @@ static int32 kmc_AintAck (void) {
     int32 vec = 0; /* no interrupt request active */
     int32 k;
 
-    for (k = 0; k < DIM (kmc_gflags); k++) {
+    for (k = 0; ((size_t)k) < DIM (kmc_gflags); k++) {
         if (gflags & FLG_AINT) {
             vec = kmc_dib.vec + (k*010);
             gflags &= ~FLG_AINT;
@@ -2706,7 +2676,7 @@ static int32 kmc_BintAck (void) {
     int32 vec = 0;                              /* no interrupt request active */
     int32 k;
 
-    for (k = 0; k < DIM (kmc_gflags); k++) {
+    for (k = 0; ((size_t)k) < DIM (kmc_gflags); k++) {
         if (gflags & FLG_BINT) {
             vec = kmc_dib.vec + 4 + (k*010);
             gflags &= ~FLG_BINT;
@@ -2955,7 +2925,7 @@ static t_bool kmc_feedTroll (int32 k, int32 line, uint8 *msg, t_bool rx) {
  */
 
 static const char *kmc_verifyUcode (int32 k) {
-    int i, n;
+    size_t i, n;
     uint16 crc = 'T' << 8 | 'L';
     uint8 w[2];
     static const struct {
@@ -3119,8 +3089,6 @@ static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc) 
  */
 
 static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc) {
-    DEVICE *dptr = find_dev_from_unit(txup);
-    int32 k = txup->unit_kmc;
     dupstate *d;
     int32 dupidx, newspeed;
     char gbuf[CBUFSIZE];
@@ -3275,84 +3243,133 @@ t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v,  void *dp) {
 static t_stat kmc_help (FILE *st, struct sim_device *dptr,
                          struct sim_unit *uptr, int32 flag, char *cptr) {
     const char *const text =
-    " The Whizbang 100 is a DMA line printer controller used on the Whizbang 1000\n"
-    " and Gurgle 1200 processor familes of the Obsolete Hardware Corporation.\n"
-    "1 Hardware Description\n"
-    " The Whizbang 100 is specified to operate \"any printer you and a friend can\n"
-    " lift\", and speeds up to 0.5 C.\n"
-    "\n"
-    " The controller requires a refrigerator-sized box, consumes 5.5KW, and is\n"
-    " liquid cooled.  It uses GBL (Granite Baked Logic).\n"
-    "\n"
-    " Painted a cool blue, it consistently won industrial design awards, even\n"
-    " as mechanically, it was less than perfect.  Plumbers had full employment.\n"
-    "2 Models\n"
-    " The Whizbang 100 model G was commissioned by a government agency, which\n"
-    " insisted on dull gray paint, and speeds limited to 11 MPH.\n"
-    "\n"
-    " The Whizbang 100 Model X is powered by the improbability drive, and is\n"
-    " rarely seen once installed.\n"
-    "2 $Registers\n"
-    " The two main registers are the Print Control register and the Print Data\n"
-    " register.  The Print Maintenance register is usually broken.\n"
-    "3 Print Control register\n"
-    "  Bit 0 turns the attached printer on when set, off when clear.\n"
-    "  Bit 1 ejects the current page\n"
-    "  Bit 2 ejects the operator\n"
-    "  Bit 3 enables interrupts\n"
-    "3 Print data register\n"
-    "  The print data register is thiry-seven bits wide, and accepts data in\n"
-    "  elephantcode, the precursor to Unicode.  Paper advance is accomplished\n"
-    "  with the Rocket Return and Page Trampoline characters.\n"
-    "1 Configuration\n"
-    "  The Whizbang 100 requires 4 address slots on the LooneyBus.\n"
-    "+  SET WHIZBANG LUNA 11\n"
-    "  will assign the controller to its default bus address.\n"
-    "2 $Set commands\n"
-    "  The output codeset can be ASCII or elephantcode\n"
-    "+ SET WHIZBANG CODESET ASCII\n"
-    "+   SET WHIZBANG CODESET ELEPHANTCODE\n"
-    "\n"
-    "  The VFU (carriage control tape) is specifed with\n"
-    "+ SET WHIZBANG TAPE vfufile\n"
-    "2 WOS\n"
-    "  Under WOS, the device will only work at LooneyBus slot 9\n"
-    "2 RTG\n"
-    "  The RTG driver has been lost.  It is not known if the\n"
-    "  Whizbang will operate correctly.\n"
-    "2 Files\n"
-    "  The VFU is programmed with an ASCII text file.  Each line of the\n"
-    "  file corresponds to a line of the form.  Enter the channel numbers\n"
-    "  as base 33 roman numerals.\n"
-    "2 Examples\n"
-    "  TBS\n"
-    "1 Operation\n"
-    "  Specify the host file to receive output using the \n"
-    "+ATTACH WHIZBANG filespec\n"
-    " command.\n"
-    "1 Monitoring\n"
-    "  The Whizbang shas no lights or switches.  The model X may be located\n"
-    "  with the\n"
-    "+SHOW WHIZBANG LOCATION\n"
-    " simulator command.\n"
-    "2 $Show commands\n"
-    "1 Restrictions\n"
-    " The emulator is limited to a single Whizbang controller.\n"
-    "1 Debugging\n"
-    " The only implemented debugging command is\n"
-    "+ SET WHIZBANG DEBUG=PRAY\n"
-    " To stop:\n"
-    "+ SET WHIZBANG NODEBUG=PRAY\n"
-    "1 Related Devices\n"
-    "  See also the Whizbang paper shredder (SHRED).\n"
-    "";
+" The KMC11-A is a general purpose microprocessor that is used in\n"
+" several DEC products.  The KDP is an emulation of one of those\n"
+" products: COMM IOP-DUP.\n"
+"\n"
+" The COMM IOP-DUP microcode controls and supervises 1 - 16 DUP-11\n"
+" synchronous communications line interfaces, providing scatter/gather\n"
+" DMA, message framing, modem control, CRC validation, receiver\n"
+" resynchronization, and address recognition.\n"
+"\n"
+" The DUP-11 lines are assigned to the KMC11 by the (emulated) operating\n"
+" system, but SimH must be told how to connect them.  See the DUP HELP\n"
+" for details.\n"
+"1 Hardware Description\n"
+" The KMC11-A microprocessor is a 16-bit Harvard architecture machine\n"
+" optimized for data movement, character processing, address arithmetic\n"
+" and other functions necessary for controlling I/O devices.  It resides\n"
+" on the UNIBUS and operates in parallel with the host CPU with a cycle\n"
+" time of 300 nsec.  It contains a 1024 word writable control store that\n"
+" is loaded by the host, 1024 words of data memory, 16 8-bit scratchpad\n"
+" registers, and 8 bytes of RAM that are dual-ported between the KMC11\n"
+" and UNIBUS I/O space.  It also has a timer and various internal busses\n"
+" and registers.\n"
+"\n"
+" Seven of the eight bytes of dual-ported RAM have no fixed function;\n"
+" they are defined by the microcode.  The eighth register allows the\n"
+" host to control the KMC11: the host can start, stop, examine state and\n"
+" load microcode using this register.\n"
+"\n"
+" The microprocessor is capable of initiating DMA (NPR) UNIBUS cycles to\n"
+" any UNIBUS address (memory and I/O space).  It can interrupt the host\n"
+" via one of two interrupt vectors.\n"
+"\n"
+" The microcodes operate other UNIBUS devices by reading and writing\n"
+" their CSRs with UNIBUS DMA transactions, typically on a\n"
+" character-by-character basis.  There is no direct connection between\n"
+" the KMC11 and the peripherals that it controls.  The controlled\n"
+" devices do not generate interrupts; all interrupts are generated by\n"
+" the KMC11, which monitors the devices by polling their CSRs.\n"
+"\n"
+" By presenting the character-oriented peripherals to the host as\n"
+" message-oriented devices, the KMC11 reduces the host's overhead in\n"
+" operating the peripherals, relaxes the required interrupt response\n"
+" times and increases the potential I/O throughput of a system.\n"
+"\n"
+" The hardware also has a private bus that can be used to control\n"
+" dedicated peripherals (such as a DMC11 synchronous line unit) without\n"
+" UNIBUS transactions.  This feature is not emulated.\n"
+"\n"
+" This emulation does not execute the KMC microcode, but rather provides\n"
+" a functional emulation.\n"
+"\n"
+" However, some of the microcode operators are emulated because system\n"
+" loaders and OS diagnostics execute single instructions to initialize\n"
+" or diagnose the device.\n"
+"2 $Registers\n"
+"2 Related devices\n"
+" Other versions of the KMC11 have ROM microcode, which are used in such\n"
+" devices as the DMC1 and DMR11 communications devices.  This emulation\n"
+" does not support those versions.\n"
+"\n"
+" Microcodes, not supported by this emulation, exist which control other\n"
+" UNIBUS peripherals in a similar manner.  These include:\n"
+"\n"
+"+DMA for DZ11 asynchronous lines (COMM IOP-DZ)\n"
+"+DMA for line printers\n"
+"+Arpanet IMP interface (AN22 on the KS10/TOPS-20)\n"
+"\n"
+" The KMC11 was also embedded in other products, such as the DX20 Massbus\n"
+" to IBM channel adapter.\n"
+"\n"
+" The KMC11-B is an enhanced version of the KMC11-A.  Note that microcode\n"
+" loading is handled differently in that version, which is NOT emulated.\n"
+"1 Configuration\n"
+" Most configuration of KDP lines is done by the host OS and by SimH\n"
+" configuration of the DUP11 lines.\n"
+"\n"
+#if KMC_TROLL
+" The KDP has two configurable parameters.\n"
+#else
+" The KDP has one configurable parameter.\n"
+#endif
+" Line speed - this is the speed at which each communication line\n"
+" operates.  The DUP11's line speed should be set to 'unlimited' to\n"
+" avoid unpredictable interactions.\n"
+#if KMC_TROLL
+" Troll - the KDP emulation includes a process that will intentionally\n"
+" drop or corrupt some messages.  This emulates the less-than-perfect\n"
+" communications lines encountered in the real world, and enables\n"
+" network monitoring software to see non-zero error counters.\n"
+"\n"
+" The troll selects messages with a probablility selected by the SET\n"
+" TROLL command.  The units are 0.1%%; that is, a value of 1 means that\n"
+" every message has a 1/1000 chance of being selected.\n"
+#endif
+"2 $Set commands\n"
+#if KMC_UNITS > 1
+" SET KDP DEVICES=n enables emulation of up to %1s KMC11s.\n"
+#endif
+"2 $Show commands\n"
+"1 Operation\n"
+" A KDP device consists of one or more DUP11s controlled by a KMC11.\n"
+" The association of DUP11s to KMC11s is determined by the host OS.\n"
+"\n"
+" For RSX DECnet, use NCP:\n"
+" +SET LINE KDP-kdp-line CSR address\n"
+" +SET LINE KDP-kdp-line UNIT CSR address\n"
+" where 'kdp' is the KDP number and 'line' is the line number on \n"
+" that kdp.  'address' is the I/O page offset of the CSR; e.g.\n"
+" 760050 is entered as 160050.\n"
+"\n"
+" For TOPS-10/20, the addresses are fixed.\n"
+"\n"
+" For VMS...\n"
+"\n"
+" Although the microcode is not directly executed by the emulated KMC11,\n"
+" the correct microcode must be loaded by the host operating system.\n"
+;
+    char kmc_units[10];
 
-    return scp_help (st, dptr, uptr, flag, text, cptr);
+    sprintf (kmc_units, "%u", KMC_UNITS);
+
+    return scp_help (st, dptr, uptr, flag, text, cptr, kmc_units);
 }
+
 /* Description of this device.
  * Conventionally last function in the file.
  */
 static char *kmc_description (DEVICE *dptr) {
     return "KMC11-A Synchronous line controller supporting only COMM IOP/DUP microcode";
 }
-

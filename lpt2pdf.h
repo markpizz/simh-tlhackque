@@ -79,7 +79,7 @@
  *                                    "YELLOWBAR"  - Standard yellowbar
  *                                    "GRAYBAR"    - Standard graybar
  *                                    "PLAIN"      - Plain white
- *       PDF_FORM_IMAGE     filename              File name for PDF_JPEG background (over form)
+ *       PDF_FORM_IMAGE     filename              File name for image background (over form)  JPEG or PNG.
  *                                                Image can be used for logos, special forms.  It is 
  *                                                scaled to fit the width of the page, less margins.
  *                                                Aspect ratio is maintained. 
@@ -291,6 +291,15 @@ static const char *const errortext[] = {
 
 #define PDF_E_BAD_FILENAME     (PDF_E_BASE +  18)
 E__(Bad filename - null or not .pdf)
+
+#define PDF_E_UNKNOWN_IMAGE    (PDF_E_BASE +  19)
+    E__(Unrecognized image file format)
+
+#define PDF_E_BAD_PNG          (PDF_E_BASE +  20)
+    E__(Image file is not PNG)
+
+#define PDF_E_UNSUP_PNG        (PDF_E_BASE +  21)
+    E__(PNG Image file version not supported)
 
 #undef E__
 #ifdef PDF_BUILD_

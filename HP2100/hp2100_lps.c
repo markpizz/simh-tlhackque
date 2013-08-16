@@ -1,6 +1,6 @@
 /* hp2100_lps.c: HP 2100 12653A/2767 line printer simulator
 
-   Copyright (c) 1993-2012, Robert M. Supnik
+   Copyright (c) 1993-2013, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    LPS          12653A 2767 line printer
                 12566B microcircuit interface with loopback diagnostic connector
 
+   02-Aug-13    TL      Added support for PDF output
    10-Feb-12    JDB     Deprecated DEVNO in favor of SC
    28-Mar-11    JDB     Tidied up signal handling
    26-Oct-10    JDB     Changed I/O signal handler for revised signal model
