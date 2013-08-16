@@ -593,6 +593,7 @@ void ddcmp_Ignore                 (CTLR *controller);
 void ddcmp_GiveBufferToUser       (CTLR *controller);
 void ddcmp_CompleteAckedTransmits (CTLR *controller);
 void ddcmp_ReTransmitMessageT     (CTLR *controller);
+void ddcmp_NotifyDisconnect       (CTLR *controller);
 void ddcmp_NotifyStartRcvd        (CTLR *controller);
 void ddcmp_NotifyMaintRcvd        (CTLR *controller);
 void ddcmp_SendDataMessage        (CTLR *controller);
@@ -639,7 +640,9 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
     {17, AStart,      {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
     {18, AStart,      {ddcmp_ReceiveMessageError}, AStart,         {ddcmp_Ignore}},
-    {19, Run,         {ddcmp_LineDisconnected},    Halt,           {ddcmp_StopTimer}},
+    {19, Run,         {ddcmp_LineDisconnected},    Halt,           {ddcmp_StopTimer,
+                                                                    ddcmp_NotifyDisconnect,
+                                                                    ddcmp_NotifyStartRcvd}},
     {20, Run,         {ddcmp_ReceiveStrt},         Halt,           {ddcmp_NotifyStartRcvd}},
     {21, Run,         {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
@@ -2035,7 +2038,6 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
     if ((old_modem & DMC_SEL4_M_DSR) && 
         (!(new_modem & DMC_SEL4_M_DSR))) {
         sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - DSR State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_DSR) ? "UP(ON)" : "DOWN(OFF)");
-        dmc_queue_control_out(controller, DMC_SEL6_M_DISCONN);
         ddcmp_dispatch (controller, 0);
         }
     if ((lp->xmte && tmxr_tpbusyln(lp)) || 
@@ -2582,6 +2584,10 @@ for (i=0; i < controller->ack_wait_queue->count; ++i) {
     assert (insqueue (&buffer->hdr, controller->xmt_queue->hdr.prev)); /* Insert at tail */
     break;
     }
+}
+void ddcmp_NotifyDisconnect       (CTLR *controller)
+{
+dmc_queue_control_out(controller, DMC_SEL6_M_DISCONN);
 }
 void ddcmp_NotifyStartRcvd        (CTLR *controller)
 {
