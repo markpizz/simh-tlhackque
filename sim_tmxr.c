@@ -445,7 +445,6 @@ lp->dstb = 0;                                           /* default bin mode */
 lp->rxbpr = lp->rxbpi = lp->rxcnt = lp->rxpcnt = 0;     /* init receive indexes */
 if (!lp->txbfd || lp->notelnet)                         /* if not buffered telnet */
     lp->txbpr = lp->txbpi = lp->txcnt = lp->txpcnt = 0; /*   init transmit indexes */
-memset (lp->rbr, 0, sizeof(lp->rbr));                   /* clear break status array */
 lp->txdrp = 0;
 if (lp->modem_control) {
     lp->modembits &= ~TMXR_MDM_INCOMING;
@@ -474,6 +473,7 @@ if (lp->txpb) {
     free (lp->txpb);
     lp->txpb = NULL;
     }
+memset (lp->rbr, 0, lp->rxbsz);                         /* clear break status array */
 return;
 }
 
@@ -1327,12 +1327,14 @@ lp->modembits |= bits_to_set;
 lp->modembits &= ~(bits_to_clear | TMXR_MDM_INCOMING);
 if ((lp->sock) || (lp->serport) || (lp->loopback)) {
     if (lp->modembits & TMXR_MDM_DTR)
-        incoming_state = TMXR_MDM_DCD | TMXR_MDM_CTS | TMXR_MDM_DSR;
+        incoming_state = TMXR_MDM_DCD | TMXR_MDM_DSR;
     else
-        incoming_state = TMXR_MDM_RNG | TMXR_MDM_DCD | TMXR_MDM_CTS | TMXR_MDM_DSR;
+        incoming_state = TMXR_MDM_RNG | TMXR_MDM_DCD | TMXR_MDM_DSR;
+    if (lp->modembits & TMXR_MDM_RTS)
+        incoming_state |= TMXR_MDM_CTS;
     }
 else
-    incoming_state = (lp->mp && lp->mp->master) ? (TMXR_MDM_CTS | TMXR_MDM_DSR) : 0;
+incoming_state = (lp->mp && lp->mp->master) ? (((lp->modembits & TMXR_MDM_RTS) ? TMXR_MDM_CTS : 0) | TMXR_MDM_DSR) : 0;
 lp->modembits |= incoming_state;
 if (sim_deb && lp->mp && lp->mp->dptr) {
     sim_debug_bits (TMXR_DBG_MDM, lp->mp->dptr, tmxr_modem_bits, before_modem_bits, lp->modembits, FALSE);
