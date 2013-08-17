@@ -620,7 +620,8 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
     { 0, All,         {ddcmp_UserHalt},            Halt,           {ddcmp_StopTimer}},
     { 1, Halt,        {ddcmp_UserStartup,
                        ddcmp_LineConnected},       IStart,         {ddcmp_SendStrt, 
-                                                                    ddcmp_ResetVariables}},
+                                                                    ddcmp_ResetVariables,
+                                                                    ddcmp_StopTimer}},
     { 2, Halt,        {ddcmp_UserMaintenanceMode}, Maintenance,    {ddcmp_ResetVariables}},
     { 3, Halt,        {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
@@ -2880,7 +2881,7 @@ if ((controller->link.xmt_buffer) ||        /* if Already Transmitting */
 while (buffer) {
     if (buffer->transfer_buffer[0] == 0)
         return;
-    /* Need to make sure we've got a DDCMP header for data packets assembled here */
+    /* Need to make sure we dynamically compute the packet CRCs since header details can change */
     r = ddcmp_tmxr_put_packet_crc_ln (controller->line, buffer->transfer_buffer, buffer->count);
     if (r == SCPE_OK) {
         controller->link.xmt_buffer = buffer;
