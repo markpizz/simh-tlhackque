@@ -3140,7 +3140,7 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
     dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
     }
 
-ans = auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : dptr->numunits - 1);
+ans = auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : dptr->numunits - 2);
 
 if (!(dptr->flags & DEV_DIS)) {
     for (i = 0; i < DMC_NUMDEVICE + DMP_NUMDEVICE; i++) {
