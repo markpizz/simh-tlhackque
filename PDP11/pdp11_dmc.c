@@ -69,14 +69,21 @@ SELECT XMA0
 The first is EVDCA which takes no parameters. Invoke it with the command 
 R EVDCA. This diagnostic uses the DMC-11 loopback functionality and the 
 transmit port is not used when LU LOOP is enabled. Seems to work only under 
-later versions of VMS such as 4.6, does not work on 3.0.
+later versions of VMS such as 4.6, does not work on 3.0.  It does not work
+under VMS 3.x since in that environment, no receive buffers are ever made
+available to the device while testing.
 
 The second is EVDMC, invoke this with the command R EVDMC. For this I used 
 the following commands inside the diagnostic:
 
 RUN MODE=TRAN on one machine
-RUN MODE=REC on the other (unless the one instance is configured with the 
-                           ports looping back).
+RUN MODE=REC on the other
+
+or using loopback mode:
+
+SET TRANSMIT=CCITT/SIZE=25/COPY=5
+SET EXPECT=CCITT/SIZE=25/COPY=5
+RUN MODE=ACTIVE/LOOP=INT/STATUS/PASS=3
 
 You can add /PASS=n to the above commands to get the diagnostic to send and 
 receive more buffers.
@@ -2188,6 +2195,7 @@ if (controller->state == Running) {
         if (!controller->link.rcv_pkt)
             break;
         controller->buffers_received_from_net++;
+        controller->ddcmp_control_packets_received += (controller->link.rcv_pkt[0] == DDCMP_ENQ) ? 1 : 0;
         ddcmp_dispatch(controller, DDCMP_EVENT_PKT_RCVD);
         buffer = dmc_buffer_queue_head(controller->rcv_queue);
         }
@@ -2876,6 +2884,7 @@ while (buffer) {
     r = ddcmp_tmxr_put_packet_crc_ln (controller->line, buffer->transfer_buffer, buffer->count);
     if (r == SCPE_OK) {
         controller->link.xmt_buffer = buffer;
+        controller->ddcmp_control_packets_sent += (buffer->transfer_buffer[0] == DDCMP_ENQ) ? 1 : 0;
         if (controller->byte_wait) {  /* Speed limited? */
             buffer->buffer_return_time = buffer->count*controller->byte_wait + sim_grtime();
             sim_activate (controller->unit, buffer->count*controller->byte_wait);
@@ -2944,6 +2953,7 @@ else {
         }
     }
 if (tmxr_get_line_loopback (controller->line) ^ dmc_is_lu_loop_set (controller)) {
+    sim_debug(DBG_INF, controller->device, "%s loopback mode\n", dmc_is_lu_loop_set (controller) ? "Enabling" : "Disabling");
     tmxr_set_line_loopback (controller->line, dmc_is_lu_loop_set (controller));
     }
 }

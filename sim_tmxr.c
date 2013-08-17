@@ -79,6 +79,7 @@
    tmxr_clear_modem_control_passthru -  disable modem control on a multiplexer
    tmxr_set_get_modem_bits -            set and/or get a line modem bits
    tmxr_set_line_loopback -             enable or disable loopback mode on a line
+   tmxr_get_line_loopback -             returns the current loopback status of a line
    tmxr_set_config_line -               set port speed, character size, parity and stop bits
    tmxr_open_master -                   open master connection
    tmxr_close_master -                  close master connection
@@ -980,7 +981,8 @@ if (mp->master) {
             lp = mp->ldsc + i;                          /* get pointer to line descriptor */
             if ((lp->conn == FALSE) &&                  /* is the line available? */
                 (lp->destination == NULL) &&
-                (lp->master == 0))
+                (lp->master == 0) &&
+                (lp->ser_connect_pending == FALSE))
                 break;                                  /* yes, so stop search */
             }
 
@@ -1012,6 +1014,19 @@ if (mp->master) {
 for (i = 0; i < mp->lines; i++) {                       /* check each line in sequence */
     int j, r = rand();
     lp = mp->ldsc + i;                                  /* get pointer to line descriptor */
+
+    /* Check for pending serial port connection notification */
+    
+    if (lp->ser_connect_pending) {
+        lp->ser_connect_pending = FALSE;
+        lp->conn = TRUE;
+        return i;
+        }
+
+    /* Don't service network connections for loopbacked lines */
+
+    if (lp->loopback)
+        continue;
 
     /* If two simulators are configured with symmetric virtual null modem 
        cables pointing at each other, there may be a problem establishing 
@@ -1112,14 +1127,6 @@ for (i = 0; i < mp->lines; i++) {                       /* check each line in se
                     }
                 break;
             }
-
-    /* Check for pending serial port connection notification */
-    
-    if (lp->ser_connect_pending) {
-        lp->ser_connect_pending = FALSE;
-        lp->conn = TRUE;
-        return i;
-        }
 
     /* Check for needed outgoing connection initiation */
 
@@ -1395,9 +1402,9 @@ return SCPE_IERR;
 */
 t_stat tmxr_set_line_loopback (TMLN *lp, t_bool enable_loopback)
 {
-if (lp->loopback == enable_loopback)
+if (lp->loopback == (enable_loopback != FALSE))
     return SCPE_OK;                 /* Nothing to do */
-lp->loopback = enable_loopback;
+lp->loopback = (enable_loopback != FALSE);
 if (lp->loopback) {
     lp->lpbsz = lp->rxbsz;
     lp->lpb = (char *)realloc(lp->lpb, lp->lpbsz);
@@ -1415,7 +1422,7 @@ return SCPE_OK;
 
 t_bool tmxr_get_line_loopback (TMLN *lp)
 {
-return (lp->loopback != 0);
+return (lp->loopback != FALSE);
 }
 t_stat tmxr_set_config_line (TMLN *lp, char *config)
 {
@@ -1551,7 +1558,8 @@ TMLN *lp;
 tmxr_debug_trace (mp, "tmxr_poll_rx()");
 for (i = 0; i < mp->lines; i++) {                       /* loop thru lines */
     lp = mp->ldsc + i;                                  /* get line desc */
-    if (!(lp->sock || lp->serport) || !lp->rcve)        /* skip if not connected */
+    if (!(lp->sock || lp->serport || lp->loopback) || 
+        !(lp->rcve))                                    /* skip if not connected */
         continue;
 
     nbytes = 0;
