@@ -106,6 +106,7 @@ t_stat show_addr (FILE *st, UNIT *uptr, int32 val, void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
+uint32 radix = DEV_RDX;
 
 if (uptr == NULL)
     return SCPE_IERR;
@@ -115,11 +116,25 @@ if (dptr == NULL)
 dibp = (DIB *) dptr->ctxt;
 if ((dibp == NULL) || (dibp->ba <= IOPAGEBASE))
     return SCPE_IERR;
+if (sim_switches & SWMASK ('H'))
+    radix = 16;
+if (sim_switches & SWMASK ('O'))
+    radix = 8;
 fprintf (st, "address=");
 fprint_val (st, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
+if (radix != DEV_RDX) {
+    fprintf (st, "(");
+    fprint_val (st, (t_value) dibp->ba, radix, 32, PV_LEFT);
+    fprintf (st, ")");
+    }
 if (dibp->lnt > 1) {
     fprintf (st, "-");
     fprint_val (st, (t_value) dibp->ba + dibp->lnt - 1, DEV_RDX, 32, PV_LEFT);
+    if (radix != DEV_RDX) {
+        fprintf (st, "(");
+        fprint_val (st, (t_value) dibp->ba + dibp->lnt - 1, radix, 32, PV_LEFT);
+        fprintf (st, ")");
+        }
     }
 if (dibp->ba < IOPAGEBASE + AUTO_CSRBASE + AUTO_CSRMAX)
     fprintf (st, "*");
@@ -177,7 +192,7 @@ t_stat show_vec (FILE *st, UNIT *uptr, int32 arg, void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
-uint32 vec, numvec;
+uint32 vec, numvec, radix = DEV_RDX;
 
 if (uptr == NULL)
     return SCPE_IERR;
@@ -187,6 +202,10 @@ if (dptr == NULL)
 dibp = (DIB *) dptr->ctxt;
 if (dibp == NULL)
     return SCPE_IERR;
+if (sim_switches & SWMASK ('H'))
+    radix = 16;
+if (sim_switches & SWMASK ('O'))
+    radix = 8;
 vec = dibp->vec;
 if (arg)
     numvec = arg;
@@ -196,9 +215,19 @@ if (vec == 0)
 else {
     fprintf (st, "vector=");
     fprint_val (st, (t_value) vec, DEV_RDX, 16, PV_LEFT);
+    if (radix != DEV_RDX) {
+        fprintf (st, "(");
+        fprint_val (st, (t_value) vec, radix, 16, PV_LEFT);
+        fprintf (st, ")");
+        }
     if (numvec > 1) {
         fprintf (st, "-");
         fprint_val (st, (t_value) vec + (4 * (numvec - 1)), DEV_RDX, 16, PV_LEFT);
+        if (radix != DEV_RDX) {
+            fprintf (st, "(");
+            fprint_val (st, (t_value) vec + (4 * (numvec - 1)), radix, 16, PV_LEFT);
+            fprintf (st, ")");
+            }
         }
     }
 if (vec >= VEC_Q + AUTO_VECBASE)
