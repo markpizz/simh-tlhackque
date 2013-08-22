@@ -6989,7 +6989,8 @@ void sim_debug_bits(uint32 dbits, DEVICE* dptr, BITFIELD* bitdefs,
     uint32 before, uint32 after, int terminate)
 {
 if (sim_deb && (dptr->dctrl & dbits)) {
-    fprintf(sim_deb, "%s", sim_debug_prefix(dbits, dptr));                      /* print prefix if required */
+    if (!debug_unterm)
+        fprintf(sim_deb, "%s", sim_debug_prefix(dbits, dptr));                      /* print prefix if required */
     fprint_fields (sim_deb, (t_value)before, (t_value)after, bitdefs); /* print xlation, transition */
     if (terminate)
         fprintf(sim_deb, "\r\n");
@@ -7063,11 +7064,13 @@ if (sim_deb && (dptr->dctrl & dbits)) {
 
     for (i = j = 0; i < len; ++i) {
         if ('\n' == buf[i]) {
-            if (i > j) {
-                if (debug_unterm)
-                    fprintf (sim_deb, "%.*s\r\n", i-j, &buf[j]);
-                else                                /* print prefix when required */
-                    fprintf (sim_deb, "%s%.*s\r\n", debug_prefix, i-j, &buf[j]);
+            if (i >= j) {
+                if ((i != j) || (i == 0)) {
+                    if (debug_unterm)
+                        fprintf (sim_deb, "%.*s\r\n", i-j, &buf[j]);
+                    else                                /* print prefix when required */
+                        fprintf (sim_deb, "%s%.*s\r\n", debug_prefix, i-j, &buf[j]);
+                    }
                 debug_unterm = 0;
                 }
             j = i + 1;
