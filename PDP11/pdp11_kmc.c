@@ -1932,7 +1932,7 @@ static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
             if (sel6 & SEL6_CI_ENASS)
                 sim_debug (DF_CMD, &kmc_dev, " SS:%u",
                           (sel6 & SEL6_CI_SADDR), line);
-            sim_debug (DF_CMD, &kmc_dev, " \n");
+            sim_debug (DF_CMD, &kmc_dev, "\n");
         }
     }
 
@@ -2817,7 +2817,7 @@ static t_bool kmc_printBDL(int32 k, uint32 dbits, DEVICE *dev, uint8 line, int32
             sim_debug (dbits, dev, " XEOM");
         if (bd[2] & BDL_SOM)
             sim_debug (dbits, dev, " XSOM");
-        sim_debug (dbits, dev, " \n");
+        sim_debug (dbits, dev, "\n");
 
         if (prbuf) {
             uint8 buf[20];
@@ -3349,7 +3349,7 @@ static t_stat kmc_help (FILE *st, struct sim_device *dptr,
 " For RSX DECnet, use NCP:\n"
 " +SET LINE KDP-kdp-line CSR address\n"
 " +SET LINE KDP-kdp-line UNIT CSR address\n"
-" where 'kdp' is the KDP number and 'line' is the line number on \n"
+" where 'kdp' is the KDP number and 'line' is the line number on\n"
 " that kdp.  'address' is the I/O page offset of the CSR; e.g.\n"
 " 760050 is entered as 160050.\n"
 "\n"
