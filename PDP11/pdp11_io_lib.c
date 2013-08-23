@@ -241,12 +241,58 @@ return;
 
 t_stat build_ubus_tab (DEVICE *dptr, DIB *dibp)
 {
-int32 i, idx, vec, ilvl, ibit;
+int32 i, idx, vec, hivec, ilvl, ibit;
+DEVICE *cdptr;
+size_t j;
+char *cdname;
 
 if ((dptr == NULL) || (dibp == NULL))                   /* validate args */
     return SCPE_IERR;
 if (dibp->vnum > VEC_DEVMAX)
     return SCPE_IERR;
+vec = dibp->vec;
+/* hivec & cdhivec are first vector AFTER device */
+hivec = vec + (dibp->vnum * 4 * (dibp->ulnt? dibp->lnt/dibp->ulnt:
+                                 (dptr->numunits? dptr->numunits: 1)));
+/* Check for vector conflict with any other enabled device.
+ * Skip vector checks if device (currently) doesn't have a vector assigned.
+ * Also skip if power-up reset to allow for auto-configure.
+ */
+if (vec && !(sim_switches & SWMASK ('P'))) {
+    for (j = 0; vec && (cdptr = sim_devices[j]) != NULL; j++) {
+        DIB *cdibp = (DIB *)(cdptr->ctxt);
+        int32 cdvec, cdhivec;
+        if (!cdibp || (cdptr->flags & DEV_DIS)) {
+            continue;
+            }
+        cdvec = cdibp->vec;
+        cdhivec = cdvec + (cdibp->vnum * 4 * 
+                           (cdibp->ulnt? cdibp->lnt/cdibp->ulnt:
+                            (cdptr->numunits? cdptr->numunits: 1)));
+        if (cdptr == dptr || !cdvec || !dibp->vnum) {
+            continue;
+            }
+        if (hivec <= cdvec || vec >= cdhivec) {
+            continue;
+            }
+        cdname = cdptr? sim_dname(cdptr): NULL;
+        if (!cdname) {
+            cdname = "CPU";
+        }
+        printf ("Device %s interrupt vector conflict with %s at ",
+                sim_dname (dptr), cdname);
+        fprint_val (stdout, (t_value) dibp->vec, DEV_RDX, 32, PV_LEFT);
+        printf ("\n");
+        if (sim_log) {
+            fprintf (sim_log, "Device %s interrupt vector conflict with %s at ",
+                     sim_dname (dptr), cdname);
+            fprint_val (sim_log, (t_value) dibp->vec, DEV_RDX, 32, PV_LEFT);
+            fprintf (sim_log, "\n");
+            }
+        return SCPE_STOP;
+        }
+    }
+/* Interrupt slot assignment and conflict check. */
 for (i = 0; i < dibp->vnum; i++) {                      /* loop thru vec */
     idx = dibp->vloc + i;                               /* vector index */
     vec = dibp->vec? (dibp->vec + (i * 4)): 0;          /* vector addr */
@@ -268,18 +314,16 @@ for (i = 0; i < dibp->vnum; i++) {                      /* loop thru vec */
     else if (vec)
         int_vec[ilvl][ibit] = vec;
     }
+/* Register I/O space address and check for conflicts */
 for (i = 0; i < (int32) dibp->lnt; i = i + 2) {         /* create entries */
     idx = ((dibp->ba + i) & IOPAGEMASK) >> 1;           /* index into disp */
     if ((iodispR[idx] && dibp->rd &&                    /* conflict? */
         (iodispR[idx] != dibp->rd)) ||
         (iodispW[idx] && dibp->wr &&
         (iodispW[idx] != dibp->wr))) {
-        DEVICE *cdptr;
-        size_t j;
-        char *cdname;
         for (j = 0; (cdptr = sim_devices[j]) != NULL; j++) { /* Find conflicting device */
             DIB *cdibp = (DIB *)(cdptr->ctxt);
-            if (cdptr->flags & DEV_DIS || !cdibp || cdibp == dibp) {
+            if ((cdptr->flags & DEV_DIS) || !cdibp || cdibp == dibp) {
                 continue;
                 }
             if ((iodispR[idx] && dibp->rd &&
@@ -326,6 +370,12 @@ uint32 maxaddr, maxname, maxdev;
 int32 maxvec, vecwid;
 char valbuf[40];
 
+#if defined DEV_RDX && DEV_RDX == 16
+#define VEC_FMT "X"
+#else
+#define VEC_FMT "o"
+#endif
+
 if (build_dib_tab ())                                   /* build IO page */
     return SCPE_OK;
 
@@ -358,7 +408,7 @@ for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
         }                                               /* end if */
     }                                                   /* end for i */
 maxaddr = fprint_val (NULL, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
-sprintf (valbuf, "%03o", maxvec);
+sprintf (valbuf, "%03" VEC_FMT, maxvec);
 vecwid = maxvec = (int32) strlen (valbuf);
 if (vecwid < 3)
     vecwid = 3;
@@ -421,9 +471,11 @@ for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
         if (dibp->vec == 0)
             fprintf (st, "%*s", ((vecwid*2)+1+1), " ");
         else {
-            fprintf (st, "%0*o", vecwid, dibp->vec);
+            fprintf (st, "%0*" VEC_FMT, vecwid, dibp->vec);
             if (dibp->vnum > 1)
-                fprintf (st, "-%0*o", vecwid, dibp->vec + (4 * (dibp->vnum - 1)));
+                fprintf (st, "-%0*" VEC_FMT, vecwid, dibp->vec + (4 *
+                (dibp->ulnt? dibp->lnt/dibp->ulnt:
+                                            (dptr? dptr->numunits: 1)) * dibp->vnum) - 4);
             else
                 fprintf (st, " %*s", vecwid, " ");
             fprintf (st, "%1s", (dibp->vnum >= AUTO_VECBASE)? "*": " ");
@@ -438,6 +490,7 @@ for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
         }                                               /* end if */
     }                                                   /* end for i */
 return SCPE_OK;
+#undef VEC_FMT
 }
 
 /* Autoconfiguration
