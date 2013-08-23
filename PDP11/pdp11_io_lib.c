@@ -276,9 +276,10 @@ for (i = 0; i < (int32) dibp->lnt; i = i + 2) {         /* create entries */
         (iodispW[idx] != dibp->wr))) {
         DEVICE *cdptr;
         size_t j;
+        char *cdname;
         for (j = 0; (cdptr = sim_devices[j]) != NULL; j++) { /* Find conflicting device */
             DIB *cdibp = (DIB *)(cdptr->ctxt);
-            if (!cdibp || cdibp == dibp) {
+            if (cdptr->flags & DEV_DIS || !cdibp || cdibp == dibp) {
                 continue;
                 }
             if ((iodispR[idx] && dibp->rd &&
@@ -290,13 +291,16 @@ for (i = 0; i < (int32) dibp->lnt; i = i + 2) {         /* create entries */
                 break;
                 }
             }
-        printf ("Device %s address conflict with %s at ", sim_dname (dptr),
-            (cdptr? sim_dname(cdptr): "??"));
+        cdname = cdptr? sim_dname(cdptr): NULL;
+        if (!cdname) {
+            cdname = "CPU";
+            }
+        printf ("Device %s address conflict with %s at ", sim_dname (dptr), cdname);
         fprint_val (stdout, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
         printf ("\n");
         if (sim_log) {
             fprintf (sim_log, "Device %s address conflict with %s at ", sim_dname (dptr),
-                (cdptr? sim_dname(cdptr): "??"));
+                cdname);
             fprint_val (sim_log, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
             fprintf (sim_log, "\n");
             }
