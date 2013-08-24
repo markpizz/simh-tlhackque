@@ -1798,7 +1798,7 @@ if (crtypes & 1) {
 fprintf (st, "The card reader supports ASCII, card image, and column binary format card\n");
 fprintf (st, "\"decks.\"  When reading plain ASCII files, lines longer than 80 characters are\n");
 fprintf (st, "silently truncated.  Card image support is included for 80 column Hollerith,\n");
-fprintf (st, "82 column Hollerith, and 40 column Hollerith (mark-sense) cards. \n");
+fprintf (st, "82 column Hollerith, and 40 column Hollerith (mark-sense) cards.\n");
 fprintf (st, "Column binary supports 80 column card images only.\n");
 if (crtypes & 6) {
     fprintf (st, "The CD11/CD20 optionally check columns 0/81/41 for punches, which produce\n");
