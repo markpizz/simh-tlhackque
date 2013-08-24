@@ -192,6 +192,10 @@
 			Filter="cpp;c;cxx;def;odl;idl;hpj;bat;asm"
 			>
 			<File
+				RelativePath="..\lpt2pdf.c"
+				>
+			</File>
+			<File
 				RelativePath="..\PDP11\pdp11_cis.c"
 				>
 			</File>
@@ -388,19 +392,15 @@
 				>
 			</File>
 			<File
+				RelativePath="..\sim_pdflpt.c"
+				>
+			</File>
+			<File
 				RelativePath="..\sim_serial.c"
 				>
 			</File>
 			<File
 				RelativePath="..\sim_sock.c"
-				>
-			</File>
-			<File
-				RelativePath="..\lpt2pdf.c"
-				>
-			</File>
-			<File
-				RelativePath="..\sim_pdflpt.c"
 				>
 			</File>
 			<File
@@ -434,10 +434,6 @@
 			</File>
 			<File
 				RelativePath="..\PDP11\pdp11_defs.h"
-				>
-			</File>
-			<File
-				RelativePath="..\PDP11\pdp11_dmc.h"
 				>
 			</File>
 			<File

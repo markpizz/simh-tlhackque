@@ -51,7 +51,7 @@ receives its first read buffer. The device opens the connection for writing
 when it receives the first write buffer.
 
 Transmit and receive buffers are added to their respective queues and the 
-polling method in dmc_svc() checks for input and sends any output.
+polling method in dmc_poll_svc() checks for input and sends any output.
 
 Tested with two diagnostics. To run the diagnostics set the default 
 directory to SYS$MAINTENANCE, run ESSAA and then configure it for the 
@@ -96,6 +96,10 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
 #if defined (VM_PDP10)                                  /* PDP10 version */
 #include "pdp10_defs.h"
 
+#if !defined(DMP_NUMDEVICE)
+#define DMP_NUMDEVICE 1         /* Minimum number for array size DMP-11/DMV-11 devices */
+#endif
+
 #elif defined (VM_VAX)                                  /* VAX version */
 #include "vax_defs.h"
 
@@ -115,11 +119,11 @@ extern int32 clk_tps;                                   /* clock ticks per secon
 extern int32 tmr_poll;                                  /* instructions per tick */
 
 #if !defined(DMC_NUMDEVICE)
-#define DMC_NUMDEVICE 8         /* MAX # DMC-11 devices */
+#define DMC_NUMDEVICE 8         /* default MAX # DMC-11 devices */
 #endif
 
 #if !defined(DMP_NUMDEVICE)
-#define DMP_NUMDEVICE 8         /* MAX # DMP-11/DMV-11 devices */
+#define DMP_NUMDEVICE 8         /* default MAX # DMP-11/DMV-11 devices */
 #endif
 
 #define DMC_RDX                     8
@@ -325,7 +329,7 @@ static t_bool insqueue (QH *entry, QH *pred)
 {
 if ((pred->queue->size > 0) && (pred->queue->count >= pred->queue->size))
     return FALSE;
-entry-> next = pred->next;
+entry->next = pred->next;
 entry->prev = pred;
 entry->queue = pred->queue;
 pred->next->prev = entry;
@@ -901,12 +905,14 @@ MTAB dmc_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "LINES", "LINES=n",
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmc_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
-        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source depends on LINEMODE" },
+        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
+#if !defined (VM_PDP10)
     { MTAB_XTD|MTAB_VUN|MTAB_VALR,0, "TYPE", "TYPE={DMR,DMC}" ,&dmc_settype, &dmc_showtype, NULL, "Set/Display device type"  },
+#endif
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
-        &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
+        &dmc_setstats, &dmc_showstats, NULL, "Display/Clear statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DDCMP", "DDCMP",
@@ -925,11 +931,11 @@ MTAB dmp_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "LINES", "LINES=n",
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmp_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
-        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source depends on LINEMODE" },
+        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
-        &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
+        &dmc_setstats, &dmc_showstats, NULL, "Display/Clear statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DDCMP", "DDCMP",
@@ -948,11 +954,11 @@ MTAB dmv_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "LINES", "LINES=n",
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmv_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
-        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source depends on LINEMODE" },
+        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
-        &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
+        &dmc_setstats, &dmc_showstats, NULL, "Display/Clear statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DDCMP", "DDCMP",
@@ -978,7 +984,13 @@ DIB dmp_dib = { IOBA_AUTO, IOLN_DMP, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO
 DIB dmv_dib = { IOBA_AUTO, IOLN_DMV, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO, {&dmc_ininta, &dmc_outinta }, IOLN_DMV};
 
 DEVICE dmc_dev =
-    { "DMC", dmc_units, dmc_reg, dmc_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
+    { 
+#if defined (VM_PDP10)
+    "DMR",
+#else
+    "DMC", 
+#endif
+    dmc_units, dmc_reg, dmc_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
     NULL, NULL, &dmc_reset, NULL, &dmc_attach, &dmc_detach,
     &dmc_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG, 0, dmc_debug,
     NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmc_description };
@@ -1347,93 +1359,185 @@ return SCPE_OK;
 
 t_stat dmc_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
+const char helpString[] =
+ /* The '*'s in the next line represent the standard text width of a help line */
+     /****************************************************************************/
+    " The %1s is a communication subsystem which consists of a microprocessor\n"
+    " based, intelligent synchronous communications controller which employs\n"
+    " the DIGITAL Data Communications Message Protocol (DDCMP).\n"
+    "1 Hardware Description\n"
+    " The %1s consists of a microprocessor module and a synchronous line unit\n"
+    " module.\n"
+#if !defined (VM_PDP10)
+    "2 Models\n"
+    " If the device was offered in distinct models, a subtopic for each\n"
+    "3 DMC11\n"
+    " The original kmc11 microprocessor board with DMC microcode and a sync\n"
+    " line unit.\n"
+    "3 DMR11\n"
+    " The more advanced kmc11 microprocessor board with DMR microcode and a sync\n"
+    " line unit.\n"
+    "3 DMP11\n"
+    " A newly designed Unibus board with a more complete programming interface\n"
+    " and a sync line unit.\n"
+    "3 DMV11\n"
+    " A Qbus version of the DMP11 with some more advanced refinements and a sync\n"
+    " line unit.\n"
+#endif
+    "2 $Registers\n"
+    "\n"
+    " These registers contain the emulated state of the device.  These values\n"
+    " don't necessarily relate to any detail of the original device being\n"
+    " emulated but are merely internal details of the emulation.\n"
+    "1 Configuration\n"
+    " A %D device is configured with various simh SET and ATTACH commands\n"
+    "2 $Set commands\n"
+    " The SET commands for the device will automagically display above\n"
+    " this line.  Add any special notes.\n"
+    "3 Lines\n"
+    " A maximum of %2s %1s devices can be emulated concurrently in the %S\n"
+    " simulator. The number of simulated %1s devices or lines can be\n"
+    " specified with command:\n"
+    "\n"
+    "+sim> SET %U LINES=n\n"
+    "3 Peer\n"
+    " To set the host and port to which data is to be transmitted use the\n"
+    " following command:\n"
+    "\n"
+    "+sim> SET %U PEER=host:port\n"
+    "3 Connectpoll\n"
+    " The minimum interval between attempts to connect to the other side is set\n"
+    " using the following command:\n"
+    "\n"
+    "+sim> SET %U CONNECTPOLL=n\n"
+    "\n"
+    " Where n is the number of seconds. The default is %3s seconds.\n"
+    "3 Speed\n"
+    " If you want to experience the actual data rates of the physical hardware\n"
+    " you can set the bit rate of the simulated line can be set using the\n"
+    " following command:\n"
+    "\n"
+    "+sim> SET %U SPEED=n\n"
+    "\n"
+    " Where n is the number of data bits per second that the simulated line\n"
+    " runs at.  In practice this is implemented as a delay while transmitting\n"
+    " bytes to the socket.  Use a value of zero to run at full speed with no\n"
+    " artificial throttling.\n"
+#if !defined (VM_PDP10)
+    "3 Type\n"
+    " The type of device being emulated can be changed with the following\n"
+    " command:\n"
+    "\n"
+    "+sim> SET %U TYPE={DMR,DMC}\n"
+    "\n"
+    " A SET TYPE command should be entered before the device is attached to a\n"
+    " listening port.\n"
+#endif
+    "2 Attach\n"
+    " The device must be attached to a receive port, use the ATTACH command\n"
+    " specifying the receive port number.\n"
+    "\n"
+    "+sim> ATTACH %U port\n"
+    "\n"
+    " The Peer host:port value must be specified before the attach command.\n"
+    "2 Examples\n"
+    " To configure two simulators to talk to each other use the following\n"
+    " example:\n"
+    " \n"
+    " Machine 1\n"
+    "+sim> SET %D ENABLE\n"
+    "+sim> SET %U PEER=LOCALHOST:2222\n"
+    "+sim> ATTACH %U 1111\n"
+    " \n"
+    " Machine 2\n"
+    "+sim> SET %D ENABLE\n"
+    "+sim> SET %U PEER=LOCALHOST:1111\n"
+    "+sim> ATTACH %U 2222\n"
+    "\n"
+    "1 Monitoring\n"
+    " The %D device and %U line configuration and state can be displayed with\n"
+    " one of the available show commands.\n"
+    "2 $Show commands\n"
+    "1 Restrictions\n"
+    " Real hardware synchronous connections could operate in Multi-Point mode.\n"
+    " Multi-Point mode was a way of sharing a single wire with multiple\n"
+    " destination systems or devices.  Multi-Point mode is not currently\n"
+    " emulated by this or other simulated synchronous devices.\n"
+    "\n"
+    " In real hardware, the DMC11 spoke a version of DDCMP which peer devices\n"
+    " needed to be aware of.  The DMR11, DMP11, and DMV11 boards have\n"
+    " configuration switches or programatic methods to indicate that the peer\n"
+    " device was a DMC11.  The emulated devices all speak the same level of\n"
+    " DDCMP so no special remote device awareness need be considered.\n"
+    "1 Implementation\n"
+    " A real %1s transports data using DDCMP via a synchronous connection, the\n"
+    " emulated device makes a TCP/IP connection to another emulated device which\n"
+    " either speaks DDCMP over the TCP connection directly, or interfaces to a\n"
+    " simulated computer where the operating system speaks the DDCMP protocol on\n"
+    " the wire.\n"
+    "\n"
+    " The %1s can be used for point-to-point DDCMP connections carrying\n"
+    " DECnet and other types of networking, e.g. from ULTRIX or DSM.\n"
+    "1 Debugging\n"
+    " The simulator has a number of debug options, these are:\n"
+    "\n"
+    "++REG     Shows whenever a CSR is programatically read or written\n"
+    "++++and the current value.\n"
+    "++INTREG  Shows internal register value changes.\n"
+    "++INFO    Shows higher-level tracing only.\n"
+    "++WARN    Shows any warnings.\n"
+    "++TRACE   Shows more detailed trace information.\n"
+    "++DATASUM Brief summary of each received and transmitted buffer.\n"
+    "++++Ignored if DATA is set.\n"
+    "++DATA    Shows the actual data sent and received.\n"
+    "++MODEM   Shows modem signal transitions details.\n"
+    "++CONNECT Shows sockets connection activity.\n"
+    "++INT     Shows Interrupt activity.\n"
+    "\n"
+    " To get a full trace use\n"
+    "\n"
+    "+sim> SET %D DEBUG\n"
+    "\n"
+    " However it is recommended to use the following when sending traces:\n"
+    "\n"
+    "+sim> SET %D DEBUG=REG;INFO;WARN\n"
+    "\n"
+    "1 Related Devices\n"
+    " The %D can facilitate communication with other simh simulators which\n"
+    " have emulated synchronous network devices available.  These include\n"
+    " the following:\n"
+    "\n"
+    "++DUP11*       Unibus PDP11 simulators\n"
+    "++DPV11*       Qbus PDP11 simulators\n"
+    "++KDP11*       Unibus PDP11 simulators and PDP10 simulators\n"
+    "++DMR11        Unibus PDP11 simulators and Unibus VAX simulators\n"
+    "++DMC11        Unibus PDP11 simulators and Unibus VAX simulators\n"
+    "++DMP11        Unibus PDP11 simulators and Unibus VAX simulators\n"
+    "++DMV11        Qbus VAX simulators\n"
+    "\n"
+    "++* Indicates systems which have OS provided DDCMP implementations.\n"
+    ;
 char devname[16];
+char devcount[16];
+char connectpoll[16];
 
-sprintf(devname, "%s11", (dptr == &dmc_dev) ? "DMC" : ((UNIBUS) ? "DMP" : "DMV"));
-fprintf(st, "The %s is a synchronous serial point-to-point communications device.\n", devname);
-fprintf(st, "A real %s transports data using DDCMP, the emulated device makes a\n", devname);
-fprintf(st, "TCP/IP connection to another emulated device and sends length-prefixed\n");
-fprintf(st, "messages across the connection, each message representing a single buffer\n");
-fprintf(st, "passed to the %s. The %s can be used for point-to-point DDCMP\n", devname, devname);
-fprintf(st, "connections carrying DECnet and other types of networking, e.g. from ULTRIX\n");
-fprintf(st, "or DSM.\n\n");
-fprintf(st, "A total of %d %s devices can be simulated concurrently. The number\n", (dptr == &dmc_dev) ? DMC_NUMDEVICE : DMP_NUMDEVICE, devname);
-fprintf(st, "of simulated %s devices or lines can be specified with command:\n", devname);
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s LINES=n\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "To set the host and port to which data is to be transmitted use the\n");
-fprintf(st, "following command (required for PRIMARY and SECONDARY, secondary will check\n");
-fprintf(st, "it is receiving from the configured primary):\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s0 PEER=host:port\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "The device must be attached to a receive port, use the ATTACH command\n");
-fprintf(st, "specifying the receive port number.\n");
-fprintf(st, "\n");
-fprintf(st, "The minimum interval between attempts to connect to the other side is set\n");
-fprintf(st, "using the following command:\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s CONNECTPOLL=n\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Where n is the number of seconds. The default is %d seconds.\n", DMC_CONNECT_POLL);
-fprintf(st, "\n");
-fprintf(st, "If you want to experience the actual data rates of the physical hardware you\n");
-fprintf(st, "can set the bit rate of the simulated line can be set using the following\n");
-fprintf(st, "command:\n\n");
-fprintf(st, "   sim> SET %s0 SPEED=n\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Where n is the number of data bits per second that the simulated line runs\n");
-fprintf(st, "at.  In practice this is implemented as a delay in reading the bytes from\n");
-fprintf(st, "the socket.  Use a value of zero to run at full speed with no artificial\n");
-fprintf(st, "throttling.\n");
-fprintf(st, "\n");
-fprintf(st, "To configure two simulators to talk to each other use the following example:\n");
-fprintf(st, "\n");
-fprintf(st, "Machine 1\n");
-fprintf(st, "   sim> SET %s ENABLE\n", dptr->name);
-fprintf(st, "   sim> SET %s0 PEER=LOCALHOST:2222\n", dptr->name);
-fprintf(st, "   sim> ATTACH %s0 1111\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Machine 2\n");
-fprintf(st, "   sim> SET %s ENABLE\n", dptr->name);
-fprintf(st, "   sim> SET %s0 PEER= LOCALHOST:1111\n", dptr->name);
-fprintf(st, "   sim> ATTACH %s0 2222\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Debugging\n");
-fprintf(st, "=========\n");
-fprintf(st, "The simulator has a number of debug options, these are:\n");
-fprintf(st, "        REG      Shows whenever a CSR is programatically read or written and\n");
-fprintf(st, "                 the current value.\n");
-fprintf(st, "        INTREG   Shows internal register value changes.\n");
-fprintf(st, "        INFO     Shows higher-level tracing only.\n");
-fprintf(st, "        WARN     Shows any warnings.\n");
-fprintf(st, "        TRACE    Shows more detailed trace information.\n");
-fprintf(st, "        DATASUM  Brief summary of each received and transmitted buffer.\n");
-fprintf(st, "                 Ignored if DATA is set.\n");
-fprintf(st, "        DATA     Shows the actual data sent and received.\n");
-fprintf(st, "        MODEM    Shows modem signal transitions details.\n");
-fprintf(st, "        CONNECT  Shows sockets actually connecting.\n");
-fprintf(st, "\n");
-fprintf(st, "To get a full trace use\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s DEBUG\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "However it is recommended to use the following when sending traces:\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s DEBUG=REG;INFO;WARN\n", dptr->name);
-fprintf(st, "\n");
-return SCPE_OK;
+sprintf (devname, "%s11" , dptr->name);
+sprintf (devcount, "%d", (dptr == &dmc_dev) ? DMC_NUMDEVICE : DMP_NUMDEVICE);
+sprintf (connectpoll, "%d", DMC_CONNECT_POLL);
+
+return scp_help (st, dptr, uptr, flag, helpString, cptr, devname, devcount, connectpoll);
 }
 
 t_stat dmc_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
-fprintf (st, "The communication line performs input and output through a TCP session\n");
-fprintf (st, "connected to a user-specified port.  The ATTACH command specifies the");
-fprintf (st, "listening port to be used when the incoming connection is established:\n\n");
-fprintf (st, "   sim> ATTACH %sn {interface:}port        set up listening port\n\n", dptr->name);
-fprintf (st, "where port is a decimal number between 1 and 65535 that is not being used for\n");
-fprintf (st, "other TCP/IP activities.\n\n");
+const char helpString[] =
+" The communication line performs input and output through a TCP session\n"
+" connected to a user-specified port.  The ATTACH command specifies the\n"
+" listening port to be used when the incoming connection is established:\n\n"
+"+sim> ATTACH %U {interface:}port        set up listening port\n\n"
+" where port is a decimal number between 1 and 65535 that is not being\n"
+" used for other TCP/IP activities.\n\n";
+return scp_help (st, dptr, uptr, flag, helpString, cptr);
 return SCPE_OK;
 }
 
@@ -3120,7 +3224,11 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
         controller->transfer_state = Idle;
         controller->control_out = NULL;
         *controller->modem = 0;
+#if defined (VM_PDP10)
+        controller->dev_type = DMR;
+#else
         controller->dev_type = DMC;
+#endif
         dmc_dev.units[i] = dmc_unit_template;
         controller->unit->ctlr = (void *)controller;
         }
@@ -3227,7 +3335,11 @@ return tmxr_detach_ln (lp);
 
 char *dmc_description (DEVICE *dptr)
 {
+#if defined (VM_PDP10)
+return "DMR11 Synchronous network controller";
+#else
 return "DMC11 Synchronous network controller";
+#endif
 }
 
 char *dmp_description (DEVICE *dptr)

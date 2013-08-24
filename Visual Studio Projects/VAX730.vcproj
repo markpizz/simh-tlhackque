@@ -392,11 +392,11 @@
 				>
 			</File>
 			<File
-				RelativePath="..\PDP11\pdp11_ddcmp.h"
+				RelativePath="..\lpt2pdf.h"
 				>
 			</File>
 			<File
-				RelativePath="..\PDP11\pdp11_dmc.h"
+				RelativePath="..\PDP11\pdp11_ddcmp.h"
 				>
 			</File>
 			<File
@@ -420,6 +420,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\scp_help.h"
+				>
+			</File>
+			<File
 				RelativePath="..\sim_console.h"
 				>
 			</File>
@@ -437,6 +441,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_fio.h"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_pdflpt.h"
 				>
 			</File>
 			<File

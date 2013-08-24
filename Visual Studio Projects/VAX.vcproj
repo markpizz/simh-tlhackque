@@ -216,6 +216,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\PDP11\pdp11_dmc.c"
+				>
+			</File>
+			<File
+				RelativePath="..\PDP11\pdp11_dup.c"
+				>
+			</File>
+			<File
 				RelativePath="..\PDP11\pdp11_dz.c"
 				>
 			</File>
@@ -374,7 +382,19 @@
 			Filter="h;hpp;hxx;hm;inl;inc"
 			>
 			<File
+				RelativePath="..\lpt2pdf.h"
+				>
+			</File>
+			<File
 				RelativePath="..\PDP11\pdp11_cr_dat.h"
+				>
+			</File>
+			<File
+				RelativePath="..\PDP11\pdp11_ddcmp.h"
+				>
+			</File>
+			<File
+				RelativePath="..\PDP11\pdp11_dup.h"
 				>
 			</File>
 			<File
@@ -402,6 +422,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\scp_help.h"
+				>
+			</File>
+			<File
 				RelativePath="..\sim_console.h"
 				>
 			</File>
@@ -419,6 +443,10 @@
 			</File>
 			<File
 				RelativePath="..\sim_fio.h"
+				>
+			</File>
+			<File
+				RelativePath="..\sim_pdflpt.h"
 				>
 			</File>
 			<File

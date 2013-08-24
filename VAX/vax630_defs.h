@@ -289,8 +289,10 @@ typedef struct {
 #define INT_V_QDSS      19                              /* QDSS */
 #define INT_V_CR        20
 #define INT_V_QVSS      21                              /* QVSS */
-#define INT_V_DMCRX     22
+#define INT_V_DMCRX     22                              /* DMV11 */
 #define INT_V_DMCTX     23
+#define INT_V_DUPRX     24                              /* DPV11 */
+#define INT_V_DUPTX     25
 
 #define INT_CLK         (1u << INT_V_CLK)
 #define INT_RQ          (1u << INT_V_RQ)
@@ -317,6 +319,8 @@ typedef struct {
 #define INT_QVSS        (1u << INT_V_QVSS)
 #define INT_DMCRX       (1u << INT_V_DMCRX)
 #define INT_DMCTX       (1u << INT_V_DMCTX)
+#define INT_DUPRX       (1u << INT_V_DUPRX)
+#define INT_DUPTX       (1u << INT_V_DUPTX)
 
 #define IPL_CLK         (0x16 - IPL_HMIN)                       /* relative IPL */
 #define IPL_RQ          (0x14 - IPL_HMIN)
@@ -343,6 +347,8 @@ typedef struct {
 #define IPL_QVSS        (0x14 - IPL_HMIN)
 #define IPL_DMCRX       (0x14 - IPL_HMIN)
 #define IPL_DMCTX       (0x14 - IPL_HMIN)
+#define IPL_DUPRX       (0x14 - IPL_HMIN)
+#define IPL_DUPTX       (0x14 - IPL_HMIN)
 
 #define IPL_HMAX        0x17                            /* highest hwre level */
 #define IPL_HMIN        0x14                            /* lowest hwre level */

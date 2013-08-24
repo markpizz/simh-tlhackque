@@ -258,6 +258,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
 #define DZ_MUXES        4                               /* max # of DZV muxes */
 #define DZ_LINES        4                               /* lines per DZV mux */
 #define VH_MUXES        4                               /* max # of DHQ muxes */
+#define DUP_LINES       4                               /* max # of DPV lines */
 #define MT_MAXFR        (1 << 16)                       /* magtape max rec */
 
 #define DEV_V_UBUS      (DEV_V_UF + 0)                  /* Unibus */
@@ -329,8 +330,10 @@ typedef struct {
 #define INT_V_VHTX      18 
 #define INT_V_QDSS      19                              /* QDSS */
 #define INT_V_CR        20
-#define INT_V_DMCRX     21                              /* DMC11 */
+#define INT_V_DMCRX     21                              /* DMV11 */
 #define INT_V_DMCTX     22
+#define INT_V_DUPRX     23                              /* DPV11 */
+#define INT_V_DUPTX     24
 
 #define INT_CLK         (1u << INT_V_CLK)
 #define INT_RQ          (1u << INT_V_RQ)
@@ -356,6 +359,8 @@ typedef struct {
 #define INT_CR          (1u << INT_V_CR)
 #define INT_DMCRX       (1u << INT_V_DMCRX)
 #define INT_DMCTX       (1u << INT_V_DMCTX)
+#define INT_DUPRX       (1u << INT_V_DUPRX)
+#define INT_DUPTX       (1u << INT_V_DUPTX)
 
 #define IPL_CLK         (0x16 - IPL_HMIN)                       /* relative IPL */
 #define IPL_RQ          (0x14 - IPL_HMIN)
@@ -381,6 +386,8 @@ typedef struct {
 #define IPL_CR          (0x14 - IPL_HMIN)
 #define IPL_DMCRX       (0x14 - IPL_HMIN)
 #define IPL_DMCTX       (0x14 - IPL_HMIN)
+#define IPL_DUPRX       (0x14 - IPL_HMIN)
+#define IPL_DUPTX       (0x14 - IPL_HMIN)
 
 #define IPL_HMAX        0x17                            /* highest hwre level */
 #define IPL_HMIN        0x14                            /* lowest hwre level */
