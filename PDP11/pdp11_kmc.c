@@ -3300,7 +3300,7 @@ static t_stat kmc_help (FILE *st, struct sim_device *dptr,
 "2 $Registers\n"
 "2 Related devices\n"
 " Other versions of the KMC11 have ROM microcode, which are used in such\n"
-" devices as the DMC1 and DMR11 communications devices.  This emulation\n"
+" devices as the DMC11 and DMR11 communications devices.  This emulation\n"
 " does not support those versions.\n"
 "\n"
 " Microcodes, not supported by this emulation, exist which control other\n"
