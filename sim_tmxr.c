@@ -1341,7 +1341,7 @@ if ((lp->sock) || (lp->serport) || (lp->loopback)) {
         incoming_state |= TMXR_MDM_CTS;
     }
 else
-incoming_state = (lp->mp && lp->mp->master) ? (((lp->modembits & TMXR_MDM_RTS) ? TMXR_MDM_CTS : 0) | TMXR_MDM_DSR) : 0;
+    incoming_state = ((lp->mp && lp->mp->master) || lp->master) ? (((lp->modembits & TMXR_MDM_RTS) ? TMXR_MDM_CTS : 0) | TMXR_MDM_DSR) : 0;
 lp->modembits |= incoming_state;
 if (sim_deb && lp->mp && lp->mp->dptr) {
     sim_debug_bits (TMXR_DBG_MDM, lp->mp->dptr, tmxr_modem_bits, before_modem_bits, lp->modembits, FALSE);
