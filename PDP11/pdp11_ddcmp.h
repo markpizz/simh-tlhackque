@@ -103,7 +103,7 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
     sim_debug(reason, dptr, "%s  len: %d\n", txt, len);
     switch (msg[0]) {
         case DDCMP_SOH:   /* Data Message */
-            sim_debug (reason, dptr, "Data Message, Flags: %s, Count: %d, Resp: %d, Num: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)|msg[1], msg[3], msg[4], 
+            sim_debug (reason, dptr, "Data Message, Count: %d, Num: %d, Flags: %s, Resp: %d, HDRCRC: %s, DATACRC: %s\n", (msg2 << 8)|msg[1], msg[4], flag, msg[3], 
                                         (0 == ddcmp_crc16 (0, msg, 8)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+8, 2+((msg2 << 8)|msg[1]))) ? "OK" : "BAD");
             break;
         case DDCMP_ENQ:   /* Control Message */
@@ -116,7 +116,7 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
                     sim_debug (reason, dptr, "(NAK) Reason: %d%s, Flags: %s, Resp: %d\n", msg2, ((msg2 > 17)? "": nak[msg2]), flag, msg[3]);
                     break;
                 case DDCMP_CTL_REP: /* REP */
-                    sim_debug (reason, dptr, "(REP) REPSUB: %d, Flags: %s, Num: %d\n", msg2, flag, msg[4]);
+                    sim_debug (reason, dptr, "(REP) REPSUB: %d, Num: %d, Flags: %s\n", msg2, msg[4], flag);
                     break;
                 case DDCMP_CTL_STRT: /* STRT */
                     sim_debug (reason, dptr, "(STRT) STRTSUB: %d, Flags: %s\n", msg2, flag);
@@ -136,7 +136,7 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
                 }
             break;
         case DDCMP_DLE:   /* Maintenance Message */
-            sim_debug (reason, dptr, "Maintenance Message, Flags: %s, Count: %d, HDRCRC: %s, DATACRC: %s\n", flag, (msg2 << 8)| msg[1], 
+            sim_debug (reason, dptr, "Maintenance Message, Count: %d, Flags: %s, HDRCRC: %s, DATACRC: %s\n", (msg2 << 8)| msg[1], flag, 
                                         (0 == ddcmp_crc16 (0, msg, DDCMP_HEADER_SIZE)) ? "OK" : "BAD", (0 == ddcmp_crc16 (0, msg+DDCMP_HEADER_SIZE, 2+((msg2 << 8)| msg[1]))) ? "OK" : "BAD");
             break;
         }
@@ -358,7 +358,7 @@ return ddcmp_tmxr_put_packet_crc_ln (lp, buf, DDCMP_HEADER_SIZE);
 
 static void ddcmp_build_nak_packet (uint8 *buf, uint8 reason, uint8 nack, uint8 flags)
 {
-ddcmp_build_control_packet (buf, DDCMP_CTL_NAK, reason, 0, 0, nack);
+ddcmp_build_control_packet (buf, DDCMP_CTL_NAK, reason, flags, 0, nack);
 }
 
 static t_stat ddcmp_tmxr_put_nak_packet_ln (TMLN *lp, uint8 *buf, uint8 reason, uint8 nack, uint8 flags)
