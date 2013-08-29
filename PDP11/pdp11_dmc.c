@@ -554,6 +554,7 @@ t_bool ddcmp_ReceiveAck           (CTLR *controller);
 t_bool ddcmp_ReceiveNak           (CTLR *controller);
 t_bool ddcmp_ReceiveRep           (CTLR *controller);
 t_bool ddcmp_NUMEqRplus1          (CTLR *controller);   /* (NUM == R+1) */
+t_bool ddcmp_NUMGtRplus1          (CTLR *controller);   /* (NUM > R+1) */
 t_bool ddcmp_ReceiveDataMsg       (CTLR *controller);   /* Receive Data Message */
 t_bool ddcmp_ReceiveMaintMsg      (CTLR *controller);   /* Receive Maintenance Message */
 t_bool ddcmp_ALtRESPleN           (CTLR *controller);   /* (A < RESP <= N) */
@@ -597,6 +598,8 @@ void ddcmp_SetAeqRESP             (CTLR *controller);
 void ddcmp_SetTequalAplus1        (CTLR *controller);
 void ddcmp_IncrementT             (CTLR *controller);
 void ddcmp_SetNAKreason3          (CTLR *controller);
+void ddcmp_SetNAKreason2          (CTLR *controller);
+void ddcmp_NAKMissingPackets      (CTLR *controller);
 void ddcmp_IfTleAthenSetTeqAplus1 (CTLR *controller);
 void ddcmp_IfAltXthenStartTimer   (CTLR *controller);
 void ddcmp_IfAgeXthenStopTimer    (CTLR *controller);
@@ -623,14 +626,14 @@ DDCMP_LinkAction_Routine Actions[10];
 DDCMP_STATETABLE DDCMP_TABLE[] = {
     { 0, All,         {ddcmp_UserHalt},            Halt,           {ddcmp_StopTimer}},
     { 1, Halt,        {ddcmp_UserStartup,
-                       ddcmp_LineConnected},       IStart,         {ddcmp_SendStrt, 
-                                                                    ddcmp_ResetVariables,
+                       ddcmp_LineConnected},       IStart,         {ddcmp_ResetVariables,
+                                                                    ddcmp_SendStrt,
                                                                     ddcmp_StopTimer}},
     { 2, Halt,        {ddcmp_UserMaintenanceMode}, Maintenance,    {ddcmp_ResetVariables}},
     { 3, Halt,        {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
     { 4, IStart,      {ddcmp_TimerNotRunning},     IStart,         {ddcmp_StartTimer}},
-    { 5, IStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SendAck,
+    { 5, IStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK,
                                                                     ddcmp_StopTimer}},
     { 6, IStart,      {ddcmp_ReceiveStrt},         AStart,         {ddcmp_SendStack, 
                                                                     ddcmp_StartTimer}},
@@ -660,53 +663,49 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                                                                     ddcmp_NotifyMaintRcvd}},
     {22, Run,         {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK}},
     {23, Run,         {ddcmp_ReceiveDataMsg,
+                       ddcmp_NUMGtRplus1},         Run,            {ddcmp_NAKMissingPackets}},
+    {24, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_NUMEqRplus1},         Run,            {ddcmp_GiveBufferToUser}},
-    {24, Run,         {ddcmp_ReceiveMessageError}, Run,            {ddcmp_SetSNAK}},
-    {25, Run,         {ddcmp_ReceiveRep,
-                       ddcmp_NumEqR},              Run,            {ddcmp_SetSACK}},
+    {25, Run,         {ddcmp_ReceiveMessageError}, Run,            {ddcmp_SetSNAK}},
     {26, Run,         {ddcmp_ReceiveRep,
+                       ddcmp_NumEqR},              Run,            {ddcmp_SetSACK}},
+    {27, Run,         {ddcmp_ReceiveRep,
                        ddcmp_NumNeR},              Run,            {ddcmp_SetSNAK, 
                                                                     ddcmp_SetNAKreason3}},
-    {27, Run,         {ddcmp_ReceiveDataMsg,
-                       ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
-                                                                    ddcmp_SetAeqRESP, 
-                                                                    ddcmp_IfTleAthenSetTeqAplus1, 
-                                                                    ddcmp_IfAgeXthenStopTimer}},
-    {28, Run,         {ddcmp_ReceiveAck,
+    {28, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
                                                                     ddcmp_SetAeqRESP, 
                                                                     ddcmp_IfTleAthenSetTeqAplus1, 
                                                                     ddcmp_IfAgeXthenStopTimer}},
     {29, Run,         {ddcmp_ReceiveAck,
+                       ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
+                                                                    ddcmp_SetAeqRESP, 
+                                                                    ddcmp_IfTleAthenSetTeqAplus1, 
+                                                                    ddcmp_IfAgeXthenStopTimer}},
+    {30, Run,         {ddcmp_ReceiveAck,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {30, Run,         {ddcmp_ReceiveDataMsg,
+    {31, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {31, Run,         {ddcmp_ReceiveNak,
+    {32, Run,         {ddcmp_ReceiveNak,
                        ddcmp_ALeRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
                                                                     ddcmp_SetAeqRESP, 
                                                                     ddcmp_SetTequalAplus1, 
                                                                     ddcmp_StopTimer}},
-    {32, Run,         {ddcmp_ReceiveNak,
+    {33, Run,         {ddcmp_ReceiveNak,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {33, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
-    {34, Run,         {ddcmp_TransmitterIdle,
+    {34, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
+    {35, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisSet},           Run,            {ddcmp_SendNak, 
                                                                     ddcmp_ClearSNAK}},
-    {35, Run,         {ddcmp_TransmitterIdle,
+    {36, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisSet},           Run,            {ddcmp_SendRep, 
                                                                     ddcmp_ClearSREP}},
-    {36, Run,         {ddcmp_TransmitterIdle,
+    {37, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisClear,
                        ddcmp_TltNplus1},           Run,            {ddcmp_ReTransmitMessageT, 
                                                                     ddcmp_IncrementT, 
-                                                                    ddcmp_ClearSACK}},
-    {37, Run,         {ddcmp_TransmitterIdle,
-                       ddcmp_SNAKisClear,
-                       ddcmp_SREPisClear,
-                       ddcmp_SACKisSet,
-                       ddcmp_TeqNplus1},           Run,            {ddcmp_SendAck, 
                                                                     ddcmp_ClearSACK}},
     {38, Run,         {ddcmp_UserSendMessage,
                        ddcmp_TeqNplus1,
@@ -714,14 +713,20 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisClear},         Run,            {ddcmp_SendDataMessage, 
                                                                     ddcmp_ClearSACK}},
-    {39, Run,         {ddcmp_DataMessageSent},     Run,            {ddcmp_SetXSetNUM, 
+    {39, Run,         {ddcmp_TransmitterIdle,
+                       ddcmp_SNAKisClear,
+                       ddcmp_SREPisClear,
+                       ddcmp_SACKisSet,
+                       ddcmp_TeqNplus1},           Run,            {ddcmp_SendAck, 
+                                                                    ddcmp_ClearSACK}},
+    {40, Run,         {ddcmp_DataMessageSent},     Run,            {ddcmp_SetXSetNUM, 
                                                                     ddcmp_IfAltXthenStartTimer, 
                                                                     ddcmp_IfAgeXthenStopTimer}},
-    {40, Run,         {ddcmp_REPMessageSent},      Run,            {ddcmp_StartTimer}},
-    {41, Maintenance, {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_GiveBufferToUser}},
-    {42, Maintenance, {ddcmp_UserSendMessage,
+    {41, Run,         {ddcmp_REPMessageSent},      Run,            {ddcmp_StartTimer}},
+    {42, Maintenance, {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_GiveBufferToUser}},
+    {43, Maintenance, {ddcmp_UserSendMessage,
                        ddcmp_TransmitterIdle},     Maintenance,    {ddcmp_SendMaintMessage}},
-    {43, All}           /* End of Table */
+    {44, All}           /* End of Table */
     };
 
 
@@ -2107,7 +2112,12 @@ if (dmc_is_attached(controller->unit)) {
     dmc_buffer_fill_receive_buffers(controller);
     if (controller->transfer_state == Idle)
         dmc_start_transfer_buffer(controller);
-
+    /* Execution of this routine normally is triggered by programatic access by the
+       simulated system's device driver to the device registers or the arrival of 
+       traffic from the network.  Network traffic is handled by the dmc_poll_svc 
+       which may call this routine as needed.  Direct polling here is extra overhead 
+       which should not be necessary.
+     */
     sim_activate (uptr, tmxr_poll);
     }
 
@@ -2529,6 +2539,9 @@ controller->link.TimerRunning = FALSE;
 }
 void ddcmp_ResetVariables         (CTLR *controller)
 {
+size_t data_packets = 0;
+BUFFER *buffer;
+
 controller->link.R = 0;
 controller->link.N = 0;
 controller->link.T = 1;
@@ -2538,6 +2551,31 @@ controller->link.SNAK = FALSE;
 controller->link.SREP = FALSE;
 controller->link.state = Halt;
 controller->link.nak_reason = 0;
+/* Move any ack wait packets back to the transmit queue so they get 
+   resent when the link is restored */
+while (controller->ack_wait_queue->count) {
+    buffer = (BUFFER *)remqueue (controller->ack_wait_queue->hdr.prev);
+    memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+    assert (insqueue (&buffer->hdr, &controller->xmt_queue->hdr));
+    }
+/* Also make sure that the transmit queue has no control packets in it 
+   and that any non transmit buffer(s) have zeroed headers so they will
+   be properly constructed when the link comes up */
+buffer = (BUFFER *)controller->xmt_queue->hdr.next;
+while (controller->xmt_queue->count - data_packets) {
+    if (buffer->
+    if (((BUFFER *)controller->xmt_queue->hdr.next)->transfer_buffer[0] == DDCMP_ENQ) {
+        BUFFER *buffer_next = (BUFFER *)buffer->hdr.next;
+
+        buffer = (BUFFER *)remqueue (&buffer->hdr);
+        assert (insqueue (&buffer->hdr, &controller->free_queue->hdr));
+        buffer = buffer_next;
+        continue;
+        }
+    ++data_packets;
+    memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+    buffer = (BUFFER *)buffer->hdr.next;
+    }
 }
 void ddcmp_SendStrt               (CTLR *controller)
 {
@@ -2633,6 +2671,26 @@ void ddcmp_SetNAKreason3          (CTLR *controller)
 {
 controller->link.nak_reason = 3;
 }
+void ddcmp_SetNAKreason2          (CTLR *controller)
+{
+controller->link.nak_reason = 2;
+}
+void ddcmp_NAKMissingPackets      (CTLR *controller)
+{
+uint8 R = controller->link.R;
+QH *qh = &controller->xmt_queue->hdr;
+
+while (ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], GE, R, controller)) {
+    BUFFER *buffer = dmc_buffer_allocate(controller);
+    buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
+    buffer->count = DDCMP_HEADER_SIZE;
+    ddcmp_build_nak_packet (buffer->transfer_buffer, 2, R, DDCMP_FLAG_SELECT);
+    R = R + 1;
+    assert (insqueue (&buffer->hdr, qh));
+    qh = &buffer->hdr;
+    }
+dmc_ddcmp_start_transmitter (controller);
+}
 void ddcmp_IfTleAthenSetTeqAplus1 (CTLR *controller)
 {
 if (ddcmp_compare (controller->link.T, LE, controller->link.A, controller))
@@ -2692,7 +2750,7 @@ for (i=0; i < controller->ack_wait_queue->count; ++i) {
         buffer = (BUFFER *)buffer->hdr.next;
         continue;
         }
-    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 0, controller->link.T, controller->link.R);
+    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 3, controller->link.T, controller->link.R);
     buffer = (BUFFER *)remqueue (&buffer->hdr);
     assert (insqueue (&buffer->hdr, controller->xmt_queue->hdr.prev)); /* Insert at tail */
     break;
@@ -2803,6 +2861,12 @@ t_bool ddcmp_NUMEqRplus1          (CTLR *controller)
 {
 t_bool breturn = (controller->link.rcv_pkt &&
                   ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], EQ, controller->link.R + 1, controller));
+return breturn;
+}
+t_bool ddcmp_NUMGtRplus1          (CTLR *controller)
+{
+t_bool breturn = (controller->link.rcv_pkt &&
+                  ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], GT, controller->link.R + 1, controller));
 return breturn;
 }
 t_bool ddcmp_ReceiveDataMsg       (CTLR *controller)
@@ -2934,7 +2998,7 @@ static const char *states[] = {"Halt", "IStart", "AStart", "Run", "Maintenance"}
 if (controller->link.Scanning) {
     if (!controller->link.RecurseScan) {
         controller->link.RecurseScan = TRUE;
-        controller->link.RecurseEventMask = EventMask;
+        controller->link.RecurseEventMask |= EventMask;
         }
     return;
     }
@@ -2953,13 +3017,13 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
             }
         if (!match)
             continue;
-        sim_debug (DBG_INF, controller->device, "ddcmp_dispatch() - %s conditions matching for rule %d, initiating actions\n", states[table->State], table->RuleNumber);
+        sim_debug (DBG_INF, controller->device, "ddcmp_dispatch(%X) - %s conditions matching for rule %d, initiating actions\n", EventMask, states[table->State], table->RuleNumber);
         while (*action != NULL) {
             (*action)(controller);
             ++action;
             }
         if (table->NewState != controller->link.state) {
-            sim_debug (DBG_INF, controller->device, "ddcmp_dispatch() - state changing from %s to %s\n", states[controller->link.state], states[table->NewState]);
+            sim_debug (DBG_INF, controller->device, "ddcmp_dispatch(%X) - state changing from %s to %s\n", EventMask, states[controller->link.state], states[table->NewState]);
             controller->link.state = table->NewState;
             }
         }
@@ -2968,7 +3032,9 @@ controller->link.Scanning = FALSE;
 controller->link.ScanningEvents &= ~EventMask;
 if (controller->link.RecurseScan) {
     controller->link.RecurseScan = FALSE;
-    ddcmp_dispatch (controller, controller->link.RecurseEventMask);
+    EventMask = controller->link.RecurseEventMask;
+    controller->link.RecurseEventMask = 0;
+    ddcmp_dispatch (controller, EventMask);
     }
 }
 
