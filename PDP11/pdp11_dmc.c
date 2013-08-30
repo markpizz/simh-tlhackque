@@ -2563,7 +2563,6 @@ while (controller->ack_wait_queue->count) {
    be properly constructed when the link comes up */
 buffer = (BUFFER *)controller->xmt_queue->hdr.next;
 while (controller->xmt_queue->count - data_packets) {
-    if (buffer->
     if (((BUFFER *)controller->xmt_queue->hdr.next)->transfer_buffer[0] == DDCMP_ENQ) {
         BUFFER *buffer_next = (BUFFER *)buffer->hdr.next;
 
