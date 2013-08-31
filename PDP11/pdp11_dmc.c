@@ -2142,7 +2142,7 @@ dmc = tmxr_poll_conn(mp);
 if (dmc >= 0) {                                 /* new connection? */
     controller = (CTLR *)dptr->units[dmc].ctlr;
     dmc_get_modem (controller);
-    sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - DSR State Change to UP(ON)\n", dmc);
+    sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - Connection State Change to UP(ON)\n", dmc);
     ddcmp_dispatch (controller, 0);
     }
 tmxr_poll_rx (mp);
@@ -2159,9 +2159,9 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
         ++active;
     old_modem = *controller->modem;
     new_modem = dmc_get_modem (controller);
-    if ((old_modem & DMC_SEL4_M_DSR) && 
-        (!(new_modem & DMC_SEL4_M_DSR))) {
-        sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - DSR State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_DSR) ? "UP(ON)" : "DOWN(OFF)");
+    if ((old_modem & DMC_SEL4_M_CAR) && 
+        (!(new_modem & DMC_SEL4_M_CAR))) {
+        sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - Connection State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_CAR) ? "UP(ON)" : "DOWN(OFF)");
         ddcmp_dispatch (controller, 0);
         }
     if ((lp->xmte && tmxr_tpbusyln(lp)) || 
@@ -2237,7 +2237,7 @@ size_t queue_size = (controller->dev_type == DMC) ? DMC_QUEUE_SIZE :
                                                                                         DMP_QUEUE_SIZE);
 queue_size *= 2;
 *controller->buffers = (BUFFER *)realloc(*controller->buffers, queue_size*sizeof(**controller->buffers));
-memset (controller->buffers, 0, queue_size*sizeof(**controller->buffers));
+memset (*controller->buffers, 0, queue_size*sizeof(**controller->buffers));
 dmc_buffer_queue_init(controller, controller->rcv_queue,        "receive",    0, NULL);
 dmc_buffer_queue_init(controller, controller->completion_queue, "completion", 0, NULL);
 dmc_buffer_queue_init(controller, controller->xmt_queue,        "transmit",   0, NULL);
