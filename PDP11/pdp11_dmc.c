@@ -329,6 +329,7 @@ static t_bool insqueue (QH *entry, QH *pred)
 {
 if ((pred->queue->size > 0) && (pred->queue->count >= pred->queue->size))
     return FALSE;
+assert (entry->queue == NULL);
 entry->next = pred->next;
 entry->prev = pred;
 entry->queue = pred->queue;
@@ -1944,11 +1945,13 @@ uint8 dmc_get_modem(CTLR *controller)
 int32 modem_bits;
 
 tmxr_set_get_modem_bits (controller->line, 0, 0, &modem_bits);
-*controller->modem &= ~(DMC_SEL4_M_CTS|DMC_SEL4_M_CAR|DMC_SEL4_M_RI|DMC_SEL4_M_DSR);
+*controller->modem &= ~(DMC_SEL4_M_CTS|DMC_SEL4_M_CAR|DMC_SEL4_M_RI|DMC_SEL4_M_DSR|DMC_SEL4_M_DTR|DMC_SEL4_M_RTS);
 *controller->modem |= (modem_bits&TMXR_MDM_DCD) ? DMC_SEL4_M_CAR : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_CTS) ? DMC_SEL4_M_CTS : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_DSR) ? DMC_SEL4_M_DSR : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_RNG) ? DMC_SEL4_M_RI : 0;
+*controller->modem |= (modem_bits&TMXR_MDM_DTR) ? DMC_SEL4_M_DTR : 0;
+*controller->modem |= (modem_bits&TMXR_MDM_RTS) ? DMC_SEL4_M_RTS : 0;
 return (*controller->modem);
 }
 
@@ -1957,7 +1960,7 @@ void dmc_set_modem_dtr(CTLR *controller)
 if (dmc_is_attached(controller->unit) && (!(DMC_SEL4_M_DTR & *controller->modem))) {
     sim_debug(DBG_MDM, controller->device, "DTR State Change to UP(ON)\n");
     tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
-    *controller->modem |= DMC_SEL4_M_DTR|DMC_SEL4_M_RTS;
+    dmc_get_modem(controller);
     controller->line->rcve = 1;
     }
 }
@@ -1968,8 +1971,7 @@ if (*controller->modem & DMC_SEL4_M_DTR) {
     sim_debug(DBG_MDM, controller->device, "DTR State Change to DOWN(OFF)\n");
     }
 tmxr_set_get_modem_bits (controller->line, 0, TMXR_MDM_DTR|TMXR_MDM_RTS, NULL);
-*controller->modem &= ~(DMC_SEL4_M_DTR|DMC_SEL4_M_RTS);
-controller->line->rcve = 0;
+dmc_get_modem(controller);
 }
 
 void dmc_set_lost_data(CTLR *controller)
@@ -2235,6 +2237,7 @@ size_t queue_size = (controller->dev_type == DMC) ? DMC_QUEUE_SIZE :
                                                                                         DMP_QUEUE_SIZE);
 queue_size *= 2;
 *controller->buffers = (BUFFER *)realloc(*controller->buffers, queue_size*sizeof(**controller->buffers));
+memset (controller->buffers, 0, queue_size*sizeof(**controller->buffers));
 dmc_buffer_queue_init(controller, controller->rcv_queue,        "receive",    0, NULL);
 dmc_buffer_queue_init(controller, controller->completion_queue, "completion", 0, NULL);
 dmc_buffer_queue_init(controller, controller->xmt_queue,        "transmit",   0, NULL);
@@ -2250,6 +2253,7 @@ if (!buffer)
     return buffer;
 buffer->address = 0;
 buffer->count = 0;
+free (buffer->transfer_buffer);
 buffer->transfer_buffer = NULL;
 buffer->actual_bytes_transferred = 0;
 buffer->type = TransmitControl;         /* Default */
