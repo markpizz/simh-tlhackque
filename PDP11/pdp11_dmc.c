@@ -2970,11 +2970,11 @@ return (buffer && (buffer->transfer_buffer[0] == 0));
 }
 t_bool ddcmp_LineConnected        (CTLR *controller)
 {
-return (*controller->modem & DMC_SEL4_M_DSR);
+return (*controller->modem & DMC_SEL4_M_CAR);
 }
 t_bool ddcmp_LineDisconnected     (CTLR *controller)
 {
-return (!(*controller->modem & DMC_SEL4_M_DSR));
+return (!(*controller->modem & DMC_SEL4_M_CAR));
 }
 t_bool ddcmp_DataMessageSent      (CTLR *controller)
 {
