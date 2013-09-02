@@ -1310,7 +1310,8 @@ return tmxr_clear_modem_control_passthru_state (mp, FALSE);
         
    Output:
         incoming_bits   if non NULL, returns the current stat of DCD, 
-                        RNG, CTS and DSR
+                        RNG, CTS and DSR along with the current state
+                        of DTR and RTS
 
    Implementation note:
 
@@ -1348,7 +1349,7 @@ if (sim_deb && lp->mp && lp->mp->dptr) {
     sim_debug (TMXR_DBG_MDM, lp->mp->dptr, " - Line %d - %p\n", (int)(lp-lp->mp->ldsc), lp->txb);
     }
 if (incoming_bits)
-    *incoming_bits = incoming_state;
+    *incoming_bits = lp->modembits;
 if (lp->mp && lp->modem_control) {                  /* This API ONLY works on modem_control enabled multiplexer lines */
     if (bits_to_set | bits_to_clear) {              /* Anything to do? */
         if (lp->loopback) {
