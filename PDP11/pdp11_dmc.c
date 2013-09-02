@@ -2501,31 +2501,34 @@ t_bool ddcmp_compare (uint8 a, CompareOP Op, uint8 b, CTLR *controller)
 size_t A = a & 0xFF;
 size_t B = b & 0xFF;
 
+if (A < controller->free_queue->size)
+    A = A + 256;
+if (B < controller->free_queue->size)
+    B = B + 256;
 switch (Op) {
     case EQ:
         return (A == B);
     case NE:
         return (A != B);
+    case LE:
+        if (A == B)
+            return TRUE;
     case LT:
         if (A < B)
             return TRUE;
         if (A == B)
             return FALSE;
-        return (((B + 256) - A) > controller->free_queue->size);
-    case LE:
-        if (A <= B)
+        if (A < B)
             return TRUE;
-        return (((B + 256) - A) <= controller->free_queue->size);
+        else
+            return FALSE;
+    case GE:
+        if (A == B)
+            return TRUE;
     case GT:
-        if (A > B)
-            return TRUE;
         if (A == B)
             return FALSE;
         return ddcmp_compare (B, LT, A, controller);
-    case GE:
-        if (A >= B)
-            return TRUE;
-        return ddcmp_compare (B, LE, A, controller);
     default:    /* Never happens */
         return FALSE;
     }
@@ -3326,6 +3329,34 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
     dmp_desc.notelnet = TRUE;                      /* We always want raw tcp socket */
     dmp_desc.dptr = &dmp_dev;                      /* Connect appropriate device */
     dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
+    }
+else {
+    BUFFER *buffer;
+
+    /* Avoid memory leaks by moving all buffers back to the free queue
+       and then freeing any allocated transfer buffers for each buffer
+       on the free queue */
+    while (controller->ack_wait_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->ack_wait_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->completion_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->completion_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->rcv_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->rcv_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->xmt_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->xmt_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    for (i = 0; i < controller->free_queue->size; i++) {
+        buffer = (BUFFER *)remqueue (controller->free_queue->hdr.next);
+        free (buffer->transfer_buffer);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
     }
 
 ans = auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : dptr->numunits - 2);
