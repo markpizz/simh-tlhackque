@@ -876,33 +876,36 @@ BUFFER_QUEUE dmp_free_queues[DMP_NUMDEVICE];
 BUFFER *dmp_buffers[DMC_NUMDEVICE];
 
 REG dmc_reg[] = {
-    { GRDATA (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0) },
-    { GRDATA (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0) },
-    { GRDATA (POLL,      dmc_connect_poll, DEV_RDX, 32, 0) },
-    { BRDATA (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL6,              dmc_sel6, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SPEED,            dmc_speed, DEV_RDX, 32, DMC_NUMDEVICE) },
-    { BRDATA (PEER,              dmc_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (PORT,              dmc_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE) },
-    { BRDATA (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE) },
+    { GRDATAD (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0,                     "input interrupt summary") },
+    { GRDATAD (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0,                     "output interrupt summary") },
+    { GRDATAD (POLL,      dmc_connect_poll, DEV_RDX, 32, 0,                     "connect poll interval") },
+    { BRDATAD (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 0 CSR") },
+    { BRDATAD (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 2 CSR") },
+    { BRDATAD (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 4 CSR") },
+    { BRDATAD (SEL6,              dmc_sel6, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 6 CSR") },
+    { BRDATAD (SPEED,            dmc_speed, DEV_RDX, 32, DMC_NUMDEVICE,         "line speed") },
+    { BRDATAD (PEER,              dmc_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "peer address:port") },
+    { BRDATAD (PORT,              dmc_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "listen port") },
+    { BRDATAD (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
+    { BRDATAD (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
+    { BRDATAD (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE,         "modem control bits") },
     { NULL }  };
 
 REG dmp_reg[] = {
-    { GRDATA (POLL,      dmp_connect_poll, DEV_RDX, 32, 0) },
-    { BRDATA (SEL0,              dmp_sel0, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL2,              dmp_sel2, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL4,              dmp_sel4, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL6,              dmp_sel6, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SPEED,            dmp_speed, DEV_RDX, 32, DMP_NUMDEVICE) },
-    { BRDATA (PEER,              dmp_peer, DEV_RDX,  8, DMP_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (PORT,              dmp_port, DEV_RDX,  8, DMP_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMP_NUMDEVICE) },
-    { BRDATA (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE) },
+    { GRDATAD (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0,                     "input interrupt summary") },
+    { GRDATAD (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0,                     "output interrupt summary") },
+    { GRDATAD (POLL,      dmp_connect_poll, DEV_RDX, 32, 0,                     "connect poll interval") },
+    { BRDATAD (SEL0,              dmp_sel0, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 0 CSR") },
+    { BRDATAD (SEL2,              dmp_sel2, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 2 CSR") },
+    { BRDATAD (SEL4,              dmp_sel4, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 4 CSR") },
+    { BRDATAD (SEL6,              dmp_sel6, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 6 CSR") },
+    { BRDATAD (SEL10,            dmp_sel10, DEV_RDX, 16, DMP_NUMDEVICE,         "Select 10 CSR") },
+    { BRDATAD (SPEED,            dmp_speed, DEV_RDX, 32, DMC_NUMDEVICE,         "line speed") },
+    { BRDATAD (PEER,              dmp_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "peer address:port") },
+    { BRDATAD (PORT,              dmp_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "listen port") },
+    { BRDATAD (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
+    { BRDATAD (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
+    { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
     { NULL }  };
 
 extern DEVICE dmc_dev;
@@ -1376,7 +1379,7 @@ const char helpString[] =
     " module.\n"
 #if !defined (VM_PDP10)
     "2 Models\n"
-    " If the device was offered in distinct models, a subtopic for each\n"
+    " There were a number of microprocessor DDCMP devices produced.\n"
     "3 DMC11\n"
     " The original kmc11 microprocessor board with DMC microcode and a sync\n"
     " line unit.\n"
@@ -1398,8 +1401,6 @@ const char helpString[] =
     "1 Configuration\n"
     " A %D device is configured with various simh SET and ATTACH commands\n"
     "2 $Set commands\n"
-    " The SET commands for the device will automagically display above\n"
-    " this line.  Add any special notes.\n"
     "3 Lines\n"
     " A maximum of %2s %1s devices can be emulated concurrently in the %S\n"
     " simulator. The number of simulated %1s devices or lines can be\n"
