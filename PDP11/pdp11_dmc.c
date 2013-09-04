@@ -2502,10 +2502,6 @@ t_bool ddcmp_compare (uint8 a, CompareOP Op, uint8 b, CTLR *controller)
 size_t A = a & 0xFF;
 size_t B = b & 0xFF;
 
-if (A < controller->free_queue->size)
-    A = A + 256;
-if (B < controller->free_queue->size)
-    B = B + 256;
 switch (Op) {
     case EQ:
         return (A == B);
@@ -2515,21 +2511,32 @@ switch (Op) {
         if (A == B)
             return TRUE;
     case LT:
-        if (A < B)
-            return TRUE;
         if (A == B)
             return FALSE;
         if (A < B)
-            return TRUE;
-        else
+            if (((A + 256) <= (B + controller->free_queue->size)) ||
+                ((A + 256 - 1) <= (B + controller->free_queue->size)))
+                return FALSE;
+            else
+                return TRUE;
+        if ((A + controller->free_queue->size) < (B + 256 - 1))
             return FALSE;
+        return TRUE;
     case GE:
         if (A == B)
             return TRUE;
     case GT:
         if (A == B)
             return FALSE;
-        return ddcmp_compare (B, LT, A, controller);
+        if (A > B)
+            if (((B + 256) <= (controller->free_queue->size + A)) ||
+                ((B + 256 - 1) <= (A + controller->free_queue->size)))
+                return FALSE;
+            else
+                return TRUE;
+        if ((A + 256 - 1) > (B + controller->free_queue->size))
+            return FALSE;
+        return TRUE;
     default:    /* Never happens */
         return FALSE;
     }
