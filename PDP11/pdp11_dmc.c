@@ -329,6 +329,7 @@ static t_bool insqueue (QH *entry, QH *pred)
 {
 if ((pred->queue->size > 0) && (pred->queue->count >= pred->queue->size))
     return FALSE;
+assert (entry->queue == NULL);
 entry->next = pred->next;
 entry->prev = pred;
 entry->queue = pred->queue;
@@ -554,6 +555,7 @@ t_bool ddcmp_ReceiveAck           (CTLR *controller);
 t_bool ddcmp_ReceiveNak           (CTLR *controller);
 t_bool ddcmp_ReceiveRep           (CTLR *controller);
 t_bool ddcmp_NUMEqRplus1          (CTLR *controller);   /* (NUM == R+1) */
+t_bool ddcmp_NUMGtRplus1          (CTLR *controller);   /* (NUM > R+1) */
 t_bool ddcmp_ReceiveDataMsg       (CTLR *controller);   /* Receive Data Message */
 t_bool ddcmp_ReceiveMaintMsg      (CTLR *controller);   /* Receive Maintenance Message */
 t_bool ddcmp_ALtRESPleN           (CTLR *controller);   /* (A < RESP <= N) */
@@ -597,6 +599,8 @@ void ddcmp_SetAeqRESP             (CTLR *controller);
 void ddcmp_SetTequalAplus1        (CTLR *controller);
 void ddcmp_IncrementT             (CTLR *controller);
 void ddcmp_SetNAKreason3          (CTLR *controller);
+void ddcmp_SetNAKreason2          (CTLR *controller);
+void ddcmp_NAKMissingPackets      (CTLR *controller);
 void ddcmp_IfTleAthenSetTeqAplus1 (CTLR *controller);
 void ddcmp_IfAltXthenStartTimer   (CTLR *controller);
 void ddcmp_IfAgeXthenStopTimer    (CTLR *controller);
@@ -623,14 +627,14 @@ DDCMP_LinkAction_Routine Actions[10];
 DDCMP_STATETABLE DDCMP_TABLE[] = {
     { 0, All,         {ddcmp_UserHalt},            Halt,           {ddcmp_StopTimer}},
     { 1, Halt,        {ddcmp_UserStartup,
-                       ddcmp_LineConnected},       IStart,         {ddcmp_SendStrt, 
-                                                                    ddcmp_ResetVariables,
+                       ddcmp_LineConnected},       IStart,         {ddcmp_ResetVariables,
+                                                                    ddcmp_SendStrt,
                                                                     ddcmp_StopTimer}},
     { 2, Halt,        {ddcmp_UserMaintenanceMode}, Maintenance,    {ddcmp_ResetVariables}},
     { 3, Halt,        {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
     { 4, IStart,      {ddcmp_TimerNotRunning},     IStart,         {ddcmp_StartTimer}},
-    { 5, IStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SendAck,
+    { 5, IStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK,
                                                                     ddcmp_StopTimer}},
     { 6, IStart,      {ddcmp_ReceiveStrt},         AStart,         {ddcmp_SendStack, 
                                                                     ddcmp_StartTimer}},
@@ -660,53 +664,49 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                                                                     ddcmp_NotifyMaintRcvd}},
     {22, Run,         {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK}},
     {23, Run,         {ddcmp_ReceiveDataMsg,
+                       ddcmp_NUMGtRplus1},         Run,            {ddcmp_NAKMissingPackets}},
+    {24, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_NUMEqRplus1},         Run,            {ddcmp_GiveBufferToUser}},
-    {24, Run,         {ddcmp_ReceiveMessageError}, Run,            {ddcmp_SetSNAK}},
-    {25, Run,         {ddcmp_ReceiveRep,
-                       ddcmp_NumEqR},              Run,            {ddcmp_SetSACK}},
+    {25, Run,         {ddcmp_ReceiveMessageError}, Run,            {ddcmp_SetSNAK}},
     {26, Run,         {ddcmp_ReceiveRep,
+                       ddcmp_NumEqR},              Run,            {ddcmp_SetSACK}},
+    {27, Run,         {ddcmp_ReceiveRep,
                        ddcmp_NumNeR},              Run,            {ddcmp_SetSNAK, 
                                                                     ddcmp_SetNAKreason3}},
-    {27, Run,         {ddcmp_ReceiveDataMsg,
-                       ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
-                                                                    ddcmp_SetAeqRESP, 
-                                                                    ddcmp_IfTleAthenSetTeqAplus1, 
-                                                                    ddcmp_IfAgeXthenStopTimer}},
-    {28, Run,         {ddcmp_ReceiveAck,
+    {28, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
                                                                     ddcmp_SetAeqRESP, 
                                                                     ddcmp_IfTleAthenSetTeqAplus1, 
                                                                     ddcmp_IfAgeXthenStopTimer}},
     {29, Run,         {ddcmp_ReceiveAck,
+                       ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
+                                                                    ddcmp_SetAeqRESP, 
+                                                                    ddcmp_IfTleAthenSetTeqAplus1, 
+                                                                    ddcmp_IfAgeXthenStopTimer}},
+    {30, Run,         {ddcmp_ReceiveAck,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {30, Run,         {ddcmp_ReceiveDataMsg,
+    {31, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {31, Run,         {ddcmp_ReceiveNak,
+    {32, Run,         {ddcmp_ReceiveNak,
                        ddcmp_ALeRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
                                                                     ddcmp_SetAeqRESP, 
                                                                     ddcmp_SetTequalAplus1, 
                                                                     ddcmp_StopTimer}},
-    {32, Run,         {ddcmp_ReceiveNak,
+    {33, Run,         {ddcmp_ReceiveNak,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {33, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
-    {34, Run,         {ddcmp_TransmitterIdle,
+    {34, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
+    {35, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisSet},           Run,            {ddcmp_SendNak, 
                                                                     ddcmp_ClearSNAK}},
-    {35, Run,         {ddcmp_TransmitterIdle,
+    {36, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisSet},           Run,            {ddcmp_SendRep, 
                                                                     ddcmp_ClearSREP}},
-    {36, Run,         {ddcmp_TransmitterIdle,
+    {37, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisClear,
                        ddcmp_TltNplus1},           Run,            {ddcmp_ReTransmitMessageT, 
                                                                     ddcmp_IncrementT, 
-                                                                    ddcmp_ClearSACK}},
-    {37, Run,         {ddcmp_TransmitterIdle,
-                       ddcmp_SNAKisClear,
-                       ddcmp_SREPisClear,
-                       ddcmp_SACKisSet,
-                       ddcmp_TeqNplus1},           Run,            {ddcmp_SendAck, 
                                                                     ddcmp_ClearSACK}},
     {38, Run,         {ddcmp_UserSendMessage,
                        ddcmp_TeqNplus1,
@@ -714,14 +714,20 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisClear},         Run,            {ddcmp_SendDataMessage, 
                                                                     ddcmp_ClearSACK}},
-    {39, Run,         {ddcmp_DataMessageSent},     Run,            {ddcmp_SetXSetNUM, 
+    {39, Run,         {ddcmp_TransmitterIdle,
+                       ddcmp_SNAKisClear,
+                       ddcmp_SREPisClear,
+                       ddcmp_SACKisSet,
+                       ddcmp_TeqNplus1},           Run,            {ddcmp_SendAck, 
+                                                                    ddcmp_ClearSACK}},
+    {40, Run,         {ddcmp_DataMessageSent},     Run,            {ddcmp_SetXSetNUM, 
                                                                     ddcmp_IfAltXthenStartTimer, 
                                                                     ddcmp_IfAgeXthenStopTimer}},
-    {40, Run,         {ddcmp_REPMessageSent},      Run,            {ddcmp_StartTimer}},
-    {41, Maintenance, {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_GiveBufferToUser}},
-    {42, Maintenance, {ddcmp_UserSendMessage,
+    {41, Run,         {ddcmp_REPMessageSent},      Run,            {ddcmp_StartTimer}},
+    {42, Maintenance, {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_GiveBufferToUser}},
+    {43, Maintenance, {ddcmp_UserSendMessage,
                        ddcmp_TransmitterIdle},     Maintenance,    {ddcmp_SendMaintMessage}},
-    {43, All}           /* End of Table */
+    {44, All}           /* End of Table */
     };
 
 
@@ -870,33 +876,36 @@ BUFFER_QUEUE dmp_free_queues[DMP_NUMDEVICE];
 BUFFER *dmp_buffers[DMC_NUMDEVICE];
 
 REG dmc_reg[] = {
-    { GRDATA (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0) },
-    { GRDATA (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0) },
-    { GRDATA (POLL,      dmc_connect_poll, DEV_RDX, 32, 0) },
-    { BRDATA (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL6,              dmc_sel6, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SPEED,            dmc_speed, DEV_RDX, 32, DMC_NUMDEVICE) },
-    { BRDATA (PEER,              dmc_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (PORT,              dmc_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE) },
-    { BRDATA (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE) },
+    { GRDATAD (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0,                     "input interrupt summary") },
+    { GRDATAD (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0,                     "output interrupt summary") },
+    { GRDATAD (POLL,      dmc_connect_poll, DEV_RDX, 32, 0,                     "connect poll interval") },
+    { BRDATAD (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 0 CSR") },
+    { BRDATAD (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 2 CSR") },
+    { BRDATAD (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 4 CSR") },
+    { BRDATAD (SEL6,              dmc_sel6, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 6 CSR") },
+    { BRDATAD (SPEED,            dmc_speed, DEV_RDX, 32, DMC_NUMDEVICE,         "line speed") },
+    { BRDATAD (PEER,              dmc_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "peer address:port") },
+    { BRDATAD (PORT,              dmc_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "listen port") },
+    { BRDATAD (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
+    { BRDATAD (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
+    { BRDATAD (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE,         "modem control bits") },
     { NULL }  };
 
 REG dmp_reg[] = {
-    { GRDATA (POLL,      dmp_connect_poll, DEV_RDX, 32, 0) },
-    { BRDATA (SEL0,              dmp_sel0, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL2,              dmp_sel2, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL4,              dmp_sel4, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL6,              dmp_sel6, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SPEED,            dmp_speed, DEV_RDX, 32, DMP_NUMDEVICE) },
-    { BRDATA (PEER,              dmp_peer, DEV_RDX,  8, DMP_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (PORT,              dmp_port, DEV_RDX,  8, DMP_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMP_NUMDEVICE) },
-    { BRDATA (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE) },
+    { GRDATAD (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0,                     "input interrupt summary") },
+    { GRDATAD (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0,                     "output interrupt summary") },
+    { GRDATAD (POLL,      dmp_connect_poll, DEV_RDX, 32, 0,                     "connect poll interval") },
+    { BRDATAD (SEL0,              dmp_sel0, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 0 CSR") },
+    { BRDATAD (SEL2,              dmp_sel2, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 2 CSR") },
+    { BRDATAD (SEL4,              dmp_sel4, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 4 CSR") },
+    { BRDATAD (SEL6,              dmp_sel6, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 6 CSR") },
+    { BRDATAD (SEL10,            dmp_sel10, DEV_RDX, 16, DMP_NUMDEVICE,         "Select 10 CSR") },
+    { BRDATAD (SPEED,            dmp_speed, DEV_RDX, 32, DMC_NUMDEVICE,         "line speed") },
+    { BRDATAD (PEER,              dmp_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "peer address:port") },
+    { BRDATAD (PORT,              dmp_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "listen port") },
+    { BRDATAD (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
+    { BRDATAD (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
+    { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
     { NULL }  };
 
 extern DEVICE dmc_dev;
@@ -1370,7 +1379,7 @@ const char helpString[] =
     " module.\n"
 #if !defined (VM_PDP10)
     "2 Models\n"
-    " If the device was offered in distinct models, a subtopic for each\n"
+    " There were a number of microprocessor DDCMP devices produced.\n"
     "3 DMC11\n"
     " The original kmc11 microprocessor board with DMC microcode and a sync\n"
     " line unit.\n"
@@ -1392,8 +1401,6 @@ const char helpString[] =
     "1 Configuration\n"
     " A %D device is configured with various simh SET and ATTACH commands\n"
     "2 $Set commands\n"
-    " The SET commands for the device will automagically display above\n"
-    " this line.  Add any special notes.\n"
     "3 Lines\n"
     " A maximum of %2s %1s devices can be emulated concurrently in the %S\n"
     " simulator. The number of simulated %1s devices or lines can be\n"
@@ -1939,11 +1946,13 @@ uint8 dmc_get_modem(CTLR *controller)
 int32 modem_bits;
 
 tmxr_set_get_modem_bits (controller->line, 0, 0, &modem_bits);
-*controller->modem &= ~(DMC_SEL4_M_CTS|DMC_SEL4_M_CAR|DMC_SEL4_M_RI|DMC_SEL4_M_DSR);
+*controller->modem &= ~(DMC_SEL4_M_CTS|DMC_SEL4_M_CAR|DMC_SEL4_M_RI|DMC_SEL4_M_DSR|DMC_SEL4_M_DTR|DMC_SEL4_M_RTS);
 *controller->modem |= (modem_bits&TMXR_MDM_DCD) ? DMC_SEL4_M_CAR : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_CTS) ? DMC_SEL4_M_CTS : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_DSR) ? DMC_SEL4_M_DSR : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_RNG) ? DMC_SEL4_M_RI : 0;
+*controller->modem |= (modem_bits&TMXR_MDM_DTR) ? DMC_SEL4_M_DTR : 0;
+*controller->modem |= (modem_bits&TMXR_MDM_RTS) ? DMC_SEL4_M_RTS : 0;
 return (*controller->modem);
 }
 
@@ -1952,7 +1961,7 @@ void dmc_set_modem_dtr(CTLR *controller)
 if (dmc_is_attached(controller->unit) && (!(DMC_SEL4_M_DTR & *controller->modem))) {
     sim_debug(DBG_MDM, controller->device, "DTR State Change to UP(ON)\n");
     tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
-    *controller->modem |= DMC_SEL4_M_DTR|DMC_SEL4_M_RTS;
+    dmc_get_modem(controller);
     controller->line->rcve = 1;
     }
 }
@@ -1963,8 +1972,7 @@ if (*controller->modem & DMC_SEL4_M_DTR) {
     sim_debug(DBG_MDM, controller->device, "DTR State Change to DOWN(OFF)\n");
     }
 tmxr_set_get_modem_bits (controller->line, 0, TMXR_MDM_DTR|TMXR_MDM_RTS, NULL);
-*controller->modem &= ~(DMC_SEL4_M_DTR|DMC_SEL4_M_RTS);
-controller->line->rcve = 0;
+dmc_get_modem(controller);
 }
 
 void dmc_set_lost_data(CTLR *controller)
@@ -2107,7 +2115,12 @@ if (dmc_is_attached(controller->unit)) {
     dmc_buffer_fill_receive_buffers(controller);
     if (controller->transfer_state == Idle)
         dmc_start_transfer_buffer(controller);
-
+    /* Execution of this routine normally is triggered by programatic access by the
+       simulated system's device driver to the device registers or the arrival of 
+       traffic from the network.  Network traffic is handled by the dmc_poll_svc 
+       which may call this routine as needed.  Direct polling here is extra overhead 
+       which should not be necessary.
+     */
     sim_activate (uptr, tmxr_poll);
     }
 
@@ -2130,7 +2143,7 @@ dmc = tmxr_poll_conn(mp);
 if (dmc >= 0) {                                 /* new connection? */
     controller = (CTLR *)dptr->units[dmc].ctlr;
     dmc_get_modem (controller);
-    sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - DSR State Change to UP(ON)\n", dmc);
+    sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - Connection State Change to UP(ON)\n", dmc);
     ddcmp_dispatch (controller, 0);
     }
 tmxr_poll_rx (mp);
@@ -2147,9 +2160,9 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
         ++active;
     old_modem = *controller->modem;
     new_modem = dmc_get_modem (controller);
-    if ((old_modem & DMC_SEL4_M_DSR) && 
-        (!(new_modem & DMC_SEL4_M_DSR))) {
-        sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - DSR State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_DSR) ? "UP(ON)" : "DOWN(OFF)");
+    if ((old_modem & DMC_SEL4_M_CAR) && 
+        (!(new_modem & DMC_SEL4_M_CAR))) {
+        sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - Connection State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_CAR) ? "UP(ON)" : "DOWN(OFF)");
         ddcmp_dispatch (controller, 0);
         }
     if ((lp->xmte && tmxr_tpbusyln(lp)) || 
@@ -2225,6 +2238,7 @@ size_t queue_size = (controller->dev_type == DMC) ? DMC_QUEUE_SIZE :
                                                                                         DMP_QUEUE_SIZE);
 queue_size *= 2;
 *controller->buffers = (BUFFER *)realloc(*controller->buffers, queue_size*sizeof(**controller->buffers));
+memset (*controller->buffers, 0, queue_size*sizeof(**controller->buffers));
 dmc_buffer_queue_init(controller, controller->rcv_queue,        "receive",    0, NULL);
 dmc_buffer_queue_init(controller, controller->completion_queue, "completion", 0, NULL);
 dmc_buffer_queue_init(controller, controller->xmt_queue,        "transmit",   0, NULL);
@@ -2240,6 +2254,7 @@ if (!buffer)
     return buffer;
 buffer->address = 0;
 buffer->count = 0;
+free (buffer->transfer_buffer);
 buffer->transfer_buffer = NULL;
 buffer->actual_bytes_transferred = 0;
 buffer->type = TransmitControl;         /* Default */
@@ -2492,26 +2507,36 @@ switch (Op) {
         return (A == B);
     case NE:
         return (A != B);
-    case LT:
-        if (A < B)
-            return TRUE;
-        if (A == B)
-            return FALSE;
-        return (((B + 256) - A) > controller->free_queue->size);
     case LE:
-        if (A <= B)
+        if (A == B)
             return TRUE;
-        return (((B + 256) - A) <= controller->free_queue->size);
-    case GT:
-        if (A > B)
-            return TRUE;
+    case LT:
         if (A == B)
             return FALSE;
-        return ddcmp_compare (B, LT, A, controller);
+        if (A < B)
+            if (((A + 256) <= (B + controller->free_queue->size)) ||
+                ((A + 256 - 1) <= (B + controller->free_queue->size)))
+                return FALSE;
+            else
+                return TRUE;
+        if ((A + controller->free_queue->size) < (B + 256 - 1))
+            return FALSE;
+        return TRUE;
     case GE:
-        if (A >= B)
+        if (A == B)
             return TRUE;
-        return ddcmp_compare (B, LE, A, controller);
+    case GT:
+        if (A == B)
+            return FALSE;
+        if (A > B)
+            if (((B + 256) <= (controller->free_queue->size + A)) ||
+                ((B + 256 - 1) <= (A + controller->free_queue->size)))
+                return FALSE;
+            else
+                return TRUE;
+        if ((A + 256 - 1) > (B + controller->free_queue->size))
+            return FALSE;
+        return TRUE;
     default:    /* Never happens */
         return FALSE;
     }
@@ -2529,6 +2554,9 @@ controller->link.TimerRunning = FALSE;
 }
 void ddcmp_ResetVariables         (CTLR *controller)
 {
+size_t data_packets = 0;
+BUFFER *buffer;
+
 controller->link.R = 0;
 controller->link.N = 0;
 controller->link.T = 1;
@@ -2538,6 +2566,30 @@ controller->link.SNAK = FALSE;
 controller->link.SREP = FALSE;
 controller->link.state = Halt;
 controller->link.nak_reason = 0;
+/* Move any ack wait packets back to the transmit queue so they get 
+   resent when the link is restored */
+while (controller->ack_wait_queue->count) {
+    buffer = (BUFFER *)remqueue (controller->ack_wait_queue->hdr.prev);
+    memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+    assert (insqueue (&buffer->hdr, &controller->xmt_queue->hdr));
+    }
+/* Also make sure that the transmit queue has no control packets in it 
+   and that any non transmit buffer(s) have zeroed headers so they will
+   be properly constructed when the link comes up */
+buffer = (BUFFER *)controller->xmt_queue->hdr.next;
+while (controller->xmt_queue->count - data_packets) {
+    if (((BUFFER *)controller->xmt_queue->hdr.next)->transfer_buffer[0] == DDCMP_ENQ) {
+        BUFFER *buffer_next = (BUFFER *)buffer->hdr.next;
+
+        buffer = (BUFFER *)remqueue (&buffer->hdr);
+        assert (insqueue (&buffer->hdr, &controller->free_queue->hdr));
+        buffer = buffer_next;
+        continue;
+        }
+    ++data_packets;
+    memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+    buffer = (BUFFER *)buffer->hdr.next;
+    }
 }
 void ddcmp_SendStrt               (CTLR *controller)
 {
@@ -2633,6 +2685,26 @@ void ddcmp_SetNAKreason3          (CTLR *controller)
 {
 controller->link.nak_reason = 3;
 }
+void ddcmp_SetNAKreason2          (CTLR *controller)
+{
+controller->link.nak_reason = 2;
+}
+void ddcmp_NAKMissingPackets      (CTLR *controller)
+{
+uint8 R = controller->link.R;
+QH *qh = &controller->xmt_queue->hdr;
+
+while (ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], GE, R, controller)) {
+    BUFFER *buffer = dmc_buffer_allocate(controller);
+    buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
+    buffer->count = DDCMP_HEADER_SIZE;
+    ddcmp_build_nak_packet (buffer->transfer_buffer, 2, R, DDCMP_FLAG_SELECT);
+    R = R + 1;
+    assert (insqueue (&buffer->hdr, qh));
+    qh = &buffer->hdr;
+    }
+dmc_ddcmp_start_transmitter (controller);
+}
 void ddcmp_IfTleAthenSetTeqAplus1 (CTLR *controller)
 {
 if (ddcmp_compare (controller->link.T, LE, controller->link.A, controller))
@@ -2692,7 +2764,7 @@ for (i=0; i < controller->ack_wait_queue->count; ++i) {
         buffer = (BUFFER *)buffer->hdr.next;
         continue;
         }
-    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 0, controller->link.T, controller->link.R);
+    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 3, controller->link.T, controller->link.R);
     buffer = (BUFFER *)remqueue (&buffer->hdr);
     assert (insqueue (&buffer->hdr, controller->xmt_queue->hdr.prev)); /* Insert at tail */
     break;
@@ -2805,6 +2877,12 @@ t_bool breturn = (controller->link.rcv_pkt &&
                   ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], EQ, controller->link.R + 1, controller));
 return breturn;
 }
+t_bool ddcmp_NUMGtRplus1          (CTLR *controller)
+{
+t_bool breturn = (controller->link.rcv_pkt &&
+                  ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], GT, controller->link.R + 1, controller));
+return breturn;
+}
 t_bool ddcmp_ReceiveDataMsg       (CTLR *controller)
 {
 t_bool breturn = ((controller->link.ScanningEvents & DDCMP_EVENT_PKT_RCVD) &&
@@ -2903,11 +2981,11 @@ return (buffer && (buffer->transfer_buffer[0] == 0));
 }
 t_bool ddcmp_LineConnected        (CTLR *controller)
 {
-return (*controller->modem & DMC_SEL4_M_DSR);
+return (*controller->modem & DMC_SEL4_M_CAR);
 }
 t_bool ddcmp_LineDisconnected     (CTLR *controller)
 {
-return (!(*controller->modem & DMC_SEL4_M_DSR));
+return (!(*controller->modem & DMC_SEL4_M_CAR));
 }
 t_bool ddcmp_DataMessageSent      (CTLR *controller)
 {
@@ -2934,7 +3012,7 @@ static const char *states[] = {"Halt", "IStart", "AStart", "Run", "Maintenance"}
 if (controller->link.Scanning) {
     if (!controller->link.RecurseScan) {
         controller->link.RecurseScan = TRUE;
-        controller->link.RecurseEventMask = EventMask;
+        controller->link.RecurseEventMask |= EventMask;
         }
     return;
     }
@@ -2953,13 +3031,13 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
             }
         if (!match)
             continue;
-        sim_debug (DBG_INF, controller->device, "ddcmp_dispatch() - %s conditions matching for rule %d, initiating actions\n", states[table->State], table->RuleNumber);
+        sim_debug (DBG_INF, controller->device, "ddcmp_dispatch(%X) - %s conditions matching for rule %d, initiating actions\n", EventMask, states[table->State], table->RuleNumber);
         while (*action != NULL) {
             (*action)(controller);
             ++action;
             }
         if (table->NewState != controller->link.state) {
-            sim_debug (DBG_INF, controller->device, "ddcmp_dispatch() - state changing from %s to %s\n", states[controller->link.state], states[table->NewState]);
+            sim_debug (DBG_INF, controller->device, "ddcmp_dispatch(%X) - state changing from %s to %s\n", EventMask, states[controller->link.state], states[table->NewState]);
             controller->link.state = table->NewState;
             }
         }
@@ -2968,7 +3046,9 @@ controller->link.Scanning = FALSE;
 controller->link.ScanningEvents &= ~EventMask;
 if (controller->link.RecurseScan) {
     controller->link.RecurseScan = FALSE;
-    ddcmp_dispatch (controller, controller->link.RecurseEventMask);
+    EventMask = controller->link.RecurseEventMask;
+    controller->link.RecurseEventMask = 0;
+    ddcmp_dispatch (controller, EventMask);
     }
 }
 
@@ -3257,6 +3337,34 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
     dmp_desc.notelnet = TRUE;                      /* We always want raw tcp socket */
     dmp_desc.dptr = &dmp_dev;                      /* Connect appropriate device */
     dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
+    }
+else {
+    BUFFER *buffer;
+
+    /* Avoid memory leaks by moving all buffers back to the free queue
+       and then freeing any allocated transfer buffers for each buffer
+       on the free queue */
+    while (controller->ack_wait_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->ack_wait_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->completion_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->completion_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->rcv_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->rcv_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->xmt_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->xmt_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    for (i = 0; i < controller->free_queue->size; i++) {
+        buffer = (BUFFER *)remqueue (controller->free_queue->hdr.next);
+        free (buffer->transfer_buffer);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
     }
 
 ans = auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : dptr->numunits - 2);
