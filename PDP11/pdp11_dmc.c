@@ -2559,6 +2559,7 @@ BUFFER *buffer;
 
 controller->link.R = 0;
 controller->link.N = 0;
+controller->link.A = 0;
 controller->link.T = 1;
 controller->link.X = 0;
 controller->link.SACK = FALSE;
