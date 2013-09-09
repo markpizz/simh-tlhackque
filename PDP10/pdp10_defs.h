@@ -709,6 +709,8 @@ typedef struct pdp_dib DIB;
 #define INT_V_TU        7                               /* RH11/TM03/TU45 */
 #define INT_V_KMCA      8                               /* KMC11 */
 #define INT_V_KMCB      9
+#define INT_V_DMCRX     8                               /* DMC11/DMR11 */
+#define INT_V_DMCTX     9
 #define INT_V_DZRX      16                              /* DZ11 */
 #define INT_V_DZTX      17
 #define INT_V_RY        18                              /* RX211 */
@@ -723,6 +725,8 @@ typedef struct pdp_dib DIB;
 #define INT_TU          (1u << INT_V_TU)
 #define INT_KMCA        (1u << INT_V_KMCA)
 #define INT_KMCB        (1u << INT_V_KMCB)
+#define INT_DMCRX       (1u << INT_V_DMCRX)
+#define INT_DMCTX       (1u << INT_V_DMCTX)
 #define INT_XU          (1u << INT_V_XU)
 #define INT_DZRX        (1u << INT_V_DZRX)
 #define INT_DZTX        (1u << INT_V_DZTX)

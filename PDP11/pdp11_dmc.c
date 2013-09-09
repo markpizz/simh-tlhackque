@@ -51,7 +51,7 @@ receives its first read buffer. The device opens the connection for writing
 when it receives the first write buffer.
 
 Transmit and receive buffers are added to their respective queues and the 
-polling method in dmc_svc() checks for input and sends any output.
+polling method in dmc_poll_svc() checks for input and sends any output.
 
 Tested with two diagnostics. To run the diagnostics set the default 
 directory to SYS$MAINTENANCE, run ESSAA and then configure it for the 
@@ -96,6 +96,10 @@ The other test was to configure DECnet on VMS 4.6 and do SET HOST.
 #if defined (VM_PDP10)                                  /* PDP10 version */
 #include "pdp10_defs.h"
 
+#if !defined(DMP_NUMDEVICE)
+#define DMP_NUMDEVICE 1         /* Minimum number for array size DMP-11/DMV-11 devices */
+#endif
+
 #elif defined (VM_VAX)                                  /* VAX version */
 #include "vax_defs.h"
 
@@ -115,11 +119,11 @@ extern int32 clk_tps;                                   /* clock ticks per secon
 extern int32 tmr_poll;                                  /* instructions per tick */
 
 #if !defined(DMC_NUMDEVICE)
-#define DMC_NUMDEVICE 8         /* MAX # DMC-11 devices */
+#define DMC_NUMDEVICE 8         /* default MAX # DMC-11 devices */
 #endif
 
 #if !defined(DMP_NUMDEVICE)
-#define DMP_NUMDEVICE 8         /* MAX # DMP-11/DMV-11 devices */
+#define DMP_NUMDEVICE 8         /* default MAX # DMP-11/DMV-11 devices */
 #endif
 
 #define DMC_RDX                     8
@@ -325,7 +329,8 @@ static t_bool insqueue (QH *entry, QH *pred)
 {
 if ((pred->queue->size > 0) && (pred->queue->count >= pred->queue->size))
     return FALSE;
-entry-> next = pred->next;
+assert (entry->queue == NULL);
+entry->next = pred->next;
 entry->prev = pred;
 entry->queue = pred->queue;
 pred->next->prev = entry;
@@ -550,6 +555,7 @@ t_bool ddcmp_ReceiveAck           (CTLR *controller);
 t_bool ddcmp_ReceiveNak           (CTLR *controller);
 t_bool ddcmp_ReceiveRep           (CTLR *controller);
 t_bool ddcmp_NUMEqRplus1          (CTLR *controller);   /* (NUM == R+1) */
+t_bool ddcmp_NUMGtRplus1          (CTLR *controller);   /* (NUM > R+1) */
 t_bool ddcmp_ReceiveDataMsg       (CTLR *controller);   /* Receive Data Message */
 t_bool ddcmp_ReceiveMaintMsg      (CTLR *controller);   /* Receive Maintenance Message */
 t_bool ddcmp_ALtRESPleN           (CTLR *controller);   /* (A < RESP <= N) */
@@ -593,6 +599,8 @@ void ddcmp_SetAeqRESP             (CTLR *controller);
 void ddcmp_SetTequalAplus1        (CTLR *controller);
 void ddcmp_IncrementT             (CTLR *controller);
 void ddcmp_SetNAKreason3          (CTLR *controller);
+void ddcmp_SetNAKreason2          (CTLR *controller);
+void ddcmp_NAKMissingPackets      (CTLR *controller);
 void ddcmp_IfTleAthenSetTeqAplus1 (CTLR *controller);
 void ddcmp_IfAltXthenStartTimer   (CTLR *controller);
 void ddcmp_IfAgeXthenStopTimer    (CTLR *controller);
@@ -619,14 +627,14 @@ DDCMP_LinkAction_Routine Actions[10];
 DDCMP_STATETABLE DDCMP_TABLE[] = {
     { 0, All,         {ddcmp_UserHalt},            Halt,           {ddcmp_StopTimer}},
     { 1, Halt,        {ddcmp_UserStartup,
-                       ddcmp_LineConnected},       IStart,         {ddcmp_SendStrt, 
-                                                                    ddcmp_ResetVariables,
+                       ddcmp_LineConnected},       IStart,         {ddcmp_ResetVariables,
+                                                                    ddcmp_SendStrt,
                                                                     ddcmp_StopTimer}},
     { 2, Halt,        {ddcmp_UserMaintenanceMode}, Maintenance,    {ddcmp_ResetVariables}},
     { 3, Halt,        {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_ResetVariables, 
                                                                     ddcmp_NotifyMaintRcvd}},
     { 4, IStart,      {ddcmp_TimerNotRunning},     IStart,         {ddcmp_StartTimer}},
-    { 5, IStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SendAck,
+    { 5, IStart,      {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK,
                                                                     ddcmp_StopTimer}},
     { 6, IStart,      {ddcmp_ReceiveStrt},         AStart,         {ddcmp_SendStack, 
                                                                     ddcmp_StartTimer}},
@@ -656,53 +664,49 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                                                                     ddcmp_NotifyMaintRcvd}},
     {22, Run,         {ddcmp_ReceiveStack},        Run,            {ddcmp_SetSACK}},
     {23, Run,         {ddcmp_ReceiveDataMsg,
+                       ddcmp_NUMGtRplus1},         Run,            {ddcmp_NAKMissingPackets}},
+    {24, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_NUMEqRplus1},         Run,            {ddcmp_GiveBufferToUser}},
-    {24, Run,         {ddcmp_ReceiveMessageError}, Run,            {ddcmp_SetSNAK}},
-    {25, Run,         {ddcmp_ReceiveRep,
-                       ddcmp_NumEqR},              Run,            {ddcmp_SetSACK}},
+    {25, Run,         {ddcmp_ReceiveMessageError}, Run,            {ddcmp_SetSNAK}},
     {26, Run,         {ddcmp_ReceiveRep,
+                       ddcmp_NumEqR},              Run,            {ddcmp_SetSACK}},
+    {27, Run,         {ddcmp_ReceiveRep,
                        ddcmp_NumNeR},              Run,            {ddcmp_SetSNAK, 
                                                                     ddcmp_SetNAKreason3}},
-    {27, Run,         {ddcmp_ReceiveDataMsg,
-                       ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
-                                                                    ddcmp_SetAeqRESP, 
-                                                                    ddcmp_IfTleAthenSetTeqAplus1, 
-                                                                    ddcmp_IfAgeXthenStopTimer}},
-    {28, Run,         {ddcmp_ReceiveAck,
+    {28, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
                                                                     ddcmp_SetAeqRESP, 
                                                                     ddcmp_IfTleAthenSetTeqAplus1, 
                                                                     ddcmp_IfAgeXthenStopTimer}},
     {29, Run,         {ddcmp_ReceiveAck,
+                       ddcmp_ALtRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
+                                                                    ddcmp_SetAeqRESP, 
+                                                                    ddcmp_IfTleAthenSetTeqAplus1, 
+                                                                    ddcmp_IfAgeXthenStopTimer}},
+    {30, Run,         {ddcmp_ReceiveAck,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {30, Run,         {ddcmp_ReceiveDataMsg,
+    {31, Run,         {ddcmp_ReceiveDataMsg,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {31, Run,         {ddcmp_ReceiveNak,
+    {32, Run,         {ddcmp_ReceiveNak,
                        ddcmp_ALeRESPleN},          Run,            {ddcmp_CompleteAckedTransmits, 
                                                                     ddcmp_SetAeqRESP, 
                                                                     ddcmp_SetTequalAplus1, 
                                                                     ddcmp_StopTimer}},
-    {32, Run,         {ddcmp_ReceiveNak,
+    {33, Run,         {ddcmp_ReceiveNak,
                        ddcmp_RESPleAOrRESPgtN},    Run,            {ddcmp_Ignore}},
-    {33, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
-    {34, Run,         {ddcmp_TransmitterIdle,
+    {34, Run,         {ddcmp_TimerExpired},        Run,            {ddcmp_SetSREP}},
+    {35, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisSet},           Run,            {ddcmp_SendNak, 
                                                                     ddcmp_ClearSNAK}},
-    {35, Run,         {ddcmp_TransmitterIdle,
+    {36, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisSet},           Run,            {ddcmp_SendRep, 
                                                                     ddcmp_ClearSREP}},
-    {36, Run,         {ddcmp_TransmitterIdle,
+    {37, Run,         {ddcmp_TransmitterIdle,
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisClear,
                        ddcmp_TltNplus1},           Run,            {ddcmp_ReTransmitMessageT, 
                                                                     ddcmp_IncrementT, 
-                                                                    ddcmp_ClearSACK}},
-    {37, Run,         {ddcmp_TransmitterIdle,
-                       ddcmp_SNAKisClear,
-                       ddcmp_SREPisClear,
-                       ddcmp_SACKisSet,
-                       ddcmp_TeqNplus1},           Run,            {ddcmp_SendAck, 
                                                                     ddcmp_ClearSACK}},
     {38, Run,         {ddcmp_UserSendMessage,
                        ddcmp_TeqNplus1,
@@ -710,14 +714,20 @@ DDCMP_STATETABLE DDCMP_TABLE[] = {
                        ddcmp_SNAKisClear,
                        ddcmp_SREPisClear},         Run,            {ddcmp_SendDataMessage, 
                                                                     ddcmp_ClearSACK}},
-    {39, Run,         {ddcmp_DataMessageSent},     Run,            {ddcmp_SetXSetNUM, 
+    {39, Run,         {ddcmp_TransmitterIdle,
+                       ddcmp_SNAKisClear,
+                       ddcmp_SREPisClear,
+                       ddcmp_SACKisSet,
+                       ddcmp_TeqNplus1},           Run,            {ddcmp_SendAck, 
+                                                                    ddcmp_ClearSACK}},
+    {40, Run,         {ddcmp_DataMessageSent},     Run,            {ddcmp_SetXSetNUM, 
                                                                     ddcmp_IfAltXthenStartTimer, 
                                                                     ddcmp_IfAgeXthenStopTimer}},
-    {40, Run,         {ddcmp_REPMessageSent},      Run,            {ddcmp_StartTimer}},
-    {41, Maintenance, {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_GiveBufferToUser}},
-    {42, Maintenance, {ddcmp_UserSendMessage,
+    {41, Run,         {ddcmp_REPMessageSent},      Run,            {ddcmp_StartTimer}},
+    {42, Maintenance, {ddcmp_ReceiveMaintMsg},     Maintenance,    {ddcmp_GiveBufferToUser}},
+    {43, Maintenance, {ddcmp_UserSendMessage,
                        ddcmp_TransmitterIdle},     Maintenance,    {ddcmp_SendMaintMessage}},
-    {43, All}           /* End of Table */
+    {44, All}           /* End of Table */
     };
 
 
@@ -866,33 +876,36 @@ BUFFER_QUEUE dmp_free_queues[DMP_NUMDEVICE];
 BUFFER *dmp_buffers[DMC_NUMDEVICE];
 
 REG dmc_reg[] = {
-    { GRDATA (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0) },
-    { GRDATA (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0) },
-    { GRDATA (POLL,      dmc_connect_poll, DEV_RDX, 32, 0) },
-    { BRDATA (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SEL6,              dmc_sel6, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (SPEED,            dmc_speed, DEV_RDX, 32, DMC_NUMDEVICE) },
-    { BRDATA (PEER,              dmc_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (PORT,              dmc_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE) },
-    { BRDATA (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE) },
-    { BRDATA (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE) },
+    { GRDATAD (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0,                     "input interrupt summary") },
+    { GRDATAD (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0,                     "output interrupt summary") },
+    { GRDATAD (POLL,      dmc_connect_poll, DEV_RDX, 32, 0,                     "connect poll interval") },
+    { BRDATAD (SEL0,              dmc_sel0, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 0 CSR") },
+    { BRDATAD (SEL2,              dmc_sel2, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 2 CSR") },
+    { BRDATAD (SEL4,              dmc_sel4, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 4 CSR") },
+    { BRDATAD (SEL6,              dmc_sel6, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 6 CSR") },
+    { BRDATAD (SPEED,            dmc_speed, DEV_RDX, 32, DMC_NUMDEVICE,         "line speed") },
+    { BRDATAD (PEER,              dmc_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "peer address:port") },
+    { BRDATAD (PORT,              dmc_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "listen port") },
+    { BRDATAD (BASEADDR,      dmc_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
+    { BRDATAD (BASESIZE,      dmc_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
+    { BRDATAD (MODEM,            dmc_modem, DEV_RDX,  8, DMC_NUMDEVICE,         "modem control bits") },
     { NULL }  };
 
 REG dmp_reg[] = {
-    { GRDATA (POLL,      dmp_connect_poll, DEV_RDX, 32, 0) },
-    { BRDATA (SEL0,              dmp_sel0, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL2,              dmp_sel2, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL4,              dmp_sel4, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SEL6,              dmp_sel6, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (SPEED,            dmp_speed, DEV_RDX, 32, DMP_NUMDEVICE) },
-    { BRDATA (PEER,              dmp_peer, DEV_RDX,  8, DMP_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (PORT,              dmp_port, DEV_RDX,  8, DMP_NUMDEVICE*CBUFSIZE) },
-    { BRDATA (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMP_NUMDEVICE) },
-    { BRDATA (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMP_NUMDEVICE) },
-    { BRDATA (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE) },
+    { GRDATAD (RXINT,      dmc_ini_summary, DEV_RDX, 32, 0,                     "input interrupt summary") },
+    { GRDATAD (TXINT,     dmc_outi_summary, DEV_RDX, 32, 0,                     "output interrupt summary") },
+    { GRDATAD (POLL,      dmp_connect_poll, DEV_RDX, 32, 0,                     "connect poll interval") },
+    { BRDATAD (SEL0,              dmp_sel0, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 0 CSR") },
+    { BRDATAD (SEL2,              dmp_sel2, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 2 CSR") },
+    { BRDATAD (SEL4,              dmp_sel4, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 4 CSR") },
+    { BRDATAD (SEL6,              dmp_sel6, DEV_RDX, 16, DMC_NUMDEVICE,         "Select 6 CSR") },
+    { BRDATAD (SEL10,            dmp_sel10, DEV_RDX, 16, DMP_NUMDEVICE,         "Select 10 CSR") },
+    { BRDATAD (SPEED,            dmp_speed, DEV_RDX, 32, DMC_NUMDEVICE,         "line speed") },
+    { BRDATAD (PEER,              dmp_peer, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "peer address:port") },
+    { BRDATAD (PORT,              dmp_port, DEV_RDX,  8, DMC_NUMDEVICE*CBUFSIZE, "listen port") },
+    { BRDATAD (BASEADDR,      dmp_baseaddr, DEV_RDX, 32, DMC_NUMDEVICE,         "program set base address") },
+    { BRDATAD (BASESIZE,      dmp_basesize, DEV_RDX, 16, DMC_NUMDEVICE,         "program set base size") },
+    { BRDATAD (MODEM,            dmp_modem, DEV_RDX,  8, DMP_NUMDEVICE,         "modem control bits") },
     { NULL }  };
 
 extern DEVICE dmc_dev;
@@ -901,12 +914,14 @@ MTAB dmc_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "LINES", "LINES=n",
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmc_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
-        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source depends on LINEMODE" },
+        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
+#if !defined (VM_PDP10)
     { MTAB_XTD|MTAB_VUN|MTAB_VALR,0, "TYPE", "TYPE={DMR,DMC}" ,&dmc_settype, &dmc_showtype, NULL, "Set/Display device type"  },
+#endif
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
-        &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
+        &dmc_setstats, &dmc_showstats, NULL, "Display/Clear statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DDCMP", "DDCMP",
@@ -925,11 +940,11 @@ MTAB dmp_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "LINES", "LINES=n",
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmp_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
-        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source depends on LINEMODE" },
+        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
-        &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
+        &dmc_setstats, &dmc_showstats, NULL, "Display/Clear statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DDCMP", "DDCMP",
@@ -948,11 +963,11 @@ MTAB dmv_mod[] = {
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "LINES", "LINES=n",
         &dmc_setnumdevices, &dmc_shownumdevices, (void *) &dmv_dev, "Display number of devices" },
     { MTAB_XTD|MTAB_VUN,          0, "PEER", "PEER=address:port",
-        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source depends on LINEMODE" },
+        &dmc_setpeer, &dmc_showpeer, NULL, "Display destination/source" },
     { MTAB_XTD|MTAB_VUN,          0, "SPEED", "SPEED=bits/sec (0=unrestricted)" ,
         &dmc_setspeed, &dmc_showspeed, NULL, "Display rate limit" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "STATS", "STATS",
-        &dmc_setstats, &dmc_showstats, NULL, "Display statistics" },
+        &dmc_setstats, &dmc_showstats, NULL, "Display/Clear statistics" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "QUEUES", "QUEUES",
         NULL, &dmc_showqueues, NULL, "Display Queue state" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0, "DDCMP", "DDCMP",
@@ -978,7 +993,13 @@ DIB dmp_dib = { IOBA_AUTO, IOLN_DMP, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO
 DIB dmv_dib = { IOBA_AUTO, IOLN_DMV, &dmc_rd, &dmc_wr, 2, IVCL (DMCRX), VEC_AUTO, {&dmc_ininta, &dmc_outinta }, IOLN_DMV};
 
 DEVICE dmc_dev =
-    { "DMC", dmc_units, dmc_reg, dmc_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
+    { 
+#if defined (VM_PDP10)
+    "DMR",
+#else
+    "DMC", 
+#endif
+    dmc_units, dmc_reg, dmc_mod, 3, DMC_RDX, 8, 1, DMC_RDX, 8,
     NULL, NULL, &dmc_reset, NULL, &dmc_attach, &dmc_detach,
     &dmc_dib, DEV_DISABLE | DEV_DIS | DEV_UBUS | DEV_DEBUG, 0, dmc_debug,
     NULL, NULL, &dmc_help, &dmc_help_attach, NULL, &dmc_description };
@@ -1347,93 +1368,183 @@ return SCPE_OK;
 
 t_stat dmc_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
+const char helpString[] =
+ /* The '*'s in the next line represent the standard text width of a help line */
+     /****************************************************************************/
+    " The %1s is a communication subsystem which consists of a microprocessor\n"
+    " based, intelligent synchronous communications controller which employs\n"
+    " the DIGITAL Data Communications Message Protocol (DDCMP).\n"
+    "1 Hardware Description\n"
+    " The %1s consists of a microprocessor module and a synchronous line unit\n"
+    " module.\n"
+#if !defined (VM_PDP10)
+    "2 Models\n"
+    " There were a number of microprocessor DDCMP devices produced.\n"
+    "3 DMC11\n"
+    " The original kmc11 microprocessor board with DMC microcode and a sync\n"
+    " line unit.\n"
+    "3 DMR11\n"
+    " The more advanced kmc11 microprocessor board with DMR microcode and a sync\n"
+    " line unit.\n"
+    "3 DMP11\n"
+    " A newly designed Unibus board with a more complete programming interface\n"
+    " and a sync line unit.\n"
+    "3 DMV11\n"
+    " A Qbus version of the DMP11 with some more advanced refinements and a sync\n"
+    " line unit.\n"
+#endif
+    "2 $Registers\n"
+    "\n"
+    " These registers contain the emulated state of the device.  These values\n"
+    " don't necessarily relate to any detail of the original device being\n"
+    " emulated but are merely internal details of the emulation.\n"
+    "1 Configuration\n"
+    " A %D device is configured with various simh SET and ATTACH commands\n"
+    "2 $Set commands\n"
+    "3 Lines\n"
+    " A maximum of %2s %1s devices can be emulated concurrently in the %S\n"
+    " simulator. The number of simulated %1s devices or lines can be\n"
+    " specified with command:\n"
+    "\n"
+    "+sim> SET %U LINES=n\n"
+    "3 Peer\n"
+    " To set the host and port to which data is to be transmitted use the\n"
+    " following command:\n"
+    "\n"
+    "+sim> SET %U PEER=host:port\n"
+    "3 Connectpoll\n"
+    " The minimum interval between attempts to connect to the other side is set\n"
+    " using the following command:\n"
+    "\n"
+    "+sim> SET %U CONNECTPOLL=n\n"
+    "\n"
+    " Where n is the number of seconds. The default is %3s seconds.\n"
+    "3 Speed\n"
+    " If you want to experience the actual data rates of the physical hardware\n"
+    " you can set the bit rate of the simulated line can be set using the\n"
+    " following command:\n"
+    "\n"
+    "+sim> SET %U SPEED=n\n"
+    "\n"
+    " Where n is the number of data bits per second that the simulated line\n"
+    " runs at.  In practice this is implemented as a delay while transmitting\n"
+    " bytes to the socket.  Use a value of zero to run at full speed with no\n"
+    " artificial throttling.\n"
+#if !defined (VM_PDP10)
+    "3 Type\n"
+    " The type of device being emulated can be changed with the following\n"
+    " command:\n"
+    "\n"
+    "+sim> SET %U TYPE={DMR,DMC}\n"
+    "\n"
+    " A SET TYPE command should be entered before the device is attached to a\n"
+    " listening port.\n"
+#endif
+    "2 Attach\n"
+    " The device must be attached to a receive port, use the ATTACH command\n"
+    " specifying the receive port number.\n"
+    "\n"
+    "+sim> ATTACH %U port\n"
+    "\n"
+    " The Peer host:port value must be specified before the attach command.\n"
+    "2 Examples\n"
+    " To configure two simulators to talk to each other use the following\n"
+    " example:\n"
+    " \n"
+    " Machine 1\n"
+    "+sim> SET %D ENABLE\n"
+    "+sim> SET %U PEER=LOCALHOST:2222\n"
+    "+sim> ATTACH %U 1111\n"
+    " \n"
+    " Machine 2\n"
+    "+sim> SET %D ENABLE\n"
+    "+sim> SET %U PEER=LOCALHOST:1111\n"
+    "+sim> ATTACH %U 2222\n"
+    "\n"
+    "1 Monitoring\n"
+    " The %D device and %U line configuration and state can be displayed with\n"
+    " one of the available show commands.\n"
+    "2 $Show commands\n"
+    "1 Restrictions\n"
+    " Real hardware synchronous connections could operate in Multi-Point mode.\n"
+    " Multi-Point mode was a way of sharing a single wire with multiple\n"
+    " destination systems or devices.  Multi-Point mode is not currently\n"
+    " emulated by this or other simulated synchronous devices.\n"
+    "\n"
+    " In real hardware, the DMC11 spoke a version of DDCMP which peer devices\n"
+    " needed to be aware of.  The DMR11, DMP11, and DMV11 boards have\n"
+    " configuration switches or programatic methods to indicate that the peer\n"
+    " device was a DMC11.  The emulated devices all speak the same level of\n"
+    " DDCMP so no special remote device awareness need be considered.\n"
+    "1 Implementation\n"
+    " A real %1s transports data using DDCMP via a synchronous connection, the\n"
+    " emulated device makes a TCP/IP connection to another emulated device which\n"
+    " either speaks DDCMP over the TCP connection directly, or interfaces to a\n"
+    " simulated computer where the operating system speaks the DDCMP protocol on\n"
+    " the wire.\n"
+    "\n"
+    " The %1s can be used for point-to-point DDCMP connections carrying\n"
+    " DECnet and other types of networking, e.g. from ULTRIX or DSM.\n"
+    "1 Debugging\n"
+    " The simulator has a number of debug options, these are:\n"
+    "\n"
+    "++REG     Shows whenever a CSR is programatically read or written\n"
+    "++++and the current value.\n"
+    "++INTREG  Shows internal register value changes.\n"
+    "++INFO    Shows higher-level tracing only.\n"
+    "++WARN    Shows any warnings.\n"
+    "++TRACE   Shows more detailed trace information.\n"
+    "++DATASUM Brief summary of each received and transmitted buffer.\n"
+    "++++Ignored if DATA is set.\n"
+    "++DATA    Shows the actual data sent and received.\n"
+    "++MODEM   Shows modem signal transitions details.\n"
+    "++CONNECT Shows sockets connection activity.\n"
+    "++INT     Shows Interrupt activity.\n"
+    "\n"
+    " To get a full trace use\n"
+    "\n"
+    "+sim> SET %D DEBUG\n"
+    "\n"
+    " However it is recommended to use the following when sending traces:\n"
+    "\n"
+    "+sim> SET %D DEBUG=REG;INFO;WARN\n"
+    "\n"
+    "1 Related Devices\n"
+    " The %D can facilitate communication with other simh simulators which\n"
+    " have emulated synchronous network devices available.  These include\n"
+    " the following:\n"
+    "\n"
+    "++DUP11*       Unibus PDP11 simulators\n"
+    "++DPV11*       Qbus PDP11 simulators\n"
+    "++KDP11*       Unibus PDP11 simulators and PDP10 simulators\n"
+    "++DMR11        Unibus PDP11 simulators and Unibus VAX simulators\n"
+    "++DMC11        Unibus PDP11 simulators and Unibus VAX simulators\n"
+    "++DMP11        Unibus PDP11 simulators and Unibus VAX simulators\n"
+    "++DMV11        Qbus VAX simulators\n"
+    "\n"
+    "++* Indicates systems which have OS provided DDCMP implementations.\n"
+    ;
 char devname[16];
+char devcount[16];
+char connectpoll[16];
 
-sprintf(devname, "%s11", (dptr == &dmc_dev) ? "DMC" : ((UNIBUS) ? "DMP" : "DMV"));
-fprintf(st, "The %s is a synchronous serial point-to-point communications device.\n", devname);
-fprintf(st, "A real %s transports data using DDCMP, the emulated device makes a\n", devname);
-fprintf(st, "TCP/IP connection to another emulated device and sends length-prefixed\n");
-fprintf(st, "messages across the connection, each message representing a single buffer\n");
-fprintf(st, "passed to the %s. The %s can be used for point-to-point DDCMP\n", devname, devname);
-fprintf(st, "connections carrying DECnet and other types of networking, e.g. from ULTRIX\n");
-fprintf(st, "or DSM.\n\n");
-fprintf(st, "A total of %d %s devices can be simulated concurrently. The number\n", (dptr == &dmc_dev) ? DMC_NUMDEVICE : DMP_NUMDEVICE, devname);
-fprintf(st, "of simulated %s devices or lines can be specified with command:\n", devname);
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s LINES=n\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "To set the host and port to which data is to be transmitted use the\n");
-fprintf(st, "following command (required for PRIMARY and SECONDARY, secondary will check\n");
-fprintf(st, "it is receiving from the configured primary):\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s0 PEER=host:port\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "The device must be attached to a receive port, use the ATTACH command\n");
-fprintf(st, "specifying the receive port number.\n");
-fprintf(st, "\n");
-fprintf(st, "The minimum interval between attempts to connect to the other side is set\n");
-fprintf(st, "using the following command:\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s CONNECTPOLL=n\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Where n is the number of seconds. The default is %d seconds.\n", DMC_CONNECT_POLL);
-fprintf(st, "\n");
-fprintf(st, "If you want to experience the actual data rates of the physical hardware you\n");
-fprintf(st, "can set the bit rate of the simulated line can be set using the following\n");
-fprintf(st, "command:\n\n");
-fprintf(st, "   sim> SET %s0 SPEED=n\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Where n is the number of data bits per second that the simulated line runs\n");
-fprintf(st, "at.  In practice this is implemented as a delay in reading the bytes from\n");
-fprintf(st, "the socket.  Use a value of zero to run at full speed with no artificial\n");
-fprintf(st, "throttling.\n");
-fprintf(st, "\n");
-fprintf(st, "To configure two simulators to talk to each other use the following example:\n");
-fprintf(st, "\n");
-fprintf(st, "Machine 1\n");
-fprintf(st, "   sim> SET %s ENABLE\n", dptr->name);
-fprintf(st, "   sim> SET %s0 PEER=LOCALHOST:2222\n", dptr->name);
-fprintf(st, "   sim> ATTACH %s0 1111\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Machine 2\n");
-fprintf(st, "   sim> SET %s ENABLE\n", dptr->name);
-fprintf(st, "   sim> SET %s0 PEER= LOCALHOST:1111\n", dptr->name);
-fprintf(st, "   sim> ATTACH %s0 2222\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "Debugging\n");
-fprintf(st, "=========\n");
-fprintf(st, "The simulator has a number of debug options, these are:\n");
-fprintf(st, "        REG      Shows whenever a CSR is programatically read or written and\n");
-fprintf(st, "                 the current value.\n");
-fprintf(st, "        INTREG   Shows internal register value changes.\n");
-fprintf(st, "        INFO     Shows higher-level tracing only.\n");
-fprintf(st, "        WARN     Shows any warnings.\n");
-fprintf(st, "        TRACE    Shows more detailed trace information.\n");
-fprintf(st, "        DATASUM  Brief summary of each received and transmitted buffer.\n");
-fprintf(st, "                 Ignored if DATA is set.\n");
-fprintf(st, "        DATA     Shows the actual data sent and received.\n");
-fprintf(st, "        MODEM    Shows modem signal transitions details.\n");
-fprintf(st, "        CONNECT  Shows sockets actually connecting.\n");
-fprintf(st, "\n");
-fprintf(st, "To get a full trace use\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s DEBUG\n", dptr->name);
-fprintf(st, "\n");
-fprintf(st, "However it is recommended to use the following when sending traces:\n");
-fprintf(st, "\n");
-fprintf(st, "   sim> SET %s DEBUG=REG;INFO;WARN\n", dptr->name);
-fprintf(st, "\n");
-return SCPE_OK;
+sprintf (devname, "%s11" , dptr->name);
+sprintf (devcount, "%d", (dptr == &dmc_dev) ? DMC_NUMDEVICE : DMP_NUMDEVICE);
+sprintf (connectpoll, "%d", DMC_CONNECT_POLL);
+
+return scp_help (st, dptr, uptr, flag, helpString, cptr, devname, devcount, connectpoll);
 }
 
 t_stat dmc_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
-fprintf (st, "The communication line performs input and output through a TCP session\n");
-fprintf (st, "connected to a user-specified port.  The ATTACH command specifies the");
-fprintf (st, "listening port to be used when the incoming connection is established:\n\n");
-fprintf (st, "   sim> ATTACH %sn {interface:}port        set up listening port\n\n", dptr->name);
-fprintf (st, "where port is a decimal number between 1 and 65535 that is not being used for\n");
-fprintf (st, "other TCP/IP activities.\n\n");
+const char helpString[] =
+" The communication line performs input and output through a TCP session\n"
+" connected to a user-specified port.  The ATTACH command specifies the\n"
+" listening port to be used when the incoming connection is established:\n\n"
+"+sim> ATTACH %U {interface:}port        set up listening port\n\n"
+" where port is a decimal number between 1 and 65535 that is not being\n"
+" used for other TCP/IP activities.\n\n";
+return scp_help (st, dptr, uptr, flag, helpString, cptr);
 return SCPE_OK;
 }
 
@@ -1835,11 +1946,13 @@ uint8 dmc_get_modem(CTLR *controller)
 int32 modem_bits;
 
 tmxr_set_get_modem_bits (controller->line, 0, 0, &modem_bits);
-*controller->modem &= ~(DMC_SEL4_M_CTS|DMC_SEL4_M_CAR|DMC_SEL4_M_RI|DMC_SEL4_M_DSR);
+*controller->modem &= ~(DMC_SEL4_M_CTS|DMC_SEL4_M_CAR|DMC_SEL4_M_RI|DMC_SEL4_M_DSR|DMC_SEL4_M_DTR|DMC_SEL4_M_RTS);
 *controller->modem |= (modem_bits&TMXR_MDM_DCD) ? DMC_SEL4_M_CAR : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_CTS) ? DMC_SEL4_M_CTS : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_DSR) ? DMC_SEL4_M_DSR : 0;
 *controller->modem |= (modem_bits&TMXR_MDM_RNG) ? DMC_SEL4_M_RI : 0;
+*controller->modem |= (modem_bits&TMXR_MDM_DTR) ? DMC_SEL4_M_DTR : 0;
+*controller->modem |= (modem_bits&TMXR_MDM_RTS) ? DMC_SEL4_M_RTS : 0;
 return (*controller->modem);
 }
 
@@ -1848,7 +1961,7 @@ void dmc_set_modem_dtr(CTLR *controller)
 if (dmc_is_attached(controller->unit) && (!(DMC_SEL4_M_DTR & *controller->modem))) {
     sim_debug(DBG_MDM, controller->device, "DTR State Change to UP(ON)\n");
     tmxr_set_get_modem_bits (controller->line, TMXR_MDM_DTR|TMXR_MDM_RTS, 0, NULL);
-    *controller->modem |= DMC_SEL4_M_DTR|DMC_SEL4_M_RTS;
+    dmc_get_modem(controller);
     controller->line->rcve = 1;
     }
 }
@@ -1859,8 +1972,7 @@ if (*controller->modem & DMC_SEL4_M_DTR) {
     sim_debug(DBG_MDM, controller->device, "DTR State Change to DOWN(OFF)\n");
     }
 tmxr_set_get_modem_bits (controller->line, 0, TMXR_MDM_DTR|TMXR_MDM_RTS, NULL);
-*controller->modem &= ~(DMC_SEL4_M_DTR|DMC_SEL4_M_RTS);
-controller->line->rcve = 0;
+dmc_get_modem(controller);
 }
 
 void dmc_set_lost_data(CTLR *controller)
@@ -2003,7 +2115,12 @@ if (dmc_is_attached(controller->unit)) {
     dmc_buffer_fill_receive_buffers(controller);
     if (controller->transfer_state == Idle)
         dmc_start_transfer_buffer(controller);
-
+    /* Execution of this routine normally is triggered by programatic access by the
+       simulated system's device driver to the device registers or the arrival of 
+       traffic from the network.  Network traffic is handled by the dmc_poll_svc 
+       which may call this routine as needed.  Direct polling here is extra overhead 
+       which should not be necessary.
+     */
     sim_activate (uptr, tmxr_poll);
     }
 
@@ -2026,7 +2143,7 @@ dmc = tmxr_poll_conn(mp);
 if (dmc >= 0) {                                 /* new connection? */
     controller = (CTLR *)dptr->units[dmc].ctlr;
     dmc_get_modem (controller);
-    sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - DSR State Change to UP(ON)\n", dmc);
+    sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - Connection State Change to UP(ON)\n", dmc);
     ddcmp_dispatch (controller, 0);
     }
 tmxr_poll_rx (mp);
@@ -2043,9 +2160,9 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
         ++active;
     old_modem = *controller->modem;
     new_modem = dmc_get_modem (controller);
-    if ((old_modem & DMC_SEL4_M_DSR) && 
-        (!(new_modem & DMC_SEL4_M_DSR))) {
-        sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - DSR State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_DSR) ? "UP(ON)" : "DOWN(OFF)");
+    if ((old_modem & DMC_SEL4_M_CAR) && 
+        (!(new_modem & DMC_SEL4_M_CAR))) {
+        sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - Connection State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_CAR) ? "UP(ON)" : "DOWN(OFF)");
         ddcmp_dispatch (controller, 0);
         }
     if ((lp->xmte && tmxr_tpbusyln(lp)) || 
@@ -2121,6 +2238,7 @@ size_t queue_size = (controller->dev_type == DMC) ? DMC_QUEUE_SIZE :
                                                                                         DMP_QUEUE_SIZE);
 queue_size *= 2;
 *controller->buffers = (BUFFER *)realloc(*controller->buffers, queue_size*sizeof(**controller->buffers));
+memset (*controller->buffers, 0, queue_size*sizeof(**controller->buffers));
 dmc_buffer_queue_init(controller, controller->rcv_queue,        "receive",    0, NULL);
 dmc_buffer_queue_init(controller, controller->completion_queue, "completion", 0, NULL);
 dmc_buffer_queue_init(controller, controller->xmt_queue,        "transmit",   0, NULL);
@@ -2136,6 +2254,7 @@ if (!buffer)
     return buffer;
 buffer->address = 0;
 buffer->count = 0;
+free (buffer->transfer_buffer);
 buffer->transfer_buffer = NULL;
 buffer->actual_bytes_transferred = 0;
 buffer->type = TransmitControl;         /* Default */
@@ -2388,26 +2507,36 @@ switch (Op) {
         return (A == B);
     case NE:
         return (A != B);
-    case LT:
-        if (A < B)
-            return TRUE;
-        if (A == B)
-            return FALSE;
-        return (((B + 256) - A) > controller->free_queue->size);
     case LE:
-        if (A <= B)
+        if (A == B)
             return TRUE;
-        return (((B + 256) - A) <= controller->free_queue->size);
-    case GT:
-        if (A > B)
-            return TRUE;
+    case LT:
         if (A == B)
             return FALSE;
-        return ddcmp_compare (B, LT, A, controller);
+        if (A < B)
+            if (((A + 256) <= (B + controller->free_queue->size)) ||
+                ((A + 256 - 1) <= (B + controller->free_queue->size)))
+                return FALSE;
+            else
+                return TRUE;
+        if ((A + controller->free_queue->size) < (B + 256 - 1))
+            return FALSE;
+        return TRUE;
     case GE:
-        if (A >= B)
+        if (A == B)
             return TRUE;
-        return ddcmp_compare (B, LE, A, controller);
+    case GT:
+        if (A == B)
+            return FALSE;
+        if (A > B)
+            if (((B + 256) <= (controller->free_queue->size + A)) ||
+                ((B + 256 - 1) <= (A + controller->free_queue->size)))
+                return FALSE;
+            else
+                return TRUE;
+        if ((A + 256 - 1) > (B + controller->free_queue->size))
+            return FALSE;
+        return TRUE;
     default:    /* Never happens */
         return FALSE;
     }
@@ -2425,8 +2554,12 @@ controller->link.TimerRunning = FALSE;
 }
 void ddcmp_ResetVariables         (CTLR *controller)
 {
+size_t data_packets = 0;
+BUFFER *buffer;
+
 controller->link.R = 0;
 controller->link.N = 0;
+controller->link.A = 0;
 controller->link.T = 1;
 controller->link.X = 0;
 controller->link.SACK = FALSE;
@@ -2434,6 +2567,30 @@ controller->link.SNAK = FALSE;
 controller->link.SREP = FALSE;
 controller->link.state = Halt;
 controller->link.nak_reason = 0;
+/* Move any ack wait packets back to the transmit queue so they get 
+   resent when the link is restored */
+while (controller->ack_wait_queue->count) {
+    buffer = (BUFFER *)remqueue (controller->ack_wait_queue->hdr.prev);
+    memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+    assert (insqueue (&buffer->hdr, &controller->xmt_queue->hdr));
+    }
+/* Also make sure that the transmit queue has no control packets in it 
+   and that any non transmit buffer(s) have zeroed headers so they will
+   be properly constructed when the link comes up */
+buffer = (BUFFER *)controller->xmt_queue->hdr.next;
+while (controller->xmt_queue->count - data_packets) {
+    if (((BUFFER *)controller->xmt_queue->hdr.next)->transfer_buffer[0] == DDCMP_ENQ) {
+        BUFFER *buffer_next = (BUFFER *)buffer->hdr.next;
+
+        buffer = (BUFFER *)remqueue (&buffer->hdr);
+        assert (insqueue (&buffer->hdr, &controller->free_queue->hdr));
+        buffer = buffer_next;
+        continue;
+        }
+    ++data_packets;
+    memset (buffer->transfer_buffer, 0, DDCMP_HEADER_SIZE);
+    buffer = (BUFFER *)buffer->hdr.next;
+    }
 }
 void ddcmp_SendStrt               (CTLR *controller)
 {
@@ -2529,6 +2686,26 @@ void ddcmp_SetNAKreason3          (CTLR *controller)
 {
 controller->link.nak_reason = 3;
 }
+void ddcmp_SetNAKreason2          (CTLR *controller)
+{
+controller->link.nak_reason = 2;
+}
+void ddcmp_NAKMissingPackets      (CTLR *controller)
+{
+uint8 R = controller->link.R;
+QH *qh = &controller->xmt_queue->hdr;
+
+while (ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], GE, R, controller)) {
+    BUFFER *buffer = dmc_buffer_allocate(controller);
+    buffer->transfer_buffer = (uint8 *)malloc (DDCMP_HEADER_SIZE);
+    buffer->count = DDCMP_HEADER_SIZE;
+    ddcmp_build_nak_packet (buffer->transfer_buffer, 2, R, DDCMP_FLAG_SELECT);
+    R = R + 1;
+    assert (insqueue (&buffer->hdr, qh));
+    qh = &buffer->hdr;
+    }
+dmc_ddcmp_start_transmitter (controller);
+}
 void ddcmp_IfTleAthenSetTeqAplus1 (CTLR *controller)
 {
 if (ddcmp_compare (controller->link.T, LE, controller->link.A, controller))
@@ -2588,7 +2765,7 @@ for (i=0; i < controller->ack_wait_queue->count; ++i) {
         buffer = (BUFFER *)buffer->hdr.next;
         continue;
         }
-    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 0, controller->link.T, controller->link.R);
+    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 3, controller->link.T, controller->link.R);
     buffer = (BUFFER *)remqueue (&buffer->hdr);
     assert (insqueue (&buffer->hdr, controller->xmt_queue->hdr.prev)); /* Insert at tail */
     break;
@@ -2701,6 +2878,12 @@ t_bool breturn = (controller->link.rcv_pkt &&
                   ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], EQ, controller->link.R + 1, controller));
 return breturn;
 }
+t_bool ddcmp_NUMGtRplus1          (CTLR *controller)
+{
+t_bool breturn = (controller->link.rcv_pkt &&
+                  ddcmp_compare (controller->link.rcv_pkt[DDCMP_NUM_OFFSET], GT, controller->link.R + 1, controller));
+return breturn;
+}
 t_bool ddcmp_ReceiveDataMsg       (CTLR *controller)
 {
 t_bool breturn = ((controller->link.ScanningEvents & DDCMP_EVENT_PKT_RCVD) &&
@@ -2799,11 +2982,11 @@ return (buffer && (buffer->transfer_buffer[0] == 0));
 }
 t_bool ddcmp_LineConnected        (CTLR *controller)
 {
-return (*controller->modem & DMC_SEL4_M_DSR);
+return (*controller->modem & DMC_SEL4_M_CAR);
 }
 t_bool ddcmp_LineDisconnected     (CTLR *controller)
 {
-return (!(*controller->modem & DMC_SEL4_M_DSR));
+return (!(*controller->modem & DMC_SEL4_M_CAR));
 }
 t_bool ddcmp_DataMessageSent      (CTLR *controller)
 {
@@ -2830,7 +3013,7 @@ static const char *states[] = {"Halt", "IStart", "AStart", "Run", "Maintenance"}
 if (controller->link.Scanning) {
     if (!controller->link.RecurseScan) {
         controller->link.RecurseScan = TRUE;
-        controller->link.RecurseEventMask = EventMask;
+        controller->link.RecurseEventMask |= EventMask;
         }
     return;
     }
@@ -2849,13 +3032,13 @@ for (table=DDCMP_TABLE; table->Conditions[0] != NULL; ++table) {
             }
         if (!match)
             continue;
-        sim_debug (DBG_INF, controller->device, "ddcmp_dispatch() - %s conditions matching for rule %d, initiating actions\n", states[table->State], table->RuleNumber);
+        sim_debug (DBG_INF, controller->device, "ddcmp_dispatch(%X) - %s conditions matching for rule %d, initiating actions\n", EventMask, states[table->State], table->RuleNumber);
         while (*action != NULL) {
             (*action)(controller);
             ++action;
             }
         if (table->NewState != controller->link.state) {
-            sim_debug (DBG_INF, controller->device, "ddcmp_dispatch() - state changing from %s to %s\n", states[controller->link.state], states[table->NewState]);
+            sim_debug (DBG_INF, controller->device, "ddcmp_dispatch(%X) - state changing from %s to %s\n", EventMask, states[controller->link.state], states[table->NewState]);
             controller->link.state = table->NewState;
             }
         }
@@ -2864,7 +3047,9 @@ controller->link.Scanning = FALSE;
 controller->link.ScanningEvents &= ~EventMask;
 if (controller->link.RecurseScan) {
     controller->link.RecurseScan = FALSE;
-    ddcmp_dispatch (controller, controller->link.RecurseEventMask);
+    EventMask = controller->link.RecurseEventMask;
+    controller->link.RecurseEventMask = 0;
+    ddcmp_dispatch (controller, EventMask);
     }
 }
 
@@ -3120,7 +3305,11 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
         controller->transfer_state = Idle;
         controller->control_out = NULL;
         *controller->modem = 0;
+#if defined (VM_PDP10)
+        controller->dev_type = DMR;
+#else
         controller->dev_type = DMC;
+#endif
         dmc_dev.units[i] = dmc_unit_template;
         controller->unit->ctlr = (void *)controller;
         }
@@ -3149,6 +3338,34 @@ if (0 == dmc_units[0].flags) {       /* First Time Initializations */
     dmp_desc.notelnet = TRUE;                      /* We always want raw tcp socket */
     dmp_desc.dptr = &dmp_dev;                      /* Connect appropriate device */
     dmp_desc.uptr = dmp_units+dmp_desc.lines;      /* Identify polling unit */
+    }
+else {
+    BUFFER *buffer;
+
+    /* Avoid memory leaks by moving all buffers back to the free queue
+       and then freeing any allocated transfer buffers for each buffer
+       on the free queue */
+    while (controller->ack_wait_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->ack_wait_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->completion_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->completion_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->rcv_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->rcv_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    while (controller->xmt_queue->count) {
+        buffer = (BUFFER *)remqueue (controller->xmt_queue->hdr.next);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
+    for (i = 0; i < controller->free_queue->size; i++) {
+        buffer = (BUFFER *)remqueue (controller->free_queue->hdr.next);
+        free (buffer->transfer_buffer);
+        assert (insqueue (&buffer->hdr, controller->free_queue->hdr.prev));
+        }
     }
 
 ans = auto_config (dptr->name, (dptr->flags & DEV_DIS) ? 0 : dptr->numunits - 2);
@@ -3227,7 +3444,11 @@ return tmxr_detach_ln (lp);
 
 char *dmc_description (DEVICE *dptr)
 {
+#if defined (VM_PDP10)
+return "DMR11 Synchronous network controller";
+#else
 return "DMC11 Synchronous network controller";
+#endif
 }
 
 char *dmp_description (DEVICE *dptr)

@@ -57,6 +57,11 @@ while (@ARGV) {
 	$rtn .= "_help";
 	next;
     }
+    if( $ARGV[0] eq '-func' ) {
+	shift;
+	$rtn = shift;
+	next;
+    }
     if( $ARGV[0] eq '-u' ) {
 	$update = 1;
 	shift;
@@ -220,7 +225,7 @@ while( <STDIN> ) {
 
 		# Replace each escape with positional %s in new list.
 		my $n = 0;
-		$string =~ s/%([.\dlhs# +Lqjzt-]*[diouxXeEfFgGaAcspnm%])/
+		$string =~ s/%([.\dlhs#+Lqjzt-]*[diouxXeEfFgGaAcspnm%])/
 		  sprintf "%%%us",$vlist[$n++]+1/eg;
 		$help .= $string;
 		next;
@@ -272,7 +277,7 @@ while( <STDIN> ) {
     " The SET commands for the device will automagically display above\n"
     " this line.  Add any special notes.\n"
     "2 OSNAME1\n"
-    " Operating System-specif configuration details\n"
+    " Operating System-specific configuration details\n"
     " If the device needs special configuration for a particular OS, a subtopic\n"
     " for each such OS goes here.\n"
     "2 Files\n"
@@ -318,7 +323,7 @@ TEMPLATE_
 	    } else {
 		$line = ' ' . $line;
 	    }
-
+            $line = '\n' if $line eq ' \n';
 	    print "    \"$line\"\n" ;
 	}
 	print "    ;\n";
