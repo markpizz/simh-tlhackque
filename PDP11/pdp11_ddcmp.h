@@ -47,8 +47,8 @@
 #define DDCMP_CTL_STRT   6  /* Control Message STRT Type */
 #define DDCMP_CTL_STACK  7  /* Control Message STACK Type */
 
-#define DDCMP_FLAG_SELECT 0x80  /* Link Select */
-#define DDCMP_FLAG_QSYNC  0x40  /* Quick Sync (next message won't abut this message) */
+#define DDCMP_FLAG_SELECT 0x2  /* Link Select */
+#define DDCMP_FLAG_QSYNC  0x1  /* Quick Sync (next message won't abut this message) */
 
 #define DDCMP_CRC_SIZE    2 /* Bytes in DDCMP CRC fields */
 #define DDCMP_HEADER_SIZE 8 /* Bytes in DDCMP Control and Data Message headers (including header CRC) */
@@ -307,7 +307,7 @@ static void ddcmp_build_data_packet (uint8 *buf, size_t size, uint8 flags, uint8
 {
 buf[0] = DDCMP_SOH;
 buf[1] = size & 0xFF;
-buf[2] = ((size >> 8) & 0x3F) | flags;
+buf[2] = ((size >> 8) & 0x3F) | (flags << 6);
 buf[3] = ack;
 buf[4] = sequence;
 buf[5] = 1;
@@ -317,7 +317,7 @@ static void ddcmp_build_maintenance_packet (uint8 *buf, size_t size)
 {
 buf[0] = DDCMP_DLE;
 buf[1] = size & 0xFF;
-buf[2] = ((size >> 8) & 0x3F) | 0x03;
+buf[2] = ((size >> 8) & 0x3F) | (DDCMP_FLAG_SELECT|DDCMP_FLAG_QSYNC << 6);
 buf[3] = 0;
 buf[4] = 0;
 buf[5] = 1;
@@ -333,7 +333,8 @@ static void ddcmp_build_control_packet (uint8 *buf, uint8 type, uint8 subtype, u
 {
 buf[0] = DDCMP_ENQ;                 /* Control Message */
 buf[1] = type;                      /* STACK type */
-buf[2] = (subtype & 0x3f) | flags;  /* STACKSUB type and flags */
+buf[2] = (subtype & 0x3f) | (flags << 6);
+                                    /* STACKSUB type and flags */
 buf[3] = rcvr;                      /* RCVR */
 buf[4] = sndr;                      /* SNDR */
 buf[5] = 1;                         /* ADDR */

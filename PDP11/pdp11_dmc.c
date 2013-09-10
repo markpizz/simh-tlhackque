@@ -2765,7 +2765,7 @@ for (i=0; i < controller->ack_wait_queue->count; ++i) {
         buffer = (BUFFER *)buffer->hdr.next;
         continue;
         }
-    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 3, controller->link.T, controller->link.R);
+    ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), DDCMP_FLAG_SELECT|DDCMP_FLAG_QSYNC, controller->link.T, controller->link.R);
     buffer = (BUFFER *)remqueue (&buffer->hdr);
     assert (insqueue (&buffer->hdr, controller->xmt_queue->hdr.prev)); /* Insert at tail */
     break;
@@ -2787,7 +2787,7 @@ void ddcmp_SendDataMessage        (CTLR *controller)
 {
 BUFFER *buffer = dmc_buffer_queue_head(controller->xmt_queue);
 
-ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), 0, controller->link.N + 1, controller->link.R);
+ddcmp_build_data_packet (buffer->transfer_buffer, buffer->count - (DDCMP_HEADER_SIZE + DDCMP_CRC_SIZE), DDCMP_FLAG_SELECT|DDCMP_FLAG_QSYNC, controller->link.N + 1, controller->link.R);
 controller->link.N += 1;
 controller->link.T = controller->link.N + 1;
 controller->link.SACK = 0;
