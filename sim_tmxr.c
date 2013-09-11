@@ -80,6 +80,8 @@
    tmxr_set_get_modem_bits -            set and/or get a line modem bits
    tmxr_set_line_loopback -             enable or disable loopback mode on a line
    tmxr_get_line_loopback -             returns the current loopback status of a line
+   tmxr_set_line_halfduplex -           enable or disable halfduplex mode on a line
+   tmxr_get_line_halfduplex -           returns the current halfduplex status of a line
    tmxr_set_config_line -               set port speed, character size, parity and stop bits
    tmxr_open_master -                   open master connection
    tmxr_close_master -                  close master connection
@@ -1334,15 +1336,22 @@ before_modem_bits = lp->modembits;
 lp->modembits |= bits_to_set;
 lp->modembits &= ~(bits_to_clear | TMXR_MDM_INCOMING);
 if ((lp->sock) || (lp->serport) || (lp->loopback)) {
-    if (lp->modembits & TMXR_MDM_DTR)
-        incoming_state = TMXR_MDM_DCD | TMXR_MDM_DSR;
+    if (lp->modembits & TMXR_MDM_DTR) {
+        incoming_state = TMXR_MDM_DSR;
+        if (lp->modembits & TMXR_MDM_RTS)
+            incoming_state |= TMXR_MDM_CTS;
+        if (lp->halfduplex) {
+            if (incoming_state & TMXR_MDM_CTS)
+                incoming_state |= TMXR_MDM_DCD;
+            }
+        else
+            incoming_state |= TMXR_MDM_DCD;
+        }
     else
         incoming_state = TMXR_MDM_RNG | TMXR_MDM_DCD | TMXR_MDM_DSR;
-    if (lp->modembits & TMXR_MDM_RTS)
-        incoming_state |= TMXR_MDM_CTS;
     }
 else
-    incoming_state = ((lp->mp && lp->mp->master) || lp->master) ? (((lp->modembits & TMXR_MDM_RTS) ? TMXR_MDM_CTS : 0) | TMXR_MDM_DSR) : 0;
+    incoming_state = 0;
 lp->modembits |= incoming_state;
 if (sim_deb && lp->mp && lp->mp->dptr) {
     sim_debug_bits (TMXR_DBG_MDM, lp->mp->dptr, tmxr_modem_bits, before_modem_bits, lp->modembits, FALSE);
@@ -1425,6 +1434,34 @@ t_bool tmxr_get_line_loopback (TMLN *lp)
 {
 return (lp->loopback != FALSE);
 }
+
+/* Enable or Disable halfduplex mode on a line
+
+   Inputs:
+        lp -                the line to change
+        enable_halfduplex - enable or disable flag
+
+   Output:
+        none
+
+   When a network connected line is in halfduplex mode, DCD modem signal
+   track with CTS.  When not in halfduplex mode the DCD modem signal for
+   network connected lines tracks with DSR.
+
+*/
+t_stat tmxr_set_line_halfduplex (TMLN *lp, t_bool enable_halfduplex)
+{
+if (lp->halfduplex == (enable_halfduplex != FALSE))
+    return SCPE_OK;                 /* Nothing to do */
+lp->halfduplex = (enable_halfduplex != FALSE);
+return SCPE_OK;
+}
+
+t_bool tmxr_get_line_halfduplex (TMLN *lp)
+{
+return (lp->halfduplex != FALSE);
+}
+
 t_stat tmxr_set_config_line (TMLN *lp, char *config)
 {
 t_stat r;

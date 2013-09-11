@@ -149,6 +149,7 @@ struct tmln {
     SOCKET              connecting;                     /* Outgoing socket while connecting */
     char                *destination;                   /* Outgoing destination address:port */
     t_bool              loopback;                       /* Line in loopback mode */
+    t_bool              halfduplex;                     /* Line in half-duplex mode */
     int32               lpbpr;                          /* loopback buf remove */
     int32               lpbpi;                          /* loopback buf insert */
     int32               lpbcnt;                         /* loopback buf used count */
@@ -200,6 +201,8 @@ t_stat tmxr_clear_modem_control_passthru (TMXR *mp);
 t_stat tmxr_set_get_modem_bits (TMLN *lp, int32 bits_to_set, int32 bits_to_clear, int32 *incoming_bits);
 t_stat tmxr_set_line_loopback (TMLN *lp, t_bool enable_loopback);
 t_bool tmxr_get_line_loopback (TMLN *lp);
+t_stat tmxr_set_line_halfduplex (TMLN *lp, t_bool enable_loopback);
+t_bool tmxr_get_line_halfduplex (TMLN *lp);
 t_stat tmxr_set_config_line (TMLN *lp, char *config);
 t_stat tmxr_set_line_unit (TMXR *mp, int line, UNIT *uptr_poll);
 t_stat tmxr_set_line_output_unit (TMXR *mp, int line, UNIT *uptr_poll);
