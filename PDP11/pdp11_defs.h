@@ -606,6 +606,8 @@ typedef struct pdp_dib DIB;
 #define INT_V_DMCTX     20
 #define INT_V_DUPRX     21
 #define INT_V_DUPTX     22
+#define INT_V_KMCA      23
+#define INT_V_KMCB      24
 
 #define INT_V_PIR4      0                               /* BR4 */
 #define INT_V_TTI       1

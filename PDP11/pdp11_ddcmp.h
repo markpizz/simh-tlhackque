@@ -188,8 +188,6 @@ uint16 ddcmp_crc16(uint16 crc, const void* vbuf, size_t len);
 
     1. If a packet is not yet available, then the pbuf address returned is
        NULL, but success (SCPE_OK) is returned
-       receive break status associated with the character is cleared, and
-       SCPE_BREAK is ORed into the return value.
 */
 
 static t_stat ddcmp_tmxr_get_packet_ln (TMLN *lp, const uint8 **pbuf, uint16 *psize)
