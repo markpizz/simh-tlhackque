@@ -93,10 +93,10 @@ if (sim_deb && dptr && (reason & dptr->dctrl)) {
     static const char hex[] = "0123456789ABCDEF";
     static const char *const flags [4] = { "..", ".Q", "S.", "SQ" };
     static const char *const nak[18] = { "", " (HCRC)", " (DCRC)", " (REPREPLY)", /* 0-3 */
-                                            "", "", "", "",                          /* 4-7 */
-                                            " (NOBUF)", " (RXOVR)", "", "",          /* 8-11 */
-                                            "", "", "", "",                          /* 12-15 */
-                                            " (TOOLONG)", " (HDRFMT)" };             /* 16-17 */
+                                         "", "", "", "",                          /* 4-7 */
+                                         " (NOBUF)", " (RXOVR)", "", "",          /* 8-11 */
+                                         "", "", "", "",                          /* 12-15 */
+                                         " (TOOLONG)", " (HDRFMT)" };             /* 16-17 */
     const char *flag = flags[msg[2]>>6];
     int msg2 = msg[2] & 0x3F;
 

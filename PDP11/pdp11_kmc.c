@@ -28,14 +28,11 @@
 /*
  * Loose ends, known problems etc:
  *
- *   This implementation  doen't do anything but full-duplex DDCMP.
+ *   This implementation  should do both full and half duplex DDCMP, but half duplex needs to be tested.
  *
- *  DUP: needs set RTS, RCVEN; set DTR broken -- see ifdef DUPMODEM
- *       desirable: rx wake callback (no data) -- see ifdef DUPALERT
+ *  DUP: desirable: rx wake callback (no data) -- see ifdef DUPALERT
  *       Unexplained code to generate SYNC and RCVEN based on RTS transitions
  *       prevents RTS from working; using hacked version.
- *       Working-around W3 jumper choice (prevents RTS/DTR/SexTxD from clearing
- *       on device reset.)
  * Select final speed limit.
  */
 
@@ -691,43 +688,6 @@ static int32 kmc_BintAck (void);
 
 /* DUP access */
 
-/* DUP CSR bits */
-#define DUP_RXCSR           0
-#define DUP_RXCSR_V_DTR     1
-#define DUP_RXCSR_M_DTR     (1<<DUP_RXCSR_V_DTR)
-#define DUP_RXCSR_V_RTS     2
-#define DUP_RXCSR_M_RTS     (1<<DUP_RXCSR_V_RTS)
-#define DUP_RXCSR_V_RCVEN   4
-#define DUP_RXCSR_M_RCVEN   (1<<DUP_RXCSR_V_RCVEN)
-#define DUP_RXCSR_V_STRSYN  8
-#define DUP_RXCSR_M_STRSYN  (1<<DUP_RXCSR_V_STRSYN)
-
-#define DUP_PARCSR           2
-#define DUP_PARCSR_V_ADSYNC  0
-#define DUP_PARCSR_S_ADSYNC  8
-#define DUP_PARCSR_M_ADSYNC  (((1<<DUP_PARCSR_S_ADSYNC)-1)<<DUP_PARCSR_V_ADSYNC)
-#define DUP_PARCSR_V_NOCRC   9
-#define DUP_PARCSR_M_NOCRC   (1<<DUP_PARCSR_V_NOCRC)
-#define DUP_PARCSR_V_SECMODE 12
-#define DUP_PARCSR_M_SECMODE (1<<DUP_PARCSR_V_SECMODE)
-#define DUP_PARCSR_V_DECMODE 15
-#define DUP_PARCSR_M_DECMODE (1<<DUP_PARCSR_V_DECMODE)
-
-#define DUP_TXCSR            4
-#define DUP_TXCSR_V_HALFDUP  3
-#define DUP_TXCSR_M_HALFDUP  (1<<DUP_TXCSR_V_HALFDUP)
-#define DUP_TXCSR_V_DRESET   8
-#define DUP_TXCSR_M_DRESET   (1<<DUP_TXCSR_V_DRESET)
-
-#ifndef DUPMODEM
-#define dup_set_DTR(dup, on) modify_dup_csr (dup, DUP_RXCSR, ((on)? 0: DUP_RXCSR_M_DTR), ((on)? DUP_RXCSR_M_DTR: 0))
-#define dup_set_RTS(dup, on) modify_dup_csr (dup, DUP_RXCSR, ((on)? 0: DUP_RXCSR_M_RTS), ((on)? DUP_RXCSR_M_RTS: 0))
-#define dup_set_RCVEN(dup, on) modify_dup_csr (dup, DUP_RXCSR, ((on)? 0: DUP_RXCSR_M_RCVEN), ((on)? DUP_RXCSR_M_RCVEN: 0))
-#endif
-static t_stat modify_dup_csr (int32 dup, uint16 regnum, uint16 clr, uint16 set);
-static t_stat read_dup_csr (int32 dup, uint16 regnum, uint16 *data);
-static t_stat write_dup_csr (int32 dup, uint16 regnum, uint16 data);
-
 /* Debug support */
 static t_bool kmc_printBufferIn (int32 k, DEVICE *dev, int32 line, t_bool rx,
                                  int32 count, int32 ba, uint16 sel6v);
@@ -1123,8 +1083,13 @@ static t_stat kmc_txService (UNIT *txup) {
                 d->txslen = 0;
             d->txstate = TXRTS;
 
-            dup_set_RTS (d->dupidx, TRUE);
+            if (dup_set_RTS (d->dupidx, TRUE) != SCPE_OK) {
+                sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: dup: %d DUP CSR NXM\n",
+                           k, d->line, d->dupidx);
+                kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
+            }
 
+            
         case TXRTS:                             /* Wait for CTS */
             if (dup_get_CTS (d->dupidx) <= 0) {
                 TXDELAY (TXRTS, TXCTS_DELAY);
@@ -1296,7 +1261,11 @@ static t_stat kmc_txService (UNIT *txup) {
 
     if (d->txstate == TXIDLE) {
         assert (!d->txavail);
-        dup_set_RTS (d->dupidx, FALSE);
+        if (dup_set_RTS (d->dupidx, FALSE) != SCPE_OK) {
+            sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: dup: %d DUP CSR NXM\n",
+                       k, d->line, d->dupidx);
+            kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
+        }
     } else {
         if (d->txstate != TXACT)
             sim_activate_after(txup, txup->wait);
@@ -1863,12 +1832,6 @@ static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line) {
     /* OK to take ownership.
      * Master clear the DUP. NXM will cause a control-out.
      *
-     * The DUP technical manual (Table 2-1, P2.2) states:
-     * Jumper W3 Installed causes RTS,DTR, and SecTxD to be cleared on Device Reset or bus init.
-     *  Jumper W3 is installed in factory DUPs, and in the KS10 config.
-     * The DUP emulator currently acts as though this jumper was OUT.
-     * This does not seem desirable.
-     *
      * The microcode takes no special action to clear DTR.
      */
 
@@ -1877,27 +1840,26 @@ static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line) {
     line2dup[line] = d;
     d->line = line;
 
-    if (write_dup_csr (dupidx, DUP_TXCSR, DUP_TXCSR_M_DRESET) != SCPE_OK) {
-        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x DUP TXCSR NXM\n",
-                   k, line, csraddress + DUP_TXCSR, csraddress + DUP_TXCSR);
+    /* 
+     * Jumper W3 Installed causes RTS,DTR, and SecTxD to be cleared on Device Reset or bus init.
+     * Jumper W3 is installed in factory DUPs, and in the KS10 config.
+     * Make sure the DUP emulation enables this option.
+     */
+    dup_set_W3_option (dupidx, 1);
+    /*
+     * Reset the DUP device.  This will clear DTR and RTS.
+     */
+    if (dup_reset_dup (dupidx) != SCPE_OK) {
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: BASE IN dup %d DUP TXCSR NXM\n",
+                   k, line, dupidx);
         d->kmc = -1;
         return;
     }
 
     /* Hardware requires a 2 usec delay before next access to DUP.
-     * DRESET is self-clearing.
      */
 
     d->dupidx = dupidx;
-
-    /* Clear DTR and RTS regardless of W3.
-     */
-    if (modify_dup_csr (dupidx, DUP_RXCSR, DUP_RXCSR_M_DTR | DUP_RXCSR_M_RTS, 0) != SCPE_OK) {
-        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: BASE IN %06o 0x%05x DUP RXCSR NXM\n",
-                   k, line, csraddress + DUP_RXCSR, csraddress + DUP_RXCSR);
-        d->kmc = -1;
-        return;
-    }
 
     sim_debug (DF_INF, &kmc_dev, "KMC%u line %u: BASE IN DUP%u address=%06o 0x%05x assigned\n", 
                   k, line, d->dupidx,csraddress, csraddress);
@@ -1917,8 +1879,6 @@ static void kmc_baseIn (int32 k, dupstate *d, uint16 cmdsel2, int line) {
  */
 
 static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
-    uint32 csraddress;
-    uint16 csr;
     t_stat r;
 
     if (DEBUG_PRS (&kmc_dev)) {
@@ -1942,59 +1902,18 @@ static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
 
     d->ctrlFlags = sel6;
 
-    /* Initialize DUP registers
+    /* Initialize DUP interface in the appropriate mode
+     * DTR will be turned on.
      */
+    r = dup_setup_dup (d->dupidx, (sel6 & SEL6_CI_ENABLE), 
+                                  (sel6 & SEL6_CI_DDCMP), 
+                                  (sel6 & SEL6_CI_NOCRC), 
+                                  (sel6 & SEL6_CI_HDX), 
+                                  (sel6 & SEL6_CI_ENASS) ? (sel6 & SEL6_CI_SADDR) : 0);
 
-    /* RXCSR
-     * Set DTR/RCVEN and STRSYN
-     */
-
-    if (sel6 & SEL6_CI_ENABLE) {                /* Enable line: DTR & RCVEN */
-        csr = DUP_RXCSR_M_DTR | DUP_RXCSR_M_RCVEN;
-    } else {                                    /* Disable line: Drop */
-        csr = 0;
-    }
-    if (sel6 & SEL6_CI_DDCMP) {
-        csr |= DUP_RXCSR_M_STRSYN;
-    }
-    r = write_dup_csr (d->dupidx, DUP_RXCSR, csr);
-    csraddress = d->dupcsr + DUP_RXCSR;
-
-    /* PARCSR
-     * CRC inhibit is never set for DDCMP mode.
-     * DDCMP secondary address is handled by microcode.
-     */
-
-    csr = 0;
-    if (sel6 & SEL6_CI_DDCMP) {
-        csr = DUP_PARCSR_M_DECMODE | (DDCMP_SYN << DUP_PARCSR_V_ADSYNC);
-    } else {
-        if (sel6 & SEL6_CI_ENASS)
-            csr = (sel6 & SEL6_CI_SADDR) << DUP_PARCSR_V_ADSYNC;
-        if (sel6 & SEL6_CI_NOCRC)
-            csr |= DUP_PARCSR_M_NOCRC;
-    }
-    if (r == SCPE_OK) {
-        r = write_dup_csr (d->dupidx, DUP_PARCSR, csr);
-        csraddress = d->dupcsr + DUP_PARCSR;
-    }
-
-    /* TXCSR
-     * Set duplex mode, clear maintenance bits and loopback modes
-     */ 
-    if (sel6 & SEL6_CI_HDX) {
-        csr = DUP_TXCSR_M_HALFDUP;
-    } else {
-        csr = 0;
-    }
-    if (r == SCPE_OK) {
-        r = write_dup_csr (d->dupidx, DUP_TXCSR, csr);
-        csraddress = d->dupcsr + DUP_TXCSR;
-    }
-
-    /* If all register writes succeeded, enable packet callbacks.
+    /* If setup succeeded, enable packet callbacks.
      *
-     * If any register writes failed, the first generated a CONTROL OUT.
+     * If setup failed, generate a CONTROL OUT.
      */
     if (r == SCPE_OK) {
 #ifdef DUPALERT
@@ -2003,8 +1922,9 @@ static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
         dup_set_callback_mode (d->dupidx, NULL, kmc_txComplete, kmc_modemChange);
 #endif
     } else {
-        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: CONTROL IN %06o 0x%05x DUP CSR NXM\n",
-                   k, line, csraddress, csraddress);
+        kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
+        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: CONTROL IN dup %d DUP CSR NXM\n",
+                   k, line, d->dupidx);
     }
 
     return;
@@ -2693,68 +2613,6 @@ static int32 kmc_BintAck (void) {
         sim_debug (DF_INT, &kmc_dev, "KMC  output (B) passive release\n");
 
     return vec;
-}
-
-/* Access DUP CSRs
- * These are handled as NPR requests, as the hardware would.
- *
- * DUP CSR address is in the dupState entry.
- * The dup must be assigned to a KMC.
- *
- * Any NXMs are reported with CONTROL OUTs blaming the assigned line.
- */
-
-/* Modify DUP CSR
- */
-static t_stat modify_dup_csr (int32 dup, uint16 regnum, uint16 clr, uint16 set) {
-    uint16 csrdata;
-    t_stat r;
-
-    r = read_dup_csr (dup, regnum, &csrdata);
-    if (r != SCPE_OK)
-        return r;
-    csrdata = (csrdata &~ clr) | set;
-    return write_dup_csr (dup, regnum, csrdata);
-}
-
-/* Read DUP CSR
- */
-static t_stat read_dup_csr (int32 dup, uint16 regnum, uint16 *data) {
-    uint32 csraddress;
-    dupstate *d = &dupState[dup];
-    int32 k = d->kmc;
- 
-    if ((csraddress = d->dupcsr) == 0) {
-        return SCPE_ARG;
-    }
-
-    if (Map_ReadW (csraddress + regnum, 2, data)) {
-        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: %06o 0x%05x DUP CSR NXM\n",
-                   k, d->line, csraddress, csraddress);
-        kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
-        return SCPE_NXM;
-    }
-    return SCPE_OK;
-}
-
-/* Write DUP CSR
- */
-static t_stat write_dup_csr (int32 dup, uint16 regnum, uint16 data) {
-    uint32 csraddress;
-    dupstate *d = &dupState[dup];
-    int32 k = d->kmc;
- 
-    if ((csraddress = d->dupcsr) == 0) {
-        return SCPE_ARG;
-    }
-
-    if (Map_WriteW (csraddress + regnum, 2, &data)) {
-        sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: %06o 0x%05x DUP CSR NXM\n",
-                   k, d->line, csraddress, csraddress);
-        kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
-        return SCPE_NXM;
-    }
-    return SCPE_OK;
 }
 
 /* Debug: Log a BUFFER IN or BUFFER OUT command.

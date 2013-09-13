@@ -1536,8 +1536,6 @@ return val;
 
     1. If a packet is not yet available, then the pbuf address returned is
        NULL, but success (SCPE_OK) is returned
-       receive break status associated with the character is cleared, and
-       SCPE_BREAK is ORed into the return value.
 */
 
 t_stat tmxr_get_packet_ln (TMLN *lp, const uint8 **pbuf, size_t *psize)
