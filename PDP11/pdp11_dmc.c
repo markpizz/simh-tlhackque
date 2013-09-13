@@ -2930,7 +2930,12 @@ return (ddcmp_compare (controller->link.T, EQ, controller->link.N + 1, controlle
 }
 t_bool ddcmp_ReceiveMessageError  (CTLR *controller)
 {
-return FALSE;   /* The transport layer shouldn't ever return a bad packet */
+if (controller->link.rcv_pkt &&
+    ((0 != ddcmp_crc16 (0, controller->link.rcv_pkt, 8)) ||
+     ((controller->link.rcv_pkt[0] != DDCMP_ENQ) &&
+      (0 != ddcmp_crc16 (0, controller->link.rcv_pkt+8, controller->link.rcv_pkt_size-8)))))
+      return TRUE;
+return FALSE;
 }
 t_bool ddcmp_NumEqR               (CTLR *controller)
 {
