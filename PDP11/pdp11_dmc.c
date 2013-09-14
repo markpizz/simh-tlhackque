@@ -2088,6 +2088,9 @@ controller->link.xmt_buffer = NULL;
 t_stat dmc_svc(UNIT* uptr)
 {
 CTLR *controller = dmc_get_controller_from_unit(uptr);
+DEVICE *dptr = controller->device;
+
+sim_debug(DBG_TRC, dptr, "dmc_svc()\n");
 
 if (dmc_is_attached(controller->unit)) {
     /* Perform delayed register actions */
@@ -2119,9 +2122,12 @@ if (dmc_is_attached(controller->unit)) {
        simulated system's device driver to the device registers or the arrival of 
        traffic from the network.  Network traffic is handled by the dmc_poll_svc 
        which may call this routine as needed.  Direct polling here is extra overhead 
-       which should not be necessary.
+       and is only scheduled when needed.
      */
-    sim_activate (uptr, tmxr_poll);
+    if ((controller->completion_queue->count) ||    /* if completion queue not empty? */
+        (controller->control_out)             ||    /*    or pending control outs? */
+        (controller->transfer_state != Idle))       /*    or registers are busy */
+        sim_activate (uptr, tmxr_poll);             /* wake up periodically until these don't exist */
     }
 
 return SCPE_OK;
@@ -3055,6 +3061,7 @@ if (controller->link.RecurseScan) {
     EventMask = controller->link.RecurseEventMask;
     controller->link.RecurseEventMask = 0;
     ddcmp_dispatch (controller, EventMask);
+    dmc_svc (controller->unit);
     }
 }
 
