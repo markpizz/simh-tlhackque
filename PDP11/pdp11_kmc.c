@@ -30,8 +30,7 @@
  *
  *   This implementation  should do both full and half duplex DDCMP, but half duplex needs to be tested.
  *
- *  DUP: desirable: rx wake callback (no data) -- see ifdef DUPALERT
- *       Unexplained code to generate SYNC and RCVEN based on RTS transitions
+ *  DUP: Unexplained code to generate SYNC and RCVEN based on RTS transitions
  *       prevents RTS from working; using hacked version.
  * Select final speed limit.
  */
@@ -655,9 +654,7 @@ static void kmc_ctrlIn (int32 k, dupstate *d, int line);
 
 /* Receive functions */
 void kmc_rxBufferIn(dupstate *d, int32 ba, uint32 sel6v);
-#ifdef DUPALERT
-static void kdp_receive(int dupidx, uint8* data, int count);
-#endif
+static void kdp_receive(int dupidx, int count);
 
 /* Transmit functions */
 static void kmc_txBufferIn(dupstate *d, int32 ba, uint32 sel6v);
@@ -1335,7 +1332,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
     case RXIDLE:
         rxup->wait = RXPOLL_DELAY;
 
-        r = dup_get_ddcmp_packet_with_crcs (d->dupidx, (const uint8 **)&d->rxmsg, &d->rxmlen);
+        r = dup_get_packet (d->dupidx, (const uint8 **)&d->rxmsg, &d->rxmlen);
         if (r == SCPE_LOST) {
             kmc_updateDSR (d);
             break;
@@ -1565,13 +1562,9 @@ static t_stat kmc_rxService (UNIT *rxup) {
         assert (FALSE);
     }
 
-#ifdef DUPALERT
     if ((d->rxstate != RXIDLE) || d->rxavail) {
         sim_activate_after(rxup, rxup->wait);
     }
-#else
-    sim_activate_after(rxup, rxup->wait);
-#endif
 
     return SCPE_OK;
 }
@@ -1916,11 +1909,7 @@ static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
      * If setup failed, generate a CONTROL OUT.
      */
     if (r == SCPE_OK) {
-#ifdef DUPALERT
         dup_set_callback_mode (d->dupidx, kdp_receive, kmc_txComplete, kmc_modemChange);
-#else
-        dup_set_callback_mode (d->dupidx, NULL, kmc_txComplete, kmc_modemChange);
-#endif
     } else {
         kmc_ctrlOut (k, SEL6_CO_NXM, 0, d->line, 0);
         sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: CONTROL IN dup %d DUP CSR NXM\n",
@@ -2030,10 +2019,10 @@ void kmc_rxBufferIn(dupstate *d, int32 ba, uint32 sel6v) {
     return;
 }
 
-#ifdef DUPALERT
 /* Message available callback
  *
- * The DUP calls this routine when a new message is availble.
+ * The DUP calls this routine when a new message is available 
+ * to be read.
  *
  * If the line's receive thread is idle, it is called to start the
  * receive process.  If the thread is busy, the message will be
@@ -2046,11 +2035,10 @@ void kmc_rxBufferIn(dupstate *d, int32 ba, uint32 sel6v) {
  * requires them for other modes.
  */
 
-static void kdp_receive(int dupidx, uint8* data, int count) {
+static void kdp_receive(int dupidx, int count) {
     int32 k;
     dupstate* d;
     UNIT *rxup;
-    UNUSED_ARG (data);
     UNUSED_ARG (count);
 
     assert ((dupidx >= 0) && (dupidx < DIM(dupState)));
@@ -2064,7 +2052,6 @@ static void kdp_receive(int dupidx, uint8* data, int count) {
     }
     return;
 }
-#endif
 
 /* Process TX BUFFER IN command
  *

@@ -34,7 +34,7 @@
 #ifndef PDP11_DUP_H_
 #define PDP11_DUP_H_    0
 
-typedef void (*PACKET_RECEIVE_CALLBACK)(int32 dup, uint8 *buf, int len);
+typedef void (*PACKET_DATA_AVAILABLE_CALLBACK)(int32 dup, int len);
 typedef void (*PACKET_TRANSMIT_COMPLETE_CALLBACK)(int32 dup, int status);
 typedef void (*MODEM_CHANGE_CALLBACK)(int32 dup);
 
@@ -54,14 +54,10 @@ t_stat dup_reset_dup (int32 dup);
 
 int32 dup_csr_to_linenum (int32 CSRPA);
 
-void dup_set_callback_mode (int32 dup, PACKET_RECEIVE_CALLBACK receive, PACKET_TRANSMIT_COMPLETE_CALLBACK transmit, MODEM_CHANGE_CALLBACK modem);
+void dup_set_callback_mode (int32 dup, PACKET_DATA_AVAILABLE_CALLBACK receive, PACKET_TRANSMIT_COMPLETE_CALLBACK transmit, MODEM_CHANGE_CALLBACK modem);
 
 t_bool dup_put_msg_bytes (int32 dup, uint8 *bytes, size_t len, t_bool start, t_bool end);
 
-t_bool dup_put_ddcmp_packet (int32 dup, uint8 *bytes, size_t len);
-
-t_stat dup_get_ddcmp_packet (int32 dup, const uint8 **pbuf, uint16 *psize);
-
-t_stat dup_get_ddcmp_packet_with_crcs (int32 dup, const uint8 **pbuf, uint16 *psize);
+t_stat dup_get_packet (int32 dup, const uint8 **pbuf, uint16 *psize);
 
 #endif /* PDP11_DUP_H_ */

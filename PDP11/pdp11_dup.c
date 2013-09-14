@@ -88,7 +88,7 @@ static uint32 dup_xmtpkstart[DUP_LINES];                       /* xmt packet sta
 static uint16 dup_xmtpkbytes[DUP_LINES];                       /* xmt packet size of packet */
 static uint16 dup_xmtpkdelaying[DUP_LINES];                    /* xmt packet speed delaying completion */
 
-static PACKET_RECEIVE_CALLBACK dup_rcv_packet_callback[DUP_LINES];
+static PACKET_DATA_AVAILABLE_CALLBACK dup_rcv_packet_data_callback[DUP_LINES];
 static PACKET_TRANSMIT_COMPLETE_CALLBACK dup_xmt_complete_callback[DUP_LINES];
 static MODEM_CHANGE_CALLBACK dup_modem_change_callback[DUP_LINES];
 
@@ -711,11 +711,11 @@ if ((dib->ba > (uint32)CSRPA) || ((uint32)CSRPA > (dib->ba + dib->lnt)) || (DUPD
 return ((uint32)CSRPA - dib->ba)/IOLN_DUP;
 }
 
-void dup_set_callback_mode (int32 dup, PACKET_RECEIVE_CALLBACK receive, PACKET_TRANSMIT_COMPLETE_CALLBACK transmit, MODEM_CHANGE_CALLBACK modem)
+void dup_set_callback_mode (int32 dup, PACKET_DATA_AVAILABLE_CALLBACK receive, PACKET_TRANSMIT_COMPLETE_CALLBACK transmit, MODEM_CHANGE_CALLBACK modem)
 {
 if ((dup < 0) || (dup >= dup_desc.lines) || (DUPDPTR->flags & DEV_DIS))
     return;
-dup_rcv_packet_callback[dup] = receive;
+dup_rcv_packet_data_callback[dup] = receive;
 dup_xmt_complete_callback[dup] = transmit;
 dup_modem_change_callback[dup] = modem;
 }
@@ -901,44 +901,25 @@ if (breturn && (tmxr_tpbusyln (&dup_ldsc[dup]) || dup_xmtpkbytes[dup])) {
 return breturn;
 }
 
-t_bool dup_put_ddcmp_packet (int32 dup, uint8 *bytes, size_t len)
+t_stat dup_get_packet (int32 dup, const uint8 **pbuf, uint16 *psize)
 {
-if (len == 6)
-    return dup_put_msg_bytes (dup, bytes, len, TRUE, TRUE);
-if (!dup_put_msg_bytes (dup, bytes, 6, TRUE, TRUE))
-    return FALSE;
-return dup_put_msg_bytes (dup, bytes + 6, len - 6, FALSE, TRUE);
-}
+if ((dup < 0) || (dup >= dup_desc.lines) || (DUPDPTR->flags & DEV_DIS))
+    return SCPE_IERR;
 
-t_stat dup_get_ddcmp_packet (int32 dup, const uint8 **pbuf, uint16 *psize)
-{
-TMLN *lp = &dup_desc.ldsc[dup];
-t_stat r = ddcmp_tmxr_get_packet_ln (lp, pbuf, psize);
-
-if ((r == SCPE_LOST) || (*pbuf == NULL))
-    return r;
-if (*psize == 8) {
-    *psize = 6;
-    return SCPE_OK;
+if (*pbuf == &dup_rcvpacket[dup][0]) {
+    *pbuf = NULL;
+    *psize = 0;
+    dup_rcvpkinoff[dup] = dup_rcvpkbytes[dup] = 0;
+    dup_rxcsr[dup] &= ~RXCSR_M_RXACT;
     }
-if (*psize > dup_rcvpksize[dup]) {
-    dup_rcvpksize[dup] = (uint16)(*psize);
-    dup_rcvpacket[dup] = (uint8 *)realloc (dup_rcvpacket[dup], dup_rcvpksize[dup]);
+if ((dup_rcvpkinoff[dup] == 0) && (dup_rcvpkbytes[dup] != 0)) {
+    *pbuf = &dup_rcvpacket[dup][0];
+    *psize = dup_rcvpkbytes[dup];
     }
-memcpy (dup_rcvpacket[dup], *pbuf, 6);
-memcpy (dup_rcvpacket[dup]+6, (*pbuf)+8, *psize - 10);
-*psize = *psize - 10;
-*pbuf = dup_rcvpacket[dup];
+sim_debug (DBG_TRC, DUPDPTR, "dup_get_packet(dup=%d, psize=%d)\n", 
+           dup, (int)*psize);
 return SCPE_OK;
 }
-
-t_stat dup_get_ddcmp_packet_with_crcs (int32 dup, const uint8 **pbuf, uint16 *psize)
-{
-TMLN *lp = &dup_desc.ldsc[dup];
-
-return ddcmp_tmxr_get_packet_ln (lp, pbuf, psize);
-}
-
 
 static t_stat dup_rcv_byte (int32 dup)
 {
@@ -947,10 +928,10 @@ sim_debug (DBG_TRC, DUPDPTR, "dup_rcv_byte(dup=%d) - %s, byte %d of %d\n", dup,
            dup_rcvpkinoff[dup], dup_rcvpkbytes[dup]);
 if (!(dup_rxcsr[dup] & RXCSR_M_RCVEN) || (dup_rcvpkbytes[dup] == 0) || (dup_rxcsr[dup] & RXCSR_M_RXDONE))
     return SCPE_OK;
-if (dup_rcv_packet_callback[dup]) {
-    dup_rcv_packet_callback[dup](dup, dup_rcvpacket[dup], dup_rcvpkbytes[dup]);
-    dup_rcvpkinoff[dup] = dup_rcvpkbytes[dup] = 0;
-    dup_rxcsr[dup] &= ~RXCSR_M_RXACT;
+if (dup_rcv_packet_data_callback[dup]) {
+    sim_debug (DBG_TRC, DUPDPTR, "dup_rcv_byte(dup=%d, psize=%d) - Invoking Receive Data callback\n", 
+               dup, (int)dup_rcvpkbytes[dup]);
+    dup_rcv_packet_data_callback[dup](dup, dup_rcvpkbytes[dup]);
     return SCPE_OK;
     }
 dup_rxcsr[dup] |= RXCSR_M_RXACT;
@@ -1051,7 +1032,14 @@ for (dup=active=attached=0; dup < dup_desc.lines; dup++) {
         const uint8 *buf;
         uint16 size;
 
-        ddcmp_tmxr_get_packet_ln (lp, &buf, &size);
+        if (dup_parcsr[dup] & PARCSR_M_DECMODE)
+            ddcmp_tmxr_get_packet_ln (lp, &buf, &size);
+        else {
+            size_t size_t_size;
+
+            tmxr_get_packet_ln (lp, &buf, &size_t_size);
+            size = (uint16)size_t_size;
+            }
         if (buf) {
             if (dup_rcvpksize[dup] < size) {
                 dup_rcvpksize[dup] = size;
