@@ -568,7 +568,8 @@ switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
             }
         if ((!(dup_rxcsr[dup] & RXCSR_M_RCVEN)) && 
             (orig_val & RXCSR_M_RCVEN)) {               /* Downward transition of receiver enable */
-            dup_rxcsr[dup] &= ~(RXCSR_M_RXDONE|RXCSR_M_RXACT);
+            dup_rxdbuf[dup] &= ~RXDBUF_M_RXDBUF;
+            dup_rxcsr[dup] &= ~RXCSR_M_RXACT;
             if ((dup_rcvpkinoff[dup] != 0) || 
                 (dup_rcvpkbytes[dup] != 0))
                 dup_rcvpkinoff[dup] = dup_rcvpkbytes[dup] = 0;
@@ -588,6 +589,10 @@ switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
     case 02:                                            /* TXCSR */
         dup_txcsr[dup] &= ~TXCSR_WRITEABLE;
         dup_txcsr[dup] |= (data & TXCSR_WRITEABLE);
+        if (dup_txcsr[dup] & TXCSR_M_DRESET) {
+            dup_clear(dup, dup_W3[dup]);
+            break;
+            }
         if (TXCSR_GETMAISEL(dup_txcsr[dup]) != TXCSR_GETMAISEL(orig_val)) { /* Maint Select Changed */
             switch (TXCSR_GETMAISEL(dup_txcsr[dup])) {
                 case 0:  /* User/Normal Mode */
@@ -601,13 +606,22 @@ switch ((PA >> 1) & 03) {                               /* case on PA<2:1> */
                     break;
                 }
             }
-        if ((!(dup_txcsr[dup] & TXCSR_M_SEND)) && (orig_val & TXCSR_M_SEND))
+        if ((dup_txcsr[dup] & TXCSR_M_TXACT) && 
+            (!(orig_val & TXCSR_M_TXACT))    && 
+            (orig_val & TXCSR_M_TXDONE)) {
+            dup_txcsr[dup] &= ~TXCSR_M_TXDONE;
+            }
+        if ((!(dup_txcsr[dup] & TXCSR_M_SEND)) && 
+            (orig_val & TXCSR_M_SEND)) {
             dup_txcsr[dup] &= ~TXCSR_M_TXACT;
+            dup_put_msg_bytes (dup, NULL, 0, FALSE, TRUE);
+            }
         if ((dup_txcsr[dup] & TXCSR_M_HALFDUP) ^ (orig_val & TXCSR_M_HALFDUP))
             tmxr_set_line_halfduplex (dup_desc.ldsc+dup, dup_txcsr[dup] & TXCSR_M_HALFDUP);
-        if (dup_txcsr[dup] & TXCSR_M_DRESET) {
-            dup_clear(dup, dup_W3[dup]);
-            break;
+        if ((dup_txcsr[dup] & TXCSR_M_TXIE) && 
+            (!(orig_val & TXCSR_M_TXIE))    && 
+            (dup_txcsr[dup] & TXCSR_M_TXDONE)) {
+            dup_set_txint (dup);
             }
         break;
 
@@ -784,10 +798,19 @@ return SCPE_OK;
 
 t_stat dup_set_RCVEN (int32 dup, t_bool state)
 {
+uint16 orig_val;
+
 if ((dup < 0) || (dup >= dup_desc.lines) || (DUPDPTR->flags & DEV_DIS))
     return SCPE_IERR;
+orig_val = dup_rxcsr[dup];
 dup_rxcsr[dup] &= ~RXCSR_M_RCVEN;
 dup_rxcsr[dup] |= (state ? RXCSR_M_RCVEN : 0);
+if ((dup_rxcsr[dup] & RXCSR_M_RCVEN) && 
+    (!(orig_val & RXCSR_M_RCVEN))) {            /* Upward transition of receiver enable */
+    UNIT *uptr = dup_units + dup;
+
+    dup_poll_svc (uptr);                        /* start any pending receive */
+    }
 return SCPE_OK;
 }
 
