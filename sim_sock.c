@@ -134,6 +134,7 @@ static struct sock_errors {
         {WSAEISCONN,      "Transport endpoint is already connected"},
         {WSAECONNRESET,   "Connection reset by peer"},
         {WSAECONNREFUSED, "Connection refused"},
+        {WSAECONNABORTED, "Connection aborted"},
         {WSAEHOSTUNREACH, "No route to host"},
         {WSAEADDRINUSE,   "Address already in use"},
 #if defined (WSAEAFNOSUPPORT)
@@ -1024,6 +1025,7 @@ if (rbytes == SOCKET_ERROR) {
     if ((err != WSAETIMEDOUT) &&                        /* expected errors after a connect failure */
         (err != WSAEHOSTUNREACH) &&
         (err != WSAECONNREFUSED) &&
+        (err != WSAECONNABORTED) &&
         (err != WSAECONNRESET))
         sim_err_sock (INVALID_SOCKET, "read", 0);
     return -1;
