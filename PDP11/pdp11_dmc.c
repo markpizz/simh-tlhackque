@@ -1319,7 +1319,9 @@ if ((r != SCPE_OK) || (newln == (dptr->numunits - 2)))
     return r;
 if (newln == 0)
     return SCPE_ARG;
-for (i=dptr->numunits; i<(uint32)newln; ++i) {
+sim_cancel (dptr->units + dptr->numunits - 2);
+sim_cancel (dptr->units + dptr->numunits - 1);
+for (i=dptr->numunits-2; i<(uint32)newln; ++i) {
     dptr->units[i] = dmc_unit_template;
     dptr->units[i].ctlr = &dmc_ctrls[(dptr == &dmc_dev) ? i : i+DMC_NUMDEVICE];
     }
