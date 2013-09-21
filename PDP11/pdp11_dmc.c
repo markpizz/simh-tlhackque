@@ -2135,7 +2135,7 @@ if (dmc_is_attached(controller->unit)) {
 return SCPE_OK;
 }
 
-static t_stat dmc_poll_svc (UNIT *uptr)
+t_stat dmc_poll_svc (UNIT *uptr)
 {
 DEVICE *dptr = ((CTLR *)uptr->ctlr)->device;
 CTLR *controller;
@@ -2201,7 +2201,7 @@ else {
 return SCPE_OK;
 }
 
-static t_stat dmc_timer_svc (UNIT *uptr)
+t_stat dmc_timer_svc (UNIT *uptr)
 {
 int32 dmc, active;
 DEVICE *dptr = (UNIBUS) ? ((&dmc_dev == find_dev_from_unit(uptr)) ? &dmc_dev : &dmp_dev) : &dmv_dev;
@@ -2319,7 +2319,7 @@ if (controller->state == Running) {
     BUFFER *buffer = dmc_buffer_queue_head(controller->rcv_queue);
 
     while (buffer) {
-        ddcmp_tmxr_get_packet_ln (controller->line, &controller->link.rcv_pkt, &controller->link.rcv_pkt_size);
+        ddcmp_tmxr_get_packet_ln (controller->line, (const uint8 **)&controller->link.rcv_pkt, &controller->link.rcv_pkt_size);
         if (!controller->link.rcv_pkt)
             break;
         controller->buffers_received_from_net++;
@@ -2504,47 +2504,46 @@ typedef enum {
     GE
 } CompareOP;
 
-/* DDCMP Modulo 256 compare */
+/* DDCMP Modulo 256 compare - from Rob Jarratt */
+static int Mod256Cmp(uint8 a, uint8 b, size_t queue_size)
+{
+int ans;
+int abdiff = (int)b - (int)a;
+int badiff = (int)a - (int)b;
+ 
+if (abdiff == 0)
+    ans = 0;
+else 
+    if (abdiff < 0)
+        ans = -1;
+    else
+        ans = 1;
+ 
+if (abs(badiff) <= (int)queue_size)
+    ans = -1 * ans;
+ 
+return ans;
+}
+
 t_bool ddcmp_compare (uint8 a, CompareOP Op, uint8 b, CTLR *controller)
 {
-size_t A = a & 0xFF;
-size_t B = b & 0xFF;
+int cmp = Mod256Cmp(a & 0xFF, b & 0xFF, controller->free_queue->size);
 
 switch (Op) {
     case EQ:
-        return (A == B);
+        return (cmp == 0);
     case NE:
-        return (A != B);
+        return (cmp != 0);
     case LE:
-        if (A == B)
+        if (cmp == 0)
             return TRUE;
     case LT:
-        if (A == B)
-            return FALSE;
-        if (A < B)
-            if (((A + 256) <= (B + controller->free_queue->size)) ||
-                ((A + 256 - 1) <= (B + controller->free_queue->size)))
-                return FALSE;
-            else
-                return TRUE;
-        if ((A + controller->free_queue->size) < (B + 256 - 1))
-            return FALSE;
-        return TRUE;
+        return (cmp < 0);
     case GE:
-        if (A == B)
+        if (cmp == 0)
             return TRUE;
     case GT:
-        if (A == B)
-            return FALSE;
-        if (A > B)
-            if (((B + 256) <= (controller->free_queue->size + A)) ||
-                ((B + 256 - 1) <= (A + controller->free_queue->size)))
-                return FALSE;
-            else
-                return TRUE;
-        if ((A + 256 - 1) > (B + controller->free_queue->size))
-            return FALSE;
-        return TRUE;
+        return (cmp > 0);
     default:    /* Never happens */
         return FALSE;
     }
