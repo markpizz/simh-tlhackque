@@ -1193,6 +1193,8 @@ return SCPE_OK;
 
 t_stat sim_show_debug (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
 {
+int32 i;
+
 if (cptr && (*cptr != 0))
     return SCPE_2MARG;
 if (sim_deb) {
@@ -1204,6 +1206,14 @@ if (sim_deb) {
         fprintf (st, "   Debug messages display time of day as hh:mm:ss.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
     if (sim_deb_switches & SWMASK ('A'))
         fprintf (st, "   Debug messages display time of day as seconds.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
+    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+        if (!(dptr->flags & DEV_DIS) &&
+            (dptr->flags & DEV_DEBUG) &&
+            (dptr->dctrl)) {
+            fprintf (st, "Device: %-6s ", dptr->name);
+            show_dev_debug (st, dptr, NULL, 0, NULL);
+            }
+        }
     }
 else fprintf (st, "Debug output disabled\n");
 return SCPE_OK;
@@ -1232,16 +1242,12 @@ while (*cptr != 0) {                                    /* do all mods */
             return r;
         }
     else {
-        r = sim_parse_addr (gbuf, NULL, 0, NULL, NULL, 0, NULL, NULL);
-        if (r == SCPE_OK) {
-            if (sim_con_tmxr.master)                        /* already open? */
-                sim_set_notelnet (0, NULL);                 /* close first */
-            r = tmxr_attach (&sim_con_tmxr, &sim_con_unit, gbuf);/* open master socket */
-            if (r == SCPE_OK)
-                sim_activate_after(&sim_con_unit, 1000000); /* check for connection in 1 second */
-            return r;
-            }
-        return SCPE_NOPARAM;
+        if (sim_con_tmxr.master)                        /* already open? */
+            sim_set_notelnet (0, NULL);                 /* close first */
+        r = tmxr_attach (&sim_con_tmxr, &sim_con_unit, gbuf);/* open master socket */
+        if (r == SCPE_OK)
+            sim_activate_after(&sim_con_unit, 1000000); /* check for connection in 1 second */
+        return r;
         }
     }
 return SCPE_OK;
