@@ -57,6 +57,10 @@
 #endif
 #define SPOOL_FN_MAX (99999)
 
+#define CR  '\r'    /* \015 */
+#define LF  '\n'    /* \012 */
+#define FF  '\f'    /* \014 */
+
 /* Hard errors when generating a spool file name */
 
 static const int noretry[] = {
@@ -1090,7 +1094,7 @@ int pdflpt_putc (UNIT *uptr, int c) {
 
     SETCTX (EOF);
 
-    if (c == '\015' || c == '\012' || c == '\014') {
+    if (c == CR || c == LF || c == FF) {
         idle_unit.u5 = 0;
         set_idle_timer (uptr);
     } else {
@@ -1104,13 +1108,14 @@ int pdflpt_putc (UNIT *uptr, int c) {
 
     pdfctx->buffer[pdfctx->bc++] = c;
 
-    if (c == '\n' || c == '\f' || pdfctx->bc >= sizeof (pdfctx->buffer)) {
+    if (c == LF || c == FF || pdfctx->bc >= sizeof (pdfctx->buffer)) {
         r = pdf_print (pdf, pdfctx->buffer, pdfctx->bc);
         pdfctx->bc = 0;
         if (r != PDF_OK) {
             return EOF;
         }
     }
+
     return (int)((unsigned char)(c & 0xFF));
 }
 
@@ -1125,7 +1130,7 @@ int pdflpt_puts (UNIT *uptr, const char *s) {
     while (*p) {
         char c = *p++;
 
-        if (c == '\015' || c == '\012' || c == '\014') {
+        if (c == CR || c == LF || c == FF) {
             idle_unit.u5 = 0;
         } else {
             idle_unit.u5++;
@@ -1149,6 +1154,7 @@ int pdflpt_puts (UNIT *uptr, const char *s) {
     if (r != PDF_OK) {
         return EOF;
     }
+
     return 42;
 }
 
@@ -1168,7 +1174,7 @@ size_t pdflpt_write (UNIT *uptr, void *ptr, size_t size, size_t nmemb) {
     while (n--) {
         char c = *p++;
 
-        if (c == '\015' || c == '\012' || c == '\014') {
+        if (c == CR || c == LF || c == FF) {
             idle_unit.u5 = 0;
         } else {
             idle_unit.u5++;
@@ -1568,7 +1574,7 @@ const char pdflpt_helptext[] =
 "+ATTACH -switch -switch %D keyword=value keyword=\"value\" filename.pdf\n"
 " The filename can include a device and/or directory specifier.\n"
 "3 Switches\n"
-" -S SimH will generate ouput for spooling to a physical printer. See\n"
+" -S SimH will generate output for spooling to a physical printer. See\n"
 "+the Spooling topic.\n"
 " -E The file must exist.  If it is not empty, it must be in .PDF format, and\n"
 "+new data will be appended.\n"
@@ -1761,9 +1767,9 @@ const char pdflpt_helptext[] =
 " to the system and/or information from the system to decide when to end\n"
 " a session.\n"
 "\n"
-" When a session ends, the current ouput file is closed, and a new one\n"
+" When a session ends, the current output file is closed, and a new one\n"
 " is created.  The new one will contain a sequential number just before\n"
-" the file extension.  (These numbers do not go on forever; the\n"
+" the file extension.  (These numbers do not go on forever; they\n"
 " eventually wrap.)\n"
 "\n"
 " When the file is closed, an external process can access the file. That\n"
