@@ -2153,6 +2153,7 @@ if (dmc >= 0) {                                 /* new connection? */
     dmc_get_modem (controller);
     sim_debug(DBG_MDM, dptr, "dmc_poll_svc(dmc=%d) - Connection State Change to UP(ON)\n", dmc);
     ddcmp_dispatch (controller, 0);
+    sim_activate (controller->unit, tmxr_poll);     /* be sure to wake up soon to continue processing */
     }
 tmxr_poll_rx (mp);
 tmxr_poll_tx (mp);
@@ -2172,6 +2173,7 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
         (!(new_modem & DMC_SEL4_M_CAR))) {
         sim_debug(DBG_MDM, controller->device, "dmc_poll_svc(dmc=%d) - Connection State Change to %s\n", dmc, (new_modem & DMC_SEL4_M_CAR) ? "UP(ON)" : "DOWN(OFF)");
         ddcmp_dispatch (controller, 0);
+        sim_activate (controller->unit, tmxr_poll);     /* wake up soon to finish processing */
         }
     if ((lp->xmte && tmxr_tpbusyln(lp)) || 
         (lp->xmte && controller->link.xmt_buffer) ||
@@ -2444,7 +2446,6 @@ if (dmc_is_dmc(controller)) {
                 controller->transfer_state = Idle;
                 ddcmp_dispatch (controller, (sel6&DMC_SEL6_M_MAINT) ? DDCMP_EVENT_MAINTMODE : 0);
                 return;
-                break;
             case DMC_C_TYPE_HALT:
                 sim_debug(DBG_INF, controller->device, "Halt Command Received\n");
                 controller->state = Halted;
@@ -2452,7 +2453,6 @@ if (dmc_is_dmc(controller)) {
                 dmc_clr_modem_dtr(controller);
                 dmc_queue_control_out(controller, DMC_SEL6_M_HALTCOMP);
                 return;
-                break;
             }
         controller->transfer_state = Idle;
         dmc_process_command (controller);
