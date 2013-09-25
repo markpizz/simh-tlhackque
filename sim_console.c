@@ -167,10 +167,9 @@ UNIT sim_con_unit = { UDATA (&sim_con_poll_svc, 0, 0)  };   /* console connectio
 typedef struct printer_cb {
     struct printer_cb *next;
     UNIT *unit;
-    t_stat (*callback)(UNIT *unit, TMLN *lp);
+    t_stat (*callback)(UNIT *unit);
 } PRINTCB;
 static PRINTCB *printers = NULL;
-static t_stat process_print_cmd (int32 flag, TMLN *lp);
 
 static DEBTAB sim_con_debug[] = {
   {"TRC",    DBG_TRC},
@@ -282,65 +281,62 @@ static int32 *cons_kmap[] = {
 
 /* Register a printer for the PRINT comand
 */
-t_stat sim_con_register_printer (UNIT *uptr, t_stat (*callback)(UNIT *unit, TMLN *lp))
+t_stat sim_con_register_printer (UNIT *uptr, t_stat (*callback)(UNIT *unit))
 {
-    PRINTCB *p;
+PRINTCB *p;
 
-    for (p = printers; p != NULL; p = p->next) {
-        if (p->unit == uptr) {
-            break;
-            }
-        }
-    if (!p) {
-        p = (PRINTCB *) malloc (sizeof (PRINTCB));
-        if (!p) {
-            return SCPE_MEM;
-            }
-        p->next = printers;
-        printers = p;
-        p->unit = uptr;
-        }
-    p->callback = callback;
-    return SCPE_OK;
+for (p = printers; p != NULL; p = p->next) {
+    if (p->unit == uptr)
+        break;
+    }
+if (!p) {
+    p = (PRINTCB *) malloc (sizeof (PRINTCB));
+    if (!p)
+        return SCPE_MEM;
+    p->next = printers;
+    printers = p;
+    p->unit = uptr;
+    }
+p->callback = callback;
+return SCPE_OK;
 }
 
 /* PRINT command
- * flag is 1 for remote console-initiated
  */
 
 t_stat print_cmd (int32 flag, char *cptr)
 {
-    if (!cptr || *cptr) {
-        return SCPE_ARG;
-        }
+PRINTCB *p;
+int printcount = 0;
+int r = SCPE_EOF;
 
-    return process_print_cmd (flag, NULL);
-}
+if (!cptr || *cptr)
+    return SCPE_ARG;
 
-static t_stat process_print_cmd (int32 flag, TMLN *lp) {
-    PRINTCB *p;
-    int r = SCPE_EOF;
-
-    for  (p = printers; p != NULL; p = p->next) {
-        if (p->callback != NULL) {
-            if (p->callback (p->unit, lp) == SCPE_OK) {
-                r = SCPE_OK;
-            }
+for (p = printers; p != NULL; p = p->next) {
+    ++printcount;
+    if (p->callback != NULL) {
+        if (p->callback (p->unit) == SCPE_OK)
+            r = SCPE_OK;
         }
     }
+if (printers == NULL) {
+    printf ("No spoolable printers\r\n");
+    if (sim_log)
+        fprintf (sim_log, "No spoolable printers\r\n");
+    }
+else
     if (r == SCPE_OK) {
-        if (flag) {
-            if (sim_log)
-                fprintf (sim_log, "Printer file(s) released\r\n");
+        printf ("Printer file%s released\r\n", (printcount > 1) ? "(s)" : "");
+        if (sim_log)
+            fprintf (sim_log, "Printer file%s released\r\n", (printcount > 1) ? "(s)" : "");
         }
-    } else {
-        if (lp)
-            tmxr_linemsgf (lp, "Nothing ready to print\n");
+    else {
         printf ("Nothing to ready to print\n");
         if (sim_log)
             fprintf (sim_log, "Nothing ready to print\r\n");
-    }
-    return SCPE_OK;
+        }
+return SCPE_OK;
 }
 
 /* SET CONSOLE command */
@@ -750,14 +746,18 @@ for (i=(was_stepping ? sim_rem_step_line : 0);
                     close_session = TRUE;
                     break;
                 case '\020': /* PRINT (^P) */
-                    if (c == sim_int_char) {
-                        break;
-                    }
-                    tmxr_linemsgf (lp, "print\n");
-                    process_print_cmd (1, lp);
-                    tmxr_send_buffered_data (lp);
-                    sim_activate_after(uptr, 100000); /* check again in 100 milliaeconds */
-                    return SCPE_OK;
+                    while (sim_rem_buf_ptr[i] > 0) {
+                        tmxr_linemsg (lp, "\b \b");
+                        --sim_rem_buf_ptr[i];
+                        }
+                    if (sim_rem_buf_ptr[i]+80 >= sim_rem_buf_size[i]) {
+                        sim_rem_buf_size[i] += 1024;
+                        sim_rem_buf[i] = (char *) realloc (sim_rem_buf[i], sim_rem_buf_size[i]);
+                        }
+                    strcpy (sim_rem_buf[i], "PRINT");
+                    tmxr_linemsgf (lp, "%s\n", sim_rem_buf[i]);
+                    got_command = TRUE;
+                    break;
                 default:
                     tmxr_putc_ln (lp, c);
                     if (sim_rem_buf_ptr[i]+2 >= sim_rem_buf_size[i]) {
@@ -1153,16 +1153,16 @@ if (!sim_quiet) {
         printf ("   Debug messages display time of day as hh:mm:ss.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
     if (sim_deb_switches & SWMASK ('A'))
         printf ("   Debug messages display time of day as seconds.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
-    }
-if (sim_log) {
-    fprintf (sim_log, "Debug output to \"%s\"\n", 
-                      sim_logfile_name (sim_deb, sim_deb_ref));
-    if (sim_deb_switches & SWMASK ('P'))
-        fprintf (sim_log, "   Debug messages contain current PC value\n");
-    if (sim_deb_switches & SWMASK ('T'))
-        fprintf (sim_log, "   Debug messages display time of day as hh:mm:ss.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
-    if (sim_deb_switches & SWMASK ('A'))
-        fprintf (sim_log, "   Debug messages display time of day as seconds.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
+    if (sim_log) {
+        fprintf (sim_log, "Debug output to \"%s\"\n", 
+                          sim_logfile_name (sim_deb, sim_deb_ref));
+        if (sim_deb_switches & SWMASK ('P'))
+            fprintf (sim_log, "   Debug messages contain current PC value\n");
+        if (sim_deb_switches & SWMASK ('T'))
+            fprintf (sim_log, "   Debug messages display time of day as hh:mm:ss.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
+        if (sim_deb_switches & SWMASK ('A'))
+            fprintf (sim_log, "   Debug messages display time of day as seconds.msec%s\n", sim_deb_switches & SWMASK ('R') ? " relative to the start of debugging" : "");
+        }
     }
 time(&now);
 fprintf (sim_deb, "Debug output to \"%s\" at %s", sim_logfile_name (sim_deb, sim_deb_ref), ctime(&now));

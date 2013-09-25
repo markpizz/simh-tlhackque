@@ -163,6 +163,16 @@ else
 #else
     printf ("Sockets: %s error %d - %s\n", emsg, err, strerror(err));
 #endif
+if (sim_log) {
+    if (sock_errors[i].value == err)
+        fprintf (sim_log, "Sockets: %s error %d - %s\n", emsg, err, sock_errors[i].text);
+    else
+#if defined(_WIN32)
+        fprintf (sim_log, "Sockets: %s error %d\n", emsg, err);
+#else
+        fprintf (sim_log, "Sockets: %s error %d - %s\n", emsg, err, strerror(err));
+#endif
+    }
 if (s != INVALID_SOCKET)
     sim_close_sock (s, flg);
 return INVALID_SOCKET;
@@ -447,7 +457,8 @@ static void load_function(char* function, _func* func_ptr) {
     char* msg = "Sockets: Failed to find function '%s' in %s\r\n";
 
     printf (msg, function, lib_name);
-    if (sim_log) fprintf (sim_log, msg, function, lib_name);
+    if (sim_log)
+        fprintf (sim_log, msg, function, lib_name);
     lib_loaded = 3;
   }
 }

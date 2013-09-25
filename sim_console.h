@@ -79,6 +79,7 @@ t_stat sim_show_pchar (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cpt
 t_stat sim_show_cons_buff (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat sim_show_cons_log (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat sim_show_cons_debug (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
+t_stat sim_con_register_printer (UNIT *uptr, t_stat (*callback)(UNIT *unit));
 t_stat sim_check_console (int32 sec);
 t_stat sim_open_logfile (char *filename, t_bool binary, FILE **pf, FILEREF **pref);
 t_stat sim_close_logfile (FILEREF **pref);
@@ -100,11 +101,3 @@ extern int32 sim_tt_pchar;                                  /* printable charact
 extern int32 sim_del_char;                                  /* delete character */
 
 #endif
-
-#ifdef TMXR_VALID
-#ifndef SIM_CONSOLE_X_H_
-#define SIM_CONSOLE_X_H_ 0_
-t_stat sim_con_register_printer (UNIT *uptr, t_stat (*callback)(UNIT *unit, TMLN *lp));
-#endif
-#endif
-

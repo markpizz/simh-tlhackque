@@ -126,14 +126,9 @@ typedef struct {
     char *fntemplate;
     char *defaults;
     uint32 fileseq;
-    UNIT idle_unit;/* Used for idle detection and additional context
-                    * Usage of device-specific context:
-                    * u3 - requested idle timeout.
-                    * u4 - time remaining on idle detection
-                    * u5 - printer column number
-                    * up7 - pointer to (real) UNIT
-                    * up8 - pointer to PCTX
-                    */
+    uint32 idletimelimit;   /* requested idle timeout. */
+    uint32 timeuntilidle;   /* time remaining on idle detection */
+    uint32 lineposition;    /* printer column number */
     size_t bc;
     char buffer[256];
 } PCTX;
@@ -141,13 +136,22 @@ typedef struct {
 /* Internal functions */
 
 static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length);
-static t_stat spool_file (UNIT *uptr, TMLN *lp);
+static t_stat spool_file (UNIT *uptr);
 static t_bool retryable_error (int error);
 static t_bool setup_template (PCTX *ctx, const char *filename, const char *ext);
 static void next_spoolname (PCTX *ctx, char *newname, size_t size);
 static t_stat reset (DEVICE *dptr);
-static t_stat idle_svc (UNIT *uptr);
-static void set_idle_timer (UNIT *uptr);
+static void idle_register_lpt (UNIT *uptr);
+static void idle_deregister_lpt (UNIT *uptr);
+static t_stat lpt_idle_svc (UNIT *uptr);
+static t_stat lpt_idle_reset (DEVICE *dptr);
+
+UNIT lpt_idle_unit = {UDATA (&lpt_idle_svc, UNIT_DIS, 0)};
+#define lpt_count ((uint32)lpt_idle_unit.u3)
+#define lpt_units ((UNIT **)lpt_idle_unit.up7)
+DEVICE sim_lpt_idle = {
+    "LPT-IDLE", &lpt_idle_unit, NULL, NULL, 1, 0, 0, 0, 0, 0, 
+    NULL, NULL, lpt_idle_reset};
 
 /* Create and initialize pdf context
  * Only called by SETCTX macro, following.
@@ -202,14 +206,9 @@ static void createctx (UNIT *uptr) {
         }
     }
 
-    /* Initialize the idle unit */
+    /* Initialize the idle state */
 
-    ctx->idle_unit.action = &idle_svc;
-    ctx->idle_unit.flags = UNIT_DIS;
-    ctx->idle_unit.wait = 1*1000*1000;
-    ctx->idle_unit.u3 = PDFLPT_IDLE_TIME;
-    ctx->idle_unit.up7 = uptr;
-    ctx->idle_unit.up8 = ctx;
+    ctx->idletimelimit = PDFLPT_IDLE_TIME;
 
     return;
 }
@@ -230,7 +229,6 @@ static void createctx (UNIT *uptr) {
     } }
 
 #define pdf (pdfctx->pdfh)
-#define idle_unit pdfctx->idle_unit
 
 /* Parse parameter string */
 
@@ -307,6 +305,9 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                     if (!strncmp (gbuf, argtable[kk].keyword, strlen (gbuf))) {
                         if (!sim_quiet) {
                             printf ("Ambiguous keyword: %s\n", gbuf);
+                            if (sim_log) {
+                                fprintf (sim_log, "Ambiguous keyword: %s\n", gbuf);
+                            }
                         }
                         reason = SCPE_ARG;
                         break;
@@ -346,6 +347,10 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                     if (!sim_quiet) {
                         printf ("Not an integer for %s value: %s\n",
                                  argtable[k].keyword, ep);
+                        if (sim_log) {
+                            fprintf (sim_log, "Not an integer for %s value: %s\n",
+                                     argtable[k].keyword, ep);
+                        }
                     }
                     reason= SCPE_ARG;
                     break;
@@ -366,6 +371,10 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                             if (!sim_quiet) {
                                 printf ("Unknown qualifier for %s value: %s\n",
                                                  argtable[k].keyword,  ep);
+                                if (sim_log) {
+                                    fprintf (sim_log, "Unknown qualifier for %s value: %s\n",
+                                                      argtable[k].keyword,  ep);
+                                }
                                 reason = SCPE_ARG;
                                 break;
                             }
@@ -388,6 +397,9 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                     }
                 } else {
                     printf ("Unknown parameter %s\n", gbuf);
+                    if (sim_log) {
+                        fprintf (sim_log, "Unknown parameter %s\n", gbuf);
+                    }
                 }
             }
             pdf_close (pdfh);
@@ -480,6 +492,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         }
 
         if (reason == SCPE_OK) {
+            idle_register_lpt (uptr);
             sim_fseek (uptr->fileref, 0, SEEK_END);
             uptr->pos = (t_addr)sim_ftell (uptr->fileref);
 
@@ -529,6 +542,9 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
             if (!sim_quiet) {
                 if (reason == PDF_E_NOT_PDF) {
                     printf ("%s: is not a PDF file\n", cptr);
+                    if (sim_log) {
+                        fprintf (sim_log, "%s: is not a PDF file\n", cptr);
+                    }
                 }
             }
             return SCPE_OPENERR;
@@ -576,6 +592,9 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         pdf = NULL;
         if (!sim_quiet) {
             printf ("Invalid combination of switches\n");
+            if (sim_log) {
+                fprintf (sim_log, "Invalid combination of switches\n");
+            }
         }
         return SCPE_ARG;
     }
@@ -655,6 +674,7 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         pdf = NULL;
         return SCPE_MEM;
     }
+    idle_register_lpt (uptr);
     strncpy (uptr->filename, fn, CBUFSIZE);
 
     pdf_where (pdf, &page, &line);
@@ -664,10 +684,20 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
             printf ("%s%u Ready at page %u line %u of %s\n",
                     dptr->name, uptr - dptr->units, page, line,
                     uptr->filename);
+            if (sim_log) {
+                fprintf (sim_log, "%s%u Ready at page %u line %u of %s\n",
+                         dptr->name, uptr - dptr->units, page, line,
+                         uptr->filename);
+            }
         } else {
             printf ("%s Ready at page %u line %u of %s\n",
                     dptr->name, page, line,
                     uptr->filename);
+            if (sim_log) {
+                fprintf (sim_log, "%s Ready at page %u line %u of %s\n",
+                         dptr->name, page, line,
+                         uptr->filename);
+            }
         }
     }
 
@@ -797,6 +827,8 @@ t_stat pdflpt_detach (UNIT *uptr) {
     pdflpt_reset (uptr);
 
     sim_con_register_printer (uptr, NULL);
+    
+    idle_deregister_lpt (uptr);
 
     if (!pdf) {
         if (uptr->fileref == stdout) {
@@ -829,6 +861,9 @@ t_stat pdflpt_detach (UNIT *uptr) {
         r = SCPE_NOATT;
     } else if (!sim_quiet) {
         printf ( "Closed %s, on page %u\n", uptr->filename, page );
+        if (sim_log) {
+            fprintf (sim_log, "Closed %s, on page %u\n", uptr->filename, page );
+        }
     }
 
     free (pdfctx->fntemplate);
@@ -862,7 +897,7 @@ t_stat pdflpt_detach (UNIT *uptr) {
  * that nothing was released.
  */
 
-static t_stat spool_file (UNIT *uptr, TMLN *lp) {
+static t_stat spool_file (UNIT *uptr) {
     DEVICE *dptr;
     PDF_HANDLE newpdf = NULL;
     size_t n, page, line;
@@ -900,9 +935,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
             return SCPE_EOF;
         }
         if (!sim_quiet) {
-            if (lp)
-                tmxr_linemsgf (lp, "%sClosing %s\n", devname, uptr->filename);
             printf ("%sClosing %s\n", devname, uptr->filename);
+            if (sim_log) {
+                fprintf (sim_log, "%sClosing %s\n", devname, uptr->filename);
+            }
         }
         if (fclose (uptr->fileref) == -1) {
             r = SCPE_IOERR;
@@ -912,9 +948,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
         uptr->fileref = NULL;
 
         if (r != SCPE_OK) {
-            if (lp)
-                tmxr_linemsgf (lp, "%s%s\n", devname, sim_error_text (r));
             printf ("%s%s\n", devname, sim_error_text (r));
+            if (sim_log) {
+                fprintf (sim_log, "%s%s\n", devname, sim_error_text (r));
+            }
         }
     }
 
@@ -941,9 +978,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
         }
         if (!retryable_error (errno)) {
             if (!sim_quiet) {
-                if (lp)
-                    tmxr_linemsgf (lp, "%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
                 printf ("%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
+                if (sim_log) {
+                    fprintf (sim_log, "%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
+                }
             }
             break;
         }
@@ -951,9 +989,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
 
     if ((pdf_mode? !newpdf: (r != SCPE_OK))) {
         if (!sim_quiet) {
-            if (lp)
-                tmxr_linemsgf (lp, "%sUnable to open new file\n", devname);
             printf ("%sUnable to open new file\n", devname);
+            if (sim_log) {
+                fprintf (sim_log, "%sUnable to open new file\n", devname);
+            }
         }
         return SCPE_OPENERR;
     }
@@ -979,30 +1018,33 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
  
     if (r != PDF_OK) {
         if (!sim_quiet) {
-            if (lp)
-                tmxr_linemsgf (lp, "%s%s: %s\n", devname, uptr->filename,
-                               pdf_strerror (pdf_error (pdf)));
             printf ("%s%s: %s\n", devname, uptr->filename,
                     pdf_strerror (pdf_error (pdf)));
+            if (sim_log) {
+                fprintf (sim_log, "%s%s: %s\n", devname, uptr->filename,
+                         pdf_strerror (pdf_error (pdf)));
+            }
         }
         r = SCPE_OPENERR;
     } else if (!sim_quiet) {
-        if (lp)
-            tmxr_linemsgf (lp, "%sClosed %s, on page %u\n", devname, 
-                           uptr->filename, page );
         printf ("%sClosed %s, on page %u\n", devname, 
                 uptr->filename, page );
+        if (sim_log) {
+            fprintf (sim_log, "%sClosed %s, on page %u\n", devname, 
+                     uptr->filename, page );
+        }
     }
 
     pdf = newpdf;
     strcpy (uptr->filename, newname);
 
     if (!sim_quiet) {
-        if (lp)
-            tmxr_linemsgf (lp, "%sReady at page %u line %u of %s\n",
-                           devname, page, line, uptr->filename);
         printf ("%sReady at page %u line %u of %s\n",
                 devname, page, line, uptr->filename);
+        if (sim_log) {
+            fprintf (sim_log, "%sReady at page %u line %u of %s\n",
+                     devname, page, line, uptr->filename);
+        }
     }
 
     return r;
@@ -1095,11 +1137,11 @@ int pdflpt_putc (UNIT *uptr, int c) {
     SETCTX (EOF);
 
     if (c == CR || c == LF || c == FF) {
-        idle_unit.u5 = 0;
-        set_idle_timer (uptr);
+        pdfctx->lineposition = 0;                       /* at beginning of line */
+        pdfctx->timeuntilidle = pdfctx->idletimelimit;  /* reset idle countdown */
     } else {
-        idle_unit.u5++;
-        sim_cancel (&idle_unit);
+        pdfctx->lineposition++;                         /* update line position */
+        pdfctx->timeuntilidle = 0;                      /* disable idle countdown */
     }
 
     if (!pdf) {
@@ -1131,15 +1173,12 @@ int pdflpt_puts (UNIT *uptr, const char *s) {
         char c = *p++;
 
         if (c == CR || c == LF || c == FF) {
-            idle_unit.u5 = 0;
+            pdfctx->lineposition = 0;                       /* at beginning of line */
+            pdfctx->timeuntilidle = pdfctx->idletimelimit;  /* reset idle countdown */
         } else {
-            idle_unit.u5++;
+            pdfctx->lineposition++;                         /* update line position */
+            pdfctx->timeuntilidle = 0;                      /* disable idle countdown */
         }
-    }
-    if (idle_unit.u5 == 0) {
-        set_idle_timer (&idle_unit);
-    } else {
-        sim_cancel (&idle_unit);
     }
 
     if (!pdf) {
@@ -1175,15 +1214,12 @@ size_t pdflpt_write (UNIT *uptr, void *ptr, size_t size, size_t nmemb) {
         char c = *p++;
 
         if (c == CR || c == LF || c == FF) {
-            idle_unit.u5 = 0;
+            pdfctx->lineposition = 0;                       /* at beginning of line */
+            pdfctx->timeuntilidle = pdfctx->idletimelimit;  /* reset idle countdown */
         } else {
-            idle_unit.u5++;
+            pdfctx->lineposition++;                         /* update line position */
+            pdfctx->timeuntilidle = 0;                      /* disable idle countdown */
         }
-    }
-    if (idle_unit.u5 == 0) {
-        set_idle_timer (&idle_unit);
-    } else {
-        sim_cancel (&idle_unit);
     }
 
     if (!pdf) {
@@ -1357,11 +1393,7 @@ static t_stat reset (DEVICE *dptr) {
 void pdflpt_reset (UNIT *uptr) {
     SETCTX (LPTVOID);
 
-    if (sim_is_active (&idle_unit)) {
-        pdflpt_flush (uptr);
-        sim_cancel (&idle_unit);
-    }
-
+    pdflpt_flush (uptr);
     return;
 }
 
@@ -1379,7 +1411,7 @@ t_stat pdflpt_set_idle_timeout (UNIT *uptr, int32 val, char *cptr, void *desc) {
     SETCTX (SCPE_MEM);
 
     if (cptr == NULL || !*cptr) {
-        idle_unit.u3 = PDFLPT_IDLE_TIME;
+        pdfctx->idletimelimit = PDFLPT_IDLE_TIME;
         return SCPE_OK;
     }
 
@@ -1390,46 +1422,76 @@ t_stat pdflpt_set_idle_timeout (UNIT *uptr, int32 val, char *cptr, void *desc) {
     if (r == 0) {
         return SCPE_ARG;
     }
-    idle_unit.u3 = timeout;
+    pdfctx->idletimelimit = timeout;
 
     return SCPE_OK;
 }
 
-/* Set idle timer
+/* Idle timer
  *
  * To allow for long idle times, the unit is scheduled once/sec, and
- * counts down the requested time (u3) in time remaining (u4).
+ * counts down the requested time for each registered lpt unit.
  */
 
-static void set_idle_timer (UNIT *uptr) {
-    UNIT *iuptr;
+static void idle_register_lpt (UNIT *uptr) {
+    uint32 lpt;
 
-    SETCTX (LPTVOID);
-
-    iuptr = &idle_unit;
-
-    iuptr->u4 = iuptr->u3;
-    sim_cancel(iuptr);
-    sim_activate_after (iuptr, iuptr->wait);
-
-    return;
+    for (lpt=0; lpt < lpt_count; lpt++) {
+        if (uptr == lpt_units[lpt])         /* already registered? */
+            return;                         /* done */
+    }
+    ++lpt_count;
+    lpt_units = realloc (lpt_units, lpt_count*sizeof(*lpt_units));
+    lpt_units[lpt_count - 1] = uptr;
+    sim_register_internal_device (&sim_lpt_idle);
+    sim_activate_after (&lpt_idle_unit, 1*1000*1000);
 }
 
-/* Service function for idle_unit.
- * Counts down time to idle, and flushes buffers if
- * it expires.
+static void idle_deregister_lpt (UNIT *uptr) {
+    uint32 lpt;
+
+    for (lpt=0; lpt < lpt_count; lpt++) {
+        if (uptr == lpt_units[lpt])  /* found? */
+            break;                          /* done */
+    }
+    if (lpt == lpt_count)
+        return;
+    --lpt_count;
+    while (lpt < lpt_count) {
+        lpt_units[lpt] = lpt_units[lpt + 1];
+        ++lpt;
+    }
+}
+
+/* Service function for lpt_idle_unit.
+ * For each registered lpt device, counts down time to idle, 
+ * and flushes buffers if it expires.
  */
 
-static t_stat idle_svc (UNIT *uptr) {
+static t_stat lpt_idle_svc (UNIT *iuptr) {
+    UNIT *uptr;
+    uint32 lpt;
 
-    if (--uptr->u4 > 0) {
-        sim_activate_after (uptr, uptr->wait);
-        return SCPE_OK;
+    for (lpt=0; lpt < lpt_count; lpt++) {
+        uptr = lpt_units[lpt];
+        SETCTX (EOF);
+        if (pdfctx->timeuntilidle) {        /* count down enabled? */
+            --pdfctx->timeuntilidle;        /* count down */
+            if (pdfctx->timeuntilidle == 0) /* reached limit?  */
+                pdflpt_flush (uptr);        /* flush */
+        }
     }
+    sim_activate_after (iuptr, 1*1000*1000);
 
-    pdflpt_flush ((UNIT *)uptr->up7);
     return SCPE_OK;
 }
+
+static t_stat lpt_idle_reset (DEVICE *dptr) {
+    if (lpt_count)
+        sim_activate_after (&lpt_idle_unit, 1*1000*1000);
+    return SCPE_OK;
+}
+
 
 /* Help for PDF-enabled printers */
 
