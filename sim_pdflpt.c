@@ -141,7 +141,7 @@ typedef struct {
 /* Internal functions */
 
 static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length);
-static t_stat spool_file (UNIT *uptr, TMLN *lp);
+static t_stat spool_file (UNIT *uptr);
 static t_bool retryable_error (int error);
 static t_bool setup_template (PCTX *ctx, const char *filename, const char *ext);
 static void next_spoolname (PCTX *ctx, char *newname, size_t size);
@@ -307,6 +307,9 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                     if (!strncmp (gbuf, argtable[kk].keyword, strlen (gbuf))) {
                         if (!sim_quiet) {
                             printf ("Ambiguous keyword: %s\n", gbuf);
+                            if (sim_log) {
+                                fprintf (sim_log, "Ambiguous keyword: %s\n", gbuf);
+                            }
                         }
                         reason = SCPE_ARG;
                         break;
@@ -346,6 +349,10 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                     if (!sim_quiet) {
                         printf ("Not an integer for %s value: %s\n",
                                  argtable[k].keyword, ep);
+                        if (sim_log) {
+                            fprintf (sim_log, "Not an integer for %s value: %s\n",
+                                     argtable[k].keyword, ep);
+                        }
                     }
                     reason= SCPE_ARG;
                     break;
@@ -366,6 +373,10 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                             if (!sim_quiet) {
                                 printf ("Unknown qualifier for %s value: %s\n",
                                                  argtable[k].keyword,  ep);
+                                if (sim_log) {
+                                    fprintf (sim_log, "Unknown qualifier for %s value: %s\n",
+                                                      argtable[k].keyword,  ep);
+                                }
                                 reason = SCPE_ARG;
                                 break;
                             }
@@ -388,6 +399,9 @@ static t_stat parse_params (PDF_HANDLE pdfh, char *cptr, size_t length) {
                     }
                 } else {
                     printf ("Unknown parameter %s\n", gbuf);
+                    if (sim_log) {
+                        fprintf (sim_log, "Unknown parameter %s\n", gbuf);
+                    }
                 }
             }
             pdf_close (pdfh);
@@ -529,6 +543,9 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
             if (!sim_quiet) {
                 if (reason == PDF_E_NOT_PDF) {
                     printf ("%s: is not a PDF file\n", cptr);
+                    if (sim_log) {
+                        fprintf (sim_log, "%s: is not a PDF file\n", cptr);
+                    }
                 }
             }
             return SCPE_OPENERR;
@@ -576,6 +593,9 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
         pdf = NULL;
         if (!sim_quiet) {
             printf ("Invalid combination of switches\n");
+            if (sim_log) {
+                fprintf (sim_log, "Invalid combination of switches\n");
+            }
         }
         return SCPE_ARG;
     }
@@ -664,10 +684,20 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
             printf ("%s%u Ready at page %u line %u of %s\n",
                     dptr->name, uptr - dptr->units, page, line,
                     uptr->filename);
+            if (sim_log) {
+                fprintf (sim_log, "%s%u Ready at page %u line %u of %s\n",
+                         dptr->name, uptr - dptr->units, page, line,
+                         uptr->filename);
+            }
         } else {
             printf ("%s Ready at page %u line %u of %s\n",
                     dptr->name, page, line,
                     uptr->filename);
+            if (sim_log) {
+                fprintf (sim_log, "%s Ready at page %u line %u of %s\n",
+                         dptr->name, page, line,
+                         uptr->filename);
+            }
         }
     }
 
@@ -829,6 +859,9 @@ t_stat pdflpt_detach (UNIT *uptr) {
         r = SCPE_NOATT;
     } else if (!sim_quiet) {
         printf ( "Closed %s, on page %u\n", uptr->filename, page );
+        if (sim_log) {
+            fprintf (sim_log, "Closed %s, on page %u\n", uptr->filename, page );
+        }
     }
 
     free (pdfctx->fntemplate);
@@ -862,7 +895,7 @@ t_stat pdflpt_detach (UNIT *uptr) {
  * that nothing was released.
  */
 
-static t_stat spool_file (UNIT *uptr, TMLN *lp) {
+static t_stat spool_file (UNIT *uptr) {
     DEVICE *dptr;
     PDF_HANDLE newpdf = NULL;
     size_t n, page, line;
@@ -900,9 +933,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
             return SCPE_EOF;
         }
         if (!sim_quiet) {
-            if (lp)
-                tmxr_linemsgf (lp, "%sClosing %s\n", devname, uptr->filename);
             printf ("%sClosing %s\n", devname, uptr->filename);
+            if (sim_log) {
+                fprintf (sim_log, "%sClosing %s\n", devname, uptr->filename);
+            }
         }
         if (fclose (uptr->fileref) == -1) {
             r = SCPE_IOERR;
@@ -912,9 +946,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
         uptr->fileref = NULL;
 
         if (r != SCPE_OK) {
-            if (lp)
-                tmxr_linemsgf (lp, "%s%s\n", devname, sim_error_text (r));
             printf ("%s%s\n", devname, sim_error_text (r));
+            if (sim_log) {
+                fprintf (sim_log, "%s%s\n", devname, sim_error_text (r));
+            }
         }
     }
 
@@ -941,9 +976,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
         }
         if (!retryable_error (errno)) {
             if (!sim_quiet) {
-                if (lp)
-                    tmxr_linemsgf (lp, "%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
                 printf ("%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
+                if (sim_log) {
+                    fprintf (sim_log, "%s%s: %s\n", devname, newname, pdf_strerror (pdf_error(newpdf)));
+                }
             }
             break;
         }
@@ -951,9 +987,10 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
 
     if ((pdf_mode? !newpdf: (r != SCPE_OK))) {
         if (!sim_quiet) {
-            if (lp)
-                tmxr_linemsgf (lp, "%sUnable to open new file\n", devname);
             printf ("%sUnable to open new file\n", devname);
+            if (sim_log) {
+                fprintf (sim_log, "%sUnable to open new file\n", devname);
+            }
         }
         return SCPE_OPENERR;
     }
@@ -979,30 +1016,33 @@ static t_stat spool_file (UNIT *uptr, TMLN *lp) {
  
     if (r != PDF_OK) {
         if (!sim_quiet) {
-            if (lp)
-                tmxr_linemsgf (lp, "%s%s: %s\n", devname, uptr->filename,
-                               pdf_strerror (pdf_error (pdf)));
             printf ("%s%s: %s\n", devname, uptr->filename,
                     pdf_strerror (pdf_error (pdf)));
+            if (sim_log) {
+                fprintf (sim_log, "%s%s: %s\n", devname, uptr->filename,
+                         pdf_strerror (pdf_error (pdf)));
+            }
         }
         r = SCPE_OPENERR;
     } else if (!sim_quiet) {
-        if (lp)
-            tmxr_linemsgf (lp, "%sClosed %s, on page %u\n", devname, 
-                           uptr->filename, page );
         printf ("%sClosed %s, on page %u\n", devname, 
                 uptr->filename, page );
+        if (sim_log) {
+            fprintf (sim_log, "%sClosed %s, on page %u\n", devname, 
+                     uptr->filename, page );
+        }
     }
 
     pdf = newpdf;
     strcpy (uptr->filename, newname);
 
     if (!sim_quiet) {
-        if (lp)
-            tmxr_linemsgf (lp, "%sReady at page %u line %u of %s\n",
-                           devname, page, line, uptr->filename);
         printf ("%sReady at page %u line %u of %s\n",
                 devname, page, line, uptr->filename);
+        if (sim_log) {
+            fprintf (sim_log, "%sReady at page %u line %u of %s\n",
+                     devname, page, line, uptr->filename);
+        }
     }
 
     return r;
