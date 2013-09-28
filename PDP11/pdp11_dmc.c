@@ -2183,7 +2183,8 @@ for (dmc=active=attached=0; dmc < mp->lines; dmc++) {
             }
         dmc_svc (&controller->device->units[dmc]);  /* Flush pending output */
         }
-    dmc_buffer_fill_receive_buffers(controller);
+    if (dmc_buffer_fill_receive_buffers(controller))
+        dmc_svc (&controller->device->units[dmc]);  /* return ACKed transmit packets */
     }
 if (active)
     sim_clock_coschedule (uptr, tmxr_poll);         /* reactivate */
@@ -2324,6 +2325,7 @@ if (controller->state == Running) {
         ddcmp_tmxr_get_packet_ln (controller->line, (const uint8 **)&controller->link.rcv_pkt, &controller->link.rcv_pkt_size);
         if (!controller->link.rcv_pkt)
             break;
+        ans = TRUE;
         controller->buffers_received_from_net++;
         controller->ddcmp_control_packets_received += (controller->link.rcv_pkt[0] == DDCMP_ENQ) ? 1 : 0;
         ddcmp_dispatch(controller, DDCMP_EVENT_PKT_RCVD);
