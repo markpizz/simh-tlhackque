@@ -236,7 +236,7 @@
 #include <sys/stat.h>
 #include <setjmp.h>
 
-#if defined(HAVE_DLOPEN)                                 /* Dynamic Readline support */
+#if defined(HAVE_DLOPEN)                                /* Dynamic Readline support */
 #include <dlfcn.h>
 #endif
 

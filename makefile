@@ -313,11 +313,25 @@ ifeq ($(WIN32),)  #*nix Environments (&& cygwin)
       OS_CCDEFS += -DHAVE_FNMATCH    
     endif
   endif
-  ifneq (,$(call find_include,SDL/SDL))
-    ifneq (,$(call find_lib,SDL))
-      OS_CCDEFS += -DHAVE_LIBSDL -I$(dir $(call find_include,SDL/SDL))
-      OS_LDFLAGS += -lSDL
-      $(info using libSDL:  $(call find_lib,SDL) $(call find_include,SDL/SDL))
+  ifneq (,$(call find_include,SDL2/SDL))
+    ifneq (,$(call find_lib,SDL2))
+      OS_CCDEFS += -DHAVE_LIBSDL -I$(dir $(call find_include,SDL2/SDL))
+      OS_LDFLAGS += -lSDL2
+      $(info using libSDL2: $(call find_lib,SDL2) $(call find_include,SDL2/SDL))
+      ifeq (Darwin,$(OSTYPE))
+        OS_LDFLAGS += -lobjc -framework cocoa
+      endif
+    endif
+  else
+    ifneq (,$(call find_include,SDL/SDL))
+      ifneq (,$(call find_lib,SDL))
+        OS_CCDEFS += -DHAVE_LIBSDL -I$(dir $(call find_include,SDL/SDL))
+        OS_LDFLAGS += -lSDL
+        $(info using libSDL: $(call find_lib,SDL) $(call find_include,SDL/SDL))
+        ifeq (Darwin,$(OSTYPE))
+          OS_LDFLAGS += -lobjc -framework cocoa
+        endif
+      endif
     endif
   endif
   ifneq (,$(VIDEO_USEFUL))
@@ -325,7 +339,7 @@ ifeq ($(WIN32),)  #*nix Environments (&& cygwin)
       $(info *** Warning ***)
       $(info *** Warning *** The simulator$(BUILD_MULTIPLE) you are building could provide more)
       $(info *** Warning *** functionality if video support were available on your system.)
-      $(info *** Warning *** Install the development components of libSDL and rebuild)
+      $(info *** Warning *** Install the development components of libSDL2 and rebuild)
       $(info *** Warning *** your simulator to enable this extra functionality.)
       $(info *** Warning ***)
     endif
