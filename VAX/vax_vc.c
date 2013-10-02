@@ -270,6 +270,9 @@ DEBTAB vc_debug[] = {
     {"MBC",     DBG_INT6},
     {"SPARE",   DBG_INT7},
     {"INT",     DBG_INT0|DBG_INT1|DBG_INT2|DBG_INT3|DBG_INT4|DBG_INT5|DBG_INT6|DBG_INT7},
+    {"VMOUSE",  SIM_VID_DBG_MOUSE},
+    {"VKEY",    SIM_VID_DBG_KEY},
+    {"VVIDEO",  SIM_VID_DBG_VIDEO},
     {0}
     };
 
@@ -708,7 +711,7 @@ return 0;                                               /* no intr req */
 t_stat vc_svc (UNIT *uptr)
 {
 t_bool updated = FALSE;                                 /* flag for refresh */
-uint8 line[1024];
+uint32 line[1024];
 uint32 ln, col, off;
 uint8 *cur;
 
@@ -738,7 +741,8 @@ for (ln = 0; ln < VC_YSIZE; ln++) {
     if ((vc_map[ln] & VCMAP_VLD) == 0) {                /* line invalid? */
         off = vc_map[ln] * 32;                          /* get video buf offet */
         for (col = 0; col < 1024; col++)  
-            line[col] = (vc_buf[off + (col >> 5)] >> col) & 1; /* 1bpp to 8bpp */
+            line[col] = vid_mono_palette[(vc_buf[off + (col >> 5)] >> (col & 0x1F)) & 1];
+                                                        /* 1bpp to 32bpp */
         if (CUR_V) {                                    /* cursor visible? */
             if ((ln >= CUR_Y) && (ln < (CUR_Y + 16))) { /* cursor on this line? */
                 cur = &vc_cur[((ln - CUR_Y) << 4)];     /* get image base */
@@ -746,10 +750,9 @@ for (ln = 0; ln < VC_YSIZE; ln++) {
                     if ((CUR_X + col) >= 1024)          /* Part of cursor off screen? */
                         continue;                       /* Skip */
                     if (CUR_F)                          /* mask function */
-                        line[CUR_X + col] = line[CUR_X + col] | cur[col];
+                        line[CUR_X + col] = vid_mono_palette[(line[CUR_X + col] == vid_mono_palette[1]) | (cur[col] & 1)];
                     else
-                        line[CUR_X + col] = line[CUR_X + col] & ~cur[col];
-                    line [CUR_X + col] = line[CUR_X + col] & 1;
+                        line[CUR_X + col] = vid_mono_palette[(line[CUR_X + col] == vid_mono_palette[1]) & (~cur[col] & 1)];
                     }
                 }
             }
@@ -798,7 +801,7 @@ if (dptr->flags & DEV_DIS)
     return vid_close ();
 
 if (!vid_active)  {
-    r = vid_open (VC_XSIZE, VC_YSIZE);                      /* display size */
+    r = vid_open (dptr, VC_XSIZE, VC_YSIZE);            /* display size */
     if (r != SCPE_OK)
         return r;
     printf ("QVSS Display Created.  ");
