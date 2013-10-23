@@ -2261,8 +2261,24 @@ BUFFER *dmc_buffer_allocate(CTLR *controller)
 {
 BUFFER *buffer = (BUFFER *)remqueue (controller->free_queue->hdr.next);
 
-if (!buffer)
+if (!buffer) {
+    fprintf (stdout, "DDCMP Buffer allocation failure.\n");
+    fprintf (stdout, "This is a fatal error which should never happen.\n");
+    fprintf (stdout, "Please submit this output when you report this bug.\n");
+    dmc_showqueues (stdout, controller->unit, 0, NULL);
+    dmc_showstats (stdout, controller->unit, 0, NULL);
+    dmc_showddcmp (stdout, controller->unit, 0, NULL);
+    if (sim_log) {
+        fprintf (sim_log, "DDCMP Buffer allocation failure.\n");
+        fprintf (sim_log, "This is a fatal error which should never happen.\n");
+        fprintf (sim_log, "Please submit this output when you report this bug.\n");
+        dmc_showqueues (sim_log, controller->unit, 0, NULL);
+        dmc_showstats (sim_log, controller->unit, 0, NULL);
+        dmc_showddcmp (sim_log, controller->unit, 0, NULL);
+        fflush (sim_log);
+        }
     return buffer;
+    }
 buffer->address = 0;
 buffer->count = 0;
 free (buffer->transfer_buffer);
