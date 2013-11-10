@@ -41,7 +41,7 @@ enum display_type {
     DIS_VR17 = 17,
     DIS_VR20 = 20,
     DIS_TYPE30 = 30,
-	DIS_TX0 = 33,
+        DIS_TX0 = 33,
     DIS_VR48 = 48,
     DIS_TYPE340 = 340
 };
@@ -65,7 +65,7 @@ extern int display_xpoints(void);
 extern int display_ypoints(void);
 
 /* virtual points between display and menu sections */
-#define VR48_GUTTER 8	/* just a guess */
+#define VR48_GUTTER 8   /* just a guess */
 
 /* conversion factor from virtual points and displayed pixels */
 extern int display_scale(void);
@@ -83,10 +83,10 @@ extern int display_age(int,int);
  * always at least 8 (for VT11/VS60) -- may be mapped internally
  */
 #define DISPLAY_INT_MAX 7
-#define DISPLAY_INT_MIN 0		/* lowest "on" level */
+#define DISPLAY_INT_MIN 0               /* lowest "on" level */
 
 /*
- * plot a point; argumen	ts are x, y, intensity, color (0/1)
+ * plot a point; argumen        ts are x, y, intensity, color (0/1)
  * returns true if light pen active (mouse button down)
  * at (or very near) this location.
  *

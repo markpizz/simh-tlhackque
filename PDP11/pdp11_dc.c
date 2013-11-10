@@ -1,6 +1,6 @@
 /* pdp11_dc.c: PDP-11 DC11 multiple terminal interface simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2013, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    dci,dco    DC11 terminal input/output
 
+   11-Oct-2013  RMS     Poll DCI immediately after attach to pick up connect
    18-Apr-2012  RMS     Modified to use clock coscheduling
    17-Aug-2011  RMS     Added AUTOCONFIGURE modifier
    19-Nov-2008  RMS     Revised for common TMXR show routines
@@ -157,12 +158,13 @@ DIB dci_dib = {
     2, IVCL (DCI), VEC_AUTO, { &dci_iack, &dco_iack }, IOLN_DC,
     };
 
-UNIT dci_unit = { UDATA (&dci_svc, 0, 0), KBD_POLL_WAIT };
+UNIT dci_unit = { UDATA (&dci_svc, 0, 0), SERIAL_IN_WAIT };
 
 REG dci_reg[] = {
     { BRDATAD (BUF,          dci_buf, DEV_RDX, 8, DCX_LINES,  "input control/stats register") },
     { BRDATAD (CSR,          dci_csr, DEV_RDX, 16, DCX_LINES, "input buffer") },
     { GRDATAD (IREQ,        dci_ireq, DEV_RDX, DCX_LINES, 0,  "interrupt requests") },
+    { DRDATAD (TIME,   dci_unit.wait,      24, "input polling interval"), PV_LEFT },
     { DRDATA  (LINES, dcx_desc.lines, 6), REG_HRO },
     { GRDATA  (DEVADDR,   dci_dib.ba, DEV_RDX, 32, 0), REG_HRO },
     { GRDATA  (DEVIOLN,  dci_dib.lnt, DEV_RDX, 32, 0), REG_HRO },
@@ -288,6 +290,7 @@ switch ((PA >> 1) & 03) {                               /* decode PA<2:1> */
     case 01:                                            /* dci buf */
         dci_clr_int (ln);
         *data = dci_buf[ln];
+        sim_activate_abs (&dci_unit, dci_unit.wait);
         return SCPE_OK;
 
     case 02:                                            /* dco csr */
@@ -557,7 +560,7 @@ t_stat r;
 r = tmxr_attach (&dcx_desc, uptr, cptr);                /* attach */
 if (r != SCPE_OK)                                       /* error? */
     return r;
-sim_activate (uptr, tmxr_poll);                         /* start poll */
+sim_activate (uptr, 0);                                 /* start poll at once */
 return SCPE_OK;
 }
 

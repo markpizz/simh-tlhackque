@@ -1,6 +1,6 @@
 /* pdp8_ttx.c: PDP-8 additional terminals simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2013, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    ttix,ttox    PT08/KL8JA terminal input/output
 
+   11-Oct-13    RMS     Poll TTIX immediately to pick up initial connect (Mark Pizzolato)
    18-Apr-12    RMS     Revised to use clock coscheduling
    19-Nov-08    RMS     Revised for common TMXR show routines
    07-Jun-06    RMS     Added UNIT_IDLE flag
@@ -91,7 +92,7 @@ void ttx_enbdis (int32 dis);
 DIB ttix_dib = { DEV_KJ8, 8,
              { &ttix, &ttox, &ttix, &ttox, &ttix, &ttox, &ttix, &ttox } };
 
-UNIT ttix_unit = { UDATA (&ttix_svc, UNIT_IDLE|UNIT_ATTABLE, 0), KBD_POLL_WAIT };
+UNIT ttix_unit = { UDATA (&ttix_svc, UNIT_IDLE|UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
 
 REG ttix_reg[] = {
     { BRDATA (BUF, ttix_buf, 8, 8, TTX_LINES) },
@@ -118,12 +119,29 @@ MTAB ttix_mod[] = {
     { 0 }
     };
 
+/* debugging bitmaps */
+#define DBG_XMT  TMXR_DBG_XMT                           /* display Transmitted Data */
+#define DBG_RCV  TMXR_DBG_RCV                           /* display Received Data */
+#define DBG_RET  TMXR_DBG_RET                           /* display Returned Received Data */
+#define DBG_CON  TMXR_DBG_CON                           /* display connection activities */
+#define DBG_TRC  TMXR_DBG_TRC                           /* display trace routine calls */
+
+DEBTAB ttx_debug[] = {
+  {"XMT",    DBG_XMT},
+  {"RCV",    DBG_RCV},
+  {"RET",    DBG_RET},
+  {"CON",    DBG_CON},
+  {"TRC",    DBG_TRC},
+  {0}
+};
+
 DEVICE ttix_dev = {
     "TTIX", &ttix_unit, ttix_reg, ttix_mod,
     1, 10, 31, 1, 8, 8,
     &tmxr_ex, &tmxr_dep, &ttix_reset,
     NULL, &ttx_attach, &ttx_detach,
-    &ttix_dib, DEV_MUX | DEV_DISABLE
+    &ttix_dib, DEV_MUX | DEV_DISABLE | DEV_DEBUG,
+    0, ttx_debug
     };
 
 /* TTOx data structures
@@ -169,7 +187,8 @@ DEVICE ttox_dev = {
     4, 10, 31, 1, 8, 8,
     NULL, NULL, &ttox_reset, 
     NULL, NULL, NULL,
-    NULL, DEV_DISABLE
+    NULL, DEV_DISABLE | DEV_DEBUG,
+    0, ttx_debug
     };
 
 /* Terminal input: IOT routine */
@@ -194,6 +213,7 @@ switch (pulse) {                                        /* case IR<9:11> */
     case 2:                                             /* KCC */
         dev_done = dev_done & ~itti;                    /* clear flag */
         int_req = int_req & ~itti;
+        sim_activate_abs (&ttix_unit, ttix_unit.wait);  /* check soon for more input */
         return 0;                                       /* clear AC */
 
     case 4:                                             /* KRS */
@@ -209,6 +229,7 @@ switch (pulse) {                                        /* case IR<9:11> */
     case 6:                                             /* KRB */
         dev_done = dev_done & ~itti;                    /* clear flag */
         int_req = int_req & ~itti;
+        sim_activate_abs (&ttix_unit, ttix_unit.wait);  /* check soon for more input */
         return ttix_buf[ln];                            /* return buf */
 
     default:
@@ -233,6 +254,8 @@ if (ln >= 0)                                            /* got one? rcv enb*/
 tmxr_poll_rx (&ttx_desc);                               /* poll for input */
 for (ln = 0; ln < TTX_LINES; ln++) {                    /* loop thru lines */
     if (ttx_ldsc[ln].conn) {                            /* connected? */
+        if (dev_done & (INT_TTI1 << ln))                /* Last character still pending? */
+            continue;
         if ((temp = tmxr_getc_ln (&ttx_ldsc[ln]))) {    /* get char */
             if (temp & SCPE_BREAK)                      /* break? */
                 c = 0;
@@ -360,7 +383,7 @@ t_stat r;
 r = tmxr_attach (&ttx_desc, uptr, cptr);                /* attach */
 if (r != SCPE_OK)                                       /* error */
     return r;
-sim_activate (uptr, tmxr_poll);                         /* start poll */
+sim_activate (uptr, 0);                                 /* start poll at once */
 return SCPE_OK;
 }
 

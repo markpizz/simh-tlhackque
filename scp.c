@@ -1800,7 +1800,8 @@ for (; *ip && (op < oend); ) {
         *op++ = *ip++;                                  /* copy escaped char */
         }
     else 
-        if (*ip == '%') {                               /* sub? */
+        if ((*ip == '%') && 
+            (isalnum(ip[1]) || (ip[1] == '*'))) {       /* sub? */
             if ((ip[1] >= '0') && (ip[1] <= ('9'))) {   /* %n = sub */
                 ap = do_arg[ip[1] - '0'];
                 for (i=0; i<ip[1] - '0'; ++i)           /* make sure we're not past the list end */
@@ -1829,6 +1830,7 @@ for (; *ip && (op < oend); ) {
                             }
                         else
                             break;
+                ip = ip + 2;
                 }
             else {                                      /* environment variable */
                 ap = NULL;
