@@ -25,6 +25,9 @@
 
    vc           Qbus video subsystem
 
+   08-Nov-2013  MB      Implemented mouse position register
+   06-Nov-2013  MB      Increased the speed of v-sync interrupts, which
+                        was too slow for some O/S drivers.
    11-Jun-2013  MB      First version
 */
 
@@ -167,8 +170,11 @@ BITFIELD vc_ic_mode_bits[] = {
 #define IRQ_MBC         6                               /* Mouse button C */
 #define IRQ_SPARE       7                               /* (spare) */
 
-#define VC_XSIZE        1024
+#define VC_XSIZE        1024                            /* screen size */
 #define VC_YSIZE        864
+#define VC_MEMSIZE      (1u << 16)                      /* video memory size */
+
+#define VC_MOVE_MAX     49                              /* mouse movement max (per update) */
 
 #define VCMAP_VLD       0x80000000                      /* valid */
 #define VCMAP_LN        0x00000FFF                      /* buffer line */
@@ -180,6 +186,8 @@ BITFIELD vc_ic_mode_bits[] = {
                          vc_crtc[CRTC_CSCS])            /* cursor Y */
 #define CUR_V            ((vc_crtc[CRTC_CSCS] & 0x20) == 0) /* cursor visible */
 #define CUR_F            (vc_csr & CSR_FNC)             /* cursor function */
+
+#define VSYNC_TIME      8000                            /* vertical sync interval */
 
 #define IOLN_QVSS       0100
 
@@ -215,7 +223,7 @@ uint32 vc_crtc_p = 0;                                   /* CRTC pointer */
 uint32 vc_icdr = 0;                                     /* Interrupt controller data */
 uint32 vc_icsr = 0;                                     /* Interrupt controller status */
 uint32 vc_map[1024];                                    /* Scanline map */
-uint32 vc_buf[(1u << 16)];                              /* Video memory */
+uint32 *vc_buf = NULL;                                  /* Video memory */
 uint8 vc_cur[256];                                      /* Cursor image */
 
 DEVICE vc_dev;
@@ -224,7 +232,6 @@ t_stat vc_wr (int32 data, int32 PA, int32 access);
 t_stat vc_svc (UNIT *uptr);
 t_stat vc_reset (DEVICE *dptr);
 t_stat vc_set_enable (UNIT *uptr, int32 val, char *cptr, void *desc);
-void vc_powerdown (void);
 void vc_setint (int32 src);
 int32 vc_inta (void);
 void vc_clrint (int32 src);
@@ -368,7 +375,7 @@ uint32 rg = (PA >> 1) & 0x1F;
 uint32 crtc_rg, i;
 
 *data = 0;
-switch ((PA >> 1) & 0x1F) {                             /* decode PA<1> */
+switch (rg) {
 
     case 0:                                             /* CSR */
         *data = vc_csr;
@@ -454,9 +461,13 @@ uint32 rg = (PA >> 1) & 0x1F;
 uint32 crtc_rg;
 
 sim_debug (DBG_REG, &vc_dev, "vc_wr(%s) data=0x%04X\n", vc_regnames[(PA >> 1) & 0x1F], data);
-switch ((PA >> 1) & 0x1F) {                             /* decode PA<1> */
+switch (rg) {
 
     case 0:                                             /* CSR */
+        if ((data & CSR_IEN) && ((vc_csr & CSR_IEN) == 0)) {
+            sim_cancel (&vc_unit);                      /* reactivate with short delay */
+            sim_activate (&vc_unit, VSYNC_TIME);        /* in case software checks for vsync */
+            }
         vc_csr = (vc_csr & ~CSR_RW) | (data & CSR_RW);
         break;
 
@@ -574,9 +585,16 @@ switch ((PA >> 1) & 0x1F) {                             /* decode PA<1> */
 return SCPE_OK;
 }
 
+extern jmp_buf save_env;
+extern int32 p1;
+
 int32 vc_mem_rd (int32 pa)
 {
 uint32 rg = (pa >> 2) & 0xFFFF;
+
+if (!vc_buf)                                            /* QVSS disabled? */
+    MACH_CHECK (MCHK_READ);                             /* Invalid memory reference */
+
 return vc_buf[rg];
 }
 
@@ -587,6 +605,9 @@ int32 nval, i;
 int32 sc;
 uint32 scrln, bufln;
 uint32 idx;
+
+if (!vc_buf)                                            /* QVSS disabled? */
+    MACH_CHECK (MCHK_WRITE);                            /* Invalid memory reference */
 
 if (lnt < L_LONG) {
     int32 mask = (lnt == L_WORD)? 0xFFFF: 0xFF;
@@ -644,19 +665,22 @@ if ((vc_intc.mode & 0x80) && ~(vc_intc.mode & 0x4)) {   /* group int MM & not po
             }
         }
     if ((vc_csr & CSR_IEN)  && (vc_icsr & ICSR_GRI)) {
-        if (!(int_req[IPL_QVSS] & (INT_QVSS)))
+        if (!(int_req[IPL_QVSS] & (INT_QVSS))) {
             sim_debug (DBG_INT, &vc_dev, "vc_checkint(SET_INT) icsr=0x%x\n", vc_icsr);
+            }
         SET_INT (QVSS);
         }
     else {
-        if ((int_req[IPL_QVSS] & (INT_QVSS)))
+        if ((int_req[IPL_QVSS] & (INT_QVSS))) {
             sim_debug (DBG_INT, &vc_dev, "vc_checkint(CLR_INT)\n");
+            }
         CLR_INT (QVSS);
         }
     }
 else {
-    if ((int_req[IPL_QVSS] & (INT_QVSS)))
+    if ((int_req[IPL_QVSS] & (INT_QVSS))) {
         sim_debug (DBG_INT, &vc_dev, "vc_checkint(CLR_INT)\n");
+        }
     CLR_INT (QVSS);
     }
 }
@@ -713,6 +737,7 @@ t_stat vc_svc (UNIT *uptr)
 t_bool updated = FALSE;                                 /* flag for refresh */
 uint32 line[1024];
 uint32 ln, col, off;
+int32 xpos, ypos, dx, dy;
 uint8 *cur;
 
 vc_crtc_p = vc_crtc_p ^ CRTCP_VB;                       /* Toggle VBI */
@@ -736,6 +761,32 @@ vc_cur_x = CUR_X;                                       /* store cursor data */
 vc_cur_y = CUR_Y;
 vc_cur_v = CUR_V;
 vc_cur_f = CUR_F;
+
+xpos = vc_mpos & 0xFF;                                  /* get current mouse position */
+ypos = (vc_mpos >> 8) & 0xFF;
+dx = vid_mouse_xrel;                                    /* get relative movement */
+dy = vid_mouse_yrel;
+if (dx > VC_MOVE_MAX)                                   /* limit movement */
+    dx = VC_MOVE_MAX;
+else if (dx < -VC_MOVE_MAX)
+    dx = -VC_MOVE_MAX;
+if (dy > VC_MOVE_MAX)
+    dy = VC_MOVE_MAX;
+else if (dy < -VC_MOVE_MAX)
+    dy = -VC_MOVE_MAX;
+xpos += dx;                                             /* add to counters */
+ypos += dy;
+vc_mpos = ((ypos & 0xFF) << 8) | (xpos & 0xFF);         /* update register */
+vid_mouse_xrel = 0;                                     /* reset counters for next poll */
+vid_mouse_yrel = 0;
+
+vc_csr |= (CSR_MSA | CSR_MSB | CSR_MSC);                /* reset button states */
+if (vid_mouse_b3)                                       /* set new button states */
+    vc_csr &= ~CSR_MSA;
+if (vid_mouse_b2)
+    vc_csr &= ~CSR_MSB;
+if (vid_mouse_b1)
+    vc_csr &= ~CSR_MSC;
 
 for (ln = 0; ln < VC_YSIZE; ln++) {
     if ((vc_map[ln] & VCMAP_VLD) == 0) {                /* line invalid? */
@@ -767,7 +818,7 @@ if (updated)                                            /* video updated? */
 
 ua2681_svc (&vc_uart);                                  /* service DUART */
 vc_setint (IRQ_VSYNC);                                  /* VSYNC int */
-sim_activate (uptr, tmxr_poll);                         /* reactivate */
+sim_clock_coschedule (uptr, tmxr_poll);                 /* reactivate */
 return SCPE_OK;
 }
 
@@ -797,13 +848,21 @@ for (i = 0; i < CRTC_SIZE; i++)
 vc_crtc[CRTC_CSCS] = 0x20;                              /* hide cursor */
 vc_crtc_p = (CRTCP_LPF | CRTCP_VB);
 
-if (dptr->flags & DEV_DIS)
+if (dptr->flags & DEV_DIS) {
+    free (vc_buf);
+    vc_buf = NULL;
     return vid_close ();
+    }
 
 if (!vid_active)  {
     r = vid_open (dptr, VC_XSIZE, VC_YSIZE);            /* display size */
     if (r != SCPE_OK)
         return r;
+    vc_buf = (uint32 *) calloc (VC_MEMSIZE, sizeof (uint32));
+    if (vc_buf == NULL) {
+        vid_close ();
+        return SCPE_MEM;
+        }
     printf ("QVSS Display Created.  ");
     vid_show_release_key (stdout, NULL, 0, NULL);
     printf ("\n");

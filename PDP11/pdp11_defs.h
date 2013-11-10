@@ -26,6 +26,7 @@
    The author gratefully acknowledges the help of Max Burnet, Megan Gentry,
    and John Wilson in resolving questions about the PDP-11
 
+   23-Oct-13    RMS     Added cpu_set_boot prototype
    02-Sep-13    RMS     Added third Massbus adapter and RS drive
    11-Dec-11    RMS     Fixed priority of PIRQ vs IO; added INT_INTERNALn
    22-May-10    RMS     Added check for 64b definitions
@@ -624,6 +625,14 @@ typedef struct pdp_dib DIB;
 #define INT_V_DLO       10
 #define INT_V_DCI       11
 #define INT_V_DCO       12
+                    /* VT simulation is sequential, so only
+                       one interrupt is posted at a time. */
+#define INT_V_VTLP      13  /* XXX - Manual says VTLP, VTST have opposite */
+#define INT_V_VTST      14  /* XXX	   precedence, but that breaks LUNAR! */
+                            /* XXX  How this happens is an utter mystery. */
+#define INT_V_VTCH      15
+#define INT_V_VTNM      16
+#define INT_V_LK        17
 
 #define INT_V_PIR3      0                               /* BR3 */
 #define INT_V_PIR2      0                               /* BR2 */
@@ -673,6 +682,11 @@ typedef struct pdp_dib DIB;
 #define INT_DLO         (1u << INT_V_DLO)
 #define INT_DCI         (1u << INT_V_DCI)
 #define INT_DCO         (1u << INT_V_DCO)
+#define INT_VTLP        (1u << INT_V_VTLP)
+#define INT_VTST        (1u << INT_V_VTST)
+#define INT_VTCH        (1u << INT_V_VTCH)
+#define INT_VTNM        (1u << INT_V_VTNM)
+#define INT_LK          (1u << INT_V_LK)
 #define INT_PIR3        (1u << INT_V_PIR3)
 #define INT_PIR2        (1u << INT_V_PIR2)
 #define INT_PIR1        (1u << INT_V_PIR1)
@@ -725,6 +739,11 @@ typedef struct pdp_dib DIB;
 #define IPL_DLO         4
 #define IPL_DCI         4
 #define IPL_DCO         4
+#define IPL_VTLP        4
+#define IPL_VTST        4
+#define IPL_VTCH        4
+#define IPL_VTNM        4
+#define IPL_LK          4           /* XXX just a guess */
 
 #define IPL_PIR7        7
 #define IPL_PIR6        6
@@ -790,6 +809,8 @@ void mba_set_exc (uint32 mbus);
 void mba_set_don (uint32 mbus);
 void mba_set_enbdis (uint32 mb, t_bool dis);
 t_stat mba_show_num (FILE *st, UNIT *uptr, int32 val, void *desc);
+
+void cpu_set_boot (int32 pc);
 
 #include "pdp11_io_lib.h"
 

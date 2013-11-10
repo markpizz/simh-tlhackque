@@ -1,6 +1,6 @@
 /* pdp11_dl.c: PDP-11 multiple terminal interface simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2013, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    dli,dlo      DL11 terminal input/output
 
+   11-Oct-2013  RMS     Poll DLI immediately after attach to pick up connect
    18-Apr-2012  RMS     Modified to use clock coscheduling
    17-Aug-2011  RMS     Added AUTOCONFIGURE modifier
    19-Nov-2008  RMS     Revised for common TMXR show routines
@@ -121,11 +122,12 @@ DIB dli_dib = {
     2, IVCL (DLI), VEC_AUTO, { &dli_iack, &dlo_iack }, IOLN_DL,
     };
 
-UNIT dli_unit = { UDATA (&dli_svc, 0, 0), KBD_POLL_WAIT };
+UNIT dli_unit = { UDATA (&dli_svc, 0, 0), SERIAL_IN_WAIT };
 
 REG dli_reg[] = {
     { BRDATA (BUF, dli_buf, DEV_RDX, 16, DLX_LINES) },
     { BRDATA (CSR, dli_csr, DEV_RDX, 16, DLX_LINES) },
+    { DRDATAD (TIME, dli_unit.wait,  24, "input polling interval"), PV_LEFT },
     { GRDATA (IREQ, dli_ireq[DLI_RCI], DEV_RDX, DLX_LINES, 0) },
     { GRDATA (DSI, dli_ireq[DLI_DSI], DEV_RDX, DLX_LINES, 0) },
     { DRDATA (LINES, dlx_desc.lines, 6), REG_HRO },
@@ -244,6 +246,7 @@ switch ((PA >> 1) & 03) {                               /* decode PA<2:1> */
         *data = dli_buf[ln] & DLIBUF_RD;
         dli_csr[ln] &= ~CSR_DONE;                       /* clr rcv done */
         dli_clr_int (ln, DLI_RCI);                      /* clr rcv int req */
+        sim_activate_abs (&dli_unit, dli_unit.wait);
         return SCPE_OK;
 
     case 02:                                            /* tto csr */
@@ -508,7 +511,7 @@ t_stat r;
 r = tmxr_attach (&dlx_desc, uptr, cptr);                /* attach */
 if (r != SCPE_OK)                                       /* error */
     return r;
-sim_activate (uptr, tmxr_poll);                         /* start poll */
+sim_activate (uptr, 0);                                 /* start poll at once */
 return SCPE_OK;
 }
 

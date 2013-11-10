@@ -1516,6 +1516,7 @@ if (lp->conn && lp->rcve) {                             /* conn & enb? */
     }                                                   /* end if conn */
 if (lp->rxbpi == lp->rxbpr)                             /* empty? zero ptrs */
     lp->rxbpi = lp->rxbpr = 0;
+tmxr_debug_return(lp, val);
 return val;
 }
 
@@ -3835,7 +3836,8 @@ if (lp->txlog == NULL) {                                /* error? */
     free (lp->txlogname);                               /* free buffer */
     return SCPE_OPENERR;
     }
-lp->mp->uptr->filename = tmxr_mux_attach_string (lp->mp->uptr->filename, lp->mp);
+if (mp->uptr)                                           /* attached?, then update attach string */
+    lp->mp->uptr->filename = tmxr_mux_attach_string (lp->mp->uptr->filename, lp->mp);
 return SCPE_OK;
 }
 

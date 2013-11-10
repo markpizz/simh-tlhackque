@@ -317,6 +317,7 @@ ifeq ($(WIN32),)  #*nix Environments (&& cygwin)
     ifneq (,$(call find_lib,SDL2))
       OS_CCDEFS += -DHAVE_LIBSDL -I$(dir $(call find_include,SDL2/SDL))
       OS_LDFLAGS += -lSDL2
+      VIDEO_FEATURES = - video capabilities provided by libSDL2 (Simple Directmedia Layer)
       $(info using libSDL2: $(call find_lib,SDL2) $(call find_include,SDL2/SDL))
       ifeq (Darwin,$(OSTYPE))
         OS_LDFLAGS += -lobjc -framework cocoa
@@ -327,6 +328,7 @@ ifeq ($(WIN32),)  #*nix Environments (&& cygwin)
       ifneq (,$(call find_lib,SDL))
         OS_CCDEFS += -DHAVE_LIBSDL -I$(dir $(call find_include,SDL/SDL))
         OS_LDFLAGS += -lSDL
+        VIDEO_FEATURES = - video capabilities provided by libSDL (Simple Directmedia Layer)
         $(info using libSDL: $(call find_lib,SDL) $(call find_include,SDL/SDL))
         ifeq (Darwin,$(OSTYPE))
           OS_LDFLAGS += -lobjc -framework cocoa
@@ -532,10 +534,10 @@ else
     endif
   endif
   ifneq (,$(VIDEO_USEFUL))
-    ifeq (libSDL,$(shell if exist ..\windows-build\libSDL\SDL-1.2.15\include\SDL.h echo libSDL))
-      OS_CCDEFS += -DHAVE_LIBSDL -I..\windows-build\libSDL\SDL-1.2.15\include
-      OS_LDFLAGS += -lSDL -lSDLmain -L..\windows-build\libSDL\SDL-1.2.15\lib
-      VIDEO_FEATURES = - video capabilities provided by libSDL (Simple Directmedia Layer)
+    ifeq (libSDL,$(shell if exist ..\windows-build\libSDL\SDL2-2.0.0\include\SDL.h echo libSDL))
+      OS_CCDEFS += -DHAVE_LIBSDL -I..\windows-build\libSDL\SDL2-2.0.0\include
+      OS_LDFLAGS += -lSDL2 -L..\windows-build\libSDL\SDL2-2.0.0\lib
+      VIDEO_FEATURES = - video capabilities provided by libSDL2 (Simple Directmedia Layer)
     else
       $(info ***********************************************************************)
       $(info ***********************************************************************)
@@ -680,15 +682,32 @@ TOOLSD =
 TXT2CBN = ${PDP11D}/txt2cbn.c
 LPT2PDF = ${TOOLSD}lpt2pdf.c
 TOOLS_OPT = -DPDF_MAIN
-
+# Display
+DISPLAYD = display
+ifeq ($(WIN32),)
+  ifeq (x11,$(shell if $(TEST) -e /usr/include/X11/Intrinsic.h ; then echo x11; fi))
+    DISPLAYL = ${DISPLAYD}/display.c $(DISPLAYD)/x11.c
+    DISPLAYVT = ${DISPLAYD}/vt11.c
+    DISPLAY_OPT = -DUSE_DISPLAY -I/usr/X11/include -lXt -lX11 -lm
+  else
+    DISPLAYL = 
+    DISPLAYVT =
+    DISPLAY_OPT = 
+  endif
+else
+  DISPLAYL = ${DISPLAYD}/display.c $(DISPLAYD)/win32.c
+  DISPLAYVT = ${DISPLAYD}/vt11.c
+  DISPLAY_OPT = -DUSE_DISPLAY -lgdi32
+endif  
+  
 #
 # Emulator source files and compile time options
 #
 PDP1D = PDP1
 PDP1 = ${PDP1D}/pdp1_lp.c ${PDP1D}/pdp1_cpu.c ${PDP1D}/pdp1_stddev.c \
 	${PDP1D}/pdp1_sys.c ${PDP1D}/pdp1_dt.c ${PDP1D}/pdp1_drm.c \
-	${PDP1D}/pdp1_clk.c ${PDP1D}/pdp1_dcs.c
-PDP1_OPT = -I ${PDP1D}
+	${PDP1D}/pdp1_clk.c ${PDP1D}/pdp1_dcs.c ${PDP1D}/pdp1_dpy.c ${DISPLAYL}
+PDP1_OPT = -I ${PDP1D} $(DISPLAY_OPT)
 
 
 NOVAD = NOVA
@@ -731,8 +750,8 @@ PDP11 = ${PDP11D}/pdp11_fp.c ${PDP11D}/pdp11_cpu.c ${PDP11D}/pdp11_dz.c \
 	${PDP11D}/pdp11_ta.c ${PDP11D}/pdp11_rc.c ${PDP11D}/pdp11_kg.c \
 	${PDP11D}/pdp11_ke.c ${PDP11D}/pdp11_dc.c ${PDP11D}/pdp11_dmc.c \
 	${PDP11D}/pdp11_dup.c ${PDP11D}/pdp11_kmc.c ${PDP11D}/pdp11_rs.c \
-	${PDP11D}/pdp11_io_lib.c
-PDP11_OPT = -DVM_PDP11 -I ${PDP11D} ${NETWORK_OPT}
+	${PDP11D}/pdp11_vt.c ${PDP11D}/pdp11_io_lib.c $(DISPLAYL) $(DISPLAYVT)
+PDP11_OPT = -DVM_PDP11 -I ${PDP11D} ${NETWORK_OPT} $(DISPLAY_OPT)
 
 
 VAXD = VAX
@@ -982,20 +1001,6 @@ SWTP6800MP-A2 = ${SWTP6800C}/mp-a2.c ${SWTP6800C}/m6800.c ${SWTP6800C}/m6810.c \
 	${SWTP6800C}/mp-b2.c ${SWTP6800C}/mp-8m.c ${SWTP6800C}/i2716.c
 SWTP6800_OPT = -I ${SWTP6800D}
 
-DISPLAYD = display
-ifeq ($(WIN32),)
-  ifeq (x11,$(shell if $(TEST) -e /usr/include/X11/Intrinsic.h ; then echo x11; fi))
-    DISPLAYL = ${DISPLAYD}/display.c $(DISPLAYD)/x11.c
-    DISPLAY_OPT = -DUSE_DISPLAY -I/usr/X11/include -lXt -lX11 -lm
-  else
-    DISPLAYL = 
-    DISPLAY_OPT = 
-  endif
-else
-  DISPLAYL = ${DISPLAYD}/display.c $(DISPLAYD)/win32.c
-  DISPLAY_OPT = -DUSE_DISPLAY
-endif  
-  
 TX0D = TX-0
 TX0 = ${TX0D}/tx0_cpu.c ${TX0D}/tx0_dpy.c ${TX0D}/tx0_stddev.c \
       ${TX0D}/tx0_sys.c ${TX0D}/tx0_sys_orig.c ${DISPLAYL}

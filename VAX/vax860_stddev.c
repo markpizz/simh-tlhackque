@@ -274,10 +274,10 @@ extern int32 con_halt (int32 code, int32 cc);
 */
 
 UNIT tti_unit[] = {
-    { UDATA (&tti_svc, TT_MODE_8B, 0), 0 },
-    { UDATA (&tti_svc, TT_MODE_8B, 0), 0 },
-    { UDATA (&tti_svc, TT_MODE_8B, 0), 0 },
-    { UDATA (&tti_svc, TT_MODE_8B, 0), 0 },
+    { UDATA (&tti_svc, UNIT_IDLE|TT_MODE_8B, 0), 0 },
+    { UDATA (&tti_svc, UNIT_IDLE|TT_MODE_8B, 0), 0 },
+    { UDATA (&tti_svc, UNIT_IDLE|TT_MODE_8B, 0), 0 },
+    { UDATA (&tti_svc, UNIT_IDLE|TT_MODE_8B, 0), 0 },
     };
 
 REG tti_reg[] = {
@@ -453,9 +453,12 @@ return;
 int32 rxdb_rd (void)
 {
 int32 t = tti_buf;
-t = t | ((ID_M_LC | ID_M_EMM | ID_M_CT) << RXDB_V_LC);  /* char + DTR for hard-wired lines */
-tti_csr = tti_csr & ~CSR_DONE;                          /* clr done */
-tti_int = 0;
+
+if (tti_csr & CSR_DONE) {                               /* Input pending ? */
+    t = t | ((ID_M_LC | ID_M_EMM | ID_M_CT) << RXDB_V_LC);/* char + DTR for hard-wired lines */
+    tti_csr = tti_csr & ~CSR_DONE;                      /* clr done */
+    tti_int = 0;
+    }
 return t;
 }
 

@@ -25,6 +25,7 @@
 
    rf           RF11 fixed head disk
 
+   23-Oct-13    RMS     Revised for new boot setup routine
    03-Sep-13    RMS     Added explicit void * cast
    19-Mar-12    RMS     Fixed bug in updating mem addr extension (Peter Schorn)
    25-Dec-06    RMS     Fixed bug in unit mask (John Dundas)
@@ -468,12 +469,11 @@ static const uint16 boot_rom[] = {
 t_stat rf_boot (int32 unitno, DEVICE *dptr)
 {
 size_t i;
-extern int32 saved_PC;
 
 for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_CSR >> 1] = (rf_dib.ba & DMASK) + 012;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 
@@ -516,7 +516,7 @@ const char *const text =
 "RF11/RS11 Fixed Head Disk Controller (RF)\n"
 "\n"
 /*567901234567890123456789012345678901234567890123456789012345678901234567890*/
-" The RFll-A is a fast, low-cost, random·access bulk-storage system.  An\n"
+" The RFll-A is a fast, low-cost, random-access bulk-storage system.  An\n"
 " RFll-A provides 262,144 17-bit words (16 data bits and 1 parity bit)\n"
 " of storage. Up to eight RSll disk platters can be controlled by one RFll\n"
 " Controller for a total of 2,047,152 words of storage.  An RFll-A includes\n"
@@ -529,7 +529,7 @@ const char *const text =
 " both disk storage and main memory in the PDP-11 system.\n"
 /*567901234567890123456789012345678901234567890123456789012345678901234567890*/
 "\n"
-" The RSll disk contains a nickel·cobalt·plated disk driven by a hysterisis\n"
+" The RSll disk contains a nickel-cobalt-plated disk driven by a hysterisis\n"
 " synchronous motor. Data is recorded on a single disk surface by 128\n"
 " fixed read/write heads.\n"
 " Operation\n"

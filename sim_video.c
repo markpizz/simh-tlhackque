@@ -23,12 +23,18 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from the author.
 
+   08-Nov-2013  MB      Added globals for current mouse status
    11-Jun-2013  MB      First version
 */
 
 #include "sim_video.h"
 
 t_bool vid_active = FALSE;
+int32 vid_mouse_xrel = 0;
+int32 vid_mouse_yrel = 0;
+t_bool vid_mouse_b1 = FALSE;
+t_bool vid_mouse_b2 = FALSE;
+t_bool vid_mouse_b3 = FALSE;
 
 #if HAVE_LIBSDL
 #include <SDL.h>
@@ -54,9 +60,6 @@ typedef struct {
     int32 head;
     int32 tail;
     int32 count;
-    t_bool b1_state;
-    t_bool b2_state;
-    t_bool b3_state;
     } MOUSE_EVENT_QUEUE;
 
 int vid_thread (void* arg);
@@ -93,6 +96,8 @@ if (!vid_active) {
     vid_width = width;
     vid_height = height;
     vid_mouse_captured = FALSE;
+    vid_mouse_xrel = 0;
+    vid_mouse_yrel = 0;
 
     vid_key_events.head = 0;
     vid_key_events.tail = 0;
@@ -553,8 +558,8 @@ if (vid_mouse_captured) {
 if (!sim_is_running)
     return;
 if (SDL_SemWait (vid_key_events.sem) == 0) {
-    sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event: State: %d, Keysym: %d\n", event->state, event->keysym);
     if (vid_key_events.count < MAX_EVENTS) {
+        sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event: State: %d, Keysym: %d\n", event->state, event->keysym);
         if (event->state == SDL_PRESSED) {
             if (!vid_key_state[event->keysym.sym]) {    /* Key was not down before */
                 vid_key_state[event->keysym.sym] = TRUE;
@@ -575,6 +580,9 @@ if (SDL_SemWait (vid_key_events.sem) == 0) {
         vid_key_events.count++;
         if (vid_key_events.tail == MAX_EVENTS)
             vid_key_events.tail = 0;
+        }
+    else {
+        sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event DISCARDED: State: %d, Keysym: %d\n", event->state, event->keysym);
         }
     SDL_SemPost (vid_key_events.sem);
     }
@@ -602,17 +610,19 @@ if ((event->x == 0) ||
     }
 if (!sim_is_running)
     return;
+vid_mouse_xrel += event->xrel;                          /* update cumulative x rel */
+vid_mouse_yrel -= event->yrel;                          /* update cumulative y rel */
+vid_mouse_b1 = (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? TRUE : FALSE;
+vid_mouse_b2 = (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? TRUE : FALSE;
+vid_mouse_b3 = (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? TRUE : FALSE;
 if (SDL_SemWait (vid_mouse_events.sem) == 0) {
     sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: (%d,%d)\n", event->xrel, event->yrel);
     if (vid_mouse_events.count < MAX_EVENTS) {
         ev.x_rel = event->xrel;
         ev.y_rel = (-event->yrel);
-        ev.b1_state = (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? TRUE : FALSE;
-        ev.b2_state = (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? TRUE : FALSE;
-        ev.b3_state = (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? TRUE : FALSE;
-        vid_mouse_events.b1_state = ev.b1_state;
-        vid_mouse_events.b2_state = ev.b2_state;
-        vid_mouse_events.b3_state = ev.b3_state;
+        ev.b1_state = vid_mouse_b1;
+        ev.b2_state = vid_mouse_b2;
+        ev.b3_state = vid_mouse_b3;
         vid_mouse_events.events[vid_mouse_events.tail++] = ev;
         vid_mouse_events.count++;
         if (vid_mouse_events.tail == MAX_EVENTS)
@@ -647,26 +657,26 @@ if (!vid_mouse_captured) {
     }
 if (!sim_is_running)
     return;
+state = (event->state == SDL_PRESSED) ? TRUE : FALSE;
+switch (event->button) {
+    case SDL_BUTTON_LEFT:
+        vid_mouse_b1 = state;
+        break;
+    case SDL_BUTTON_MIDDLE:
+        vid_mouse_b2 = state;
+        break;
+    case SDL_BUTTON_RIGHT:
+        vid_mouse_b3 = state;
+        break;
+        }
 if (SDL_SemWait (vid_mouse_events.sem) == 0) {
     sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Button Event: State: %d, Button: %d, (%d,%d)\n", event->state, event->button, event->x, event->y);
     if (vid_mouse_events.count < MAX_EVENTS) {
-        state = (event->state == SDL_PRESSED) ? TRUE : FALSE;
         ev.x_rel = 0;
         ev.y_rel = 0;
-        switch (event->button) {
-            case SDL_BUTTON_LEFT:
-                vid_mouse_events.b1_state = state;
-                break;
-            case SDL_BUTTON_MIDDLE:
-                vid_mouse_events.b2_state = state;
-                break;
-            case SDL_BUTTON_RIGHT:
-                vid_mouse_events.b3_state = state;
-                break;
-                }
-        ev.b1_state = vid_mouse_events.b1_state;
-        ev.b2_state = vid_mouse_events.b2_state;
-        ev.b3_state = vid_mouse_events.b3_state;
+        ev.b1_state = vid_mouse_b1;
+        ev.b2_state = vid_mouse_b2;
+        ev.b3_state = vid_mouse_b3;
         vid_mouse_events.events[vid_mouse_events.tail++] = ev;
         vid_mouse_events.count++;
         if (vid_mouse_events.tail == MAX_EVENTS)
@@ -808,6 +818,8 @@ if (!vid_active) {
     vid_width = width;
     vid_height = height;
     vid_mouse_captured = FALSE;
+    vid_mouse_xrel = 0;
+    vid_mouse_yrel = 0;
 
     vid_key_events.head = 0;
     vid_key_events.tail = 0;
@@ -1266,11 +1278,11 @@ if (vid_mouse_captured) {
 if (!sim_is_running)
     return;
 if (SDL_SemWait (vid_key_events.sem) == 0) {
-    sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event: State: %d, Keysym: %d\n", event->state, event->keysym);
+    sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event: State: %d, Keysym(scancode,sym): (%d,%d)\n", event->state, event->keysym.scancode, event->keysym.sym);
     if (vid_key_events.count < MAX_EVENTS) {
         if (event->state == SDL_PRESSED) {
-            if (!vid_key_state[event->keysym.sym]) {    /* Key was not down before */
-                vid_key_state[event->keysym.sym] = TRUE;
+            if (!vid_key_state[event->keysym.scancode]) {    /* Key was not down before */
+                vid_key_state[event->keysym.scancode] = TRUE;
                 ev.key = vid_map_key (event->keysym.sym);
                 ev.state = SIM_KEYPRESS_DOWN;
                 }
@@ -1280,7 +1292,7 @@ if (SDL_SemWait (vid_key_events.sem) == 0) {
                 }
             }
         else {
-            vid_key_state[event->keysym.sym] = FALSE;
+            vid_key_state[event->keysym.scancode] = FALSE;
             ev.key = vid_map_key (event->keysym.sym);
             ev.state = SIM_KEYPRESS_UP;
             }
@@ -1315,17 +1327,19 @@ if ((event->x == 0) ||
     }
 if (!sim_is_running)
     return;
+vid_mouse_xrel += event->xrel;                          /* update cumulative x rel */
+vid_mouse_yrel -= event->yrel;                          /* update cumulative y rel */
+vid_mouse_b1 = (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? TRUE : FALSE;
+vid_mouse_b2 = (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? TRUE : FALSE;
+vid_mouse_b3 = (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? TRUE : FALSE;
 if (SDL_SemWait (vid_mouse_events.sem) == 0) {
     sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: (%d,%d)\n", event->xrel, event->yrel);
     if (vid_mouse_events.count < MAX_EVENTS) {
         ev.x_rel = event->xrel;
         ev.y_rel = (-event->yrel);
-        ev.b1_state = (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? TRUE : FALSE;
-        ev.b2_state = (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? TRUE : FALSE;
-        ev.b3_state = (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? TRUE : FALSE;
-        vid_mouse_events.b1_state = ev.b1_state;
-        vid_mouse_events.b2_state = ev.b2_state;
-        vid_mouse_events.b3_state = ev.b3_state;
+        ev.b1_state = vid_mouse_b1;
+        ev.b2_state = vid_mouse_b2;
+        ev.b3_state = vid_mouse_b3;
         vid_mouse_events.events[vid_mouse_events.tail++] = ev;
         vid_mouse_events.count++;
         if (vid_mouse_events.tail == MAX_EVENTS)
@@ -1359,26 +1373,26 @@ if (!vid_mouse_captured) {
     }
 if (!sim_is_running)
     return;
+state = (event->state == SDL_PRESSED) ? TRUE : FALSE;
+switch (event->button) {
+    case SDL_BUTTON_LEFT:
+        vid_mouse_b1 = state;
+        break;
+    case SDL_BUTTON_MIDDLE:
+        vid_mouse_b2 = state;
+        break;
+    case SDL_BUTTON_RIGHT:
+        vid_mouse_b3 = state;
+        break;
+        }
 if (SDL_SemWait (vid_mouse_events.sem) == 0) {
     sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Button Event: State: %d, Button: %d, (%d,%d)\n", event->state, event->button, event->x, event->y);
     if (vid_mouse_events.count < MAX_EVENTS) {
-        state = (event->state == SDL_PRESSED) ? TRUE : FALSE;
         ev.x_rel = 0;
         ev.y_rel = 0;
-        switch (event->button) {
-            case SDL_BUTTON_LEFT:
-                vid_mouse_events.b1_state = state;
-                break;
-            case SDL_BUTTON_MIDDLE:
-                vid_mouse_events.b2_state = state;
-                break;
-            case SDL_BUTTON_RIGHT:
-                vid_mouse_events.b3_state = state;
-                break;
-                }
-        ev.b1_state = vid_mouse_events.b1_state;
-        ev.b2_state = vid_mouse_events.b2_state;
-        ev.b3_state = vid_mouse_events.b3_state;
+        ev.b1_state = vid_mouse_b1;
+        ev.b2_state = vid_mouse_b2;
+        ev.b3_state = vid_mouse_b3;
         vid_mouse_events.events[vid_mouse_events.tail++] = ev;
         vid_mouse_events.count++;
         if (vid_mouse_events.tail == MAX_EVENTS)
@@ -1533,6 +1547,8 @@ if (!vid_texture) {
     SDL_Quit ();
     return 0;
     }
+
+SDL_StopTextInput ();
 
 sim_debug (SIM_VID_DBG_VIDEO|SIM_VID_DBG_KEY|SIM_VID_DBG_MOUSE, vid_dev, "vid_thread() - Started\n");
 
