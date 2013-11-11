@@ -1197,8 +1197,8 @@ void dmc_showqueue (FILE* st, BUFFER_QUEUE *queue, t_bool detail)
 size_t i;
 
 fprintf (st, "%s Queue:\n", queue->name);
-fprintf (st, "    Size: %d\n", queue->size);
-fprintf (st, "   Count: %d\n", queue->count);
+fprintf (st, "    Size: %d\n", (int)queue->size);
+fprintf (st, "   Count: %d\n", (int)queue->count);
 if (detail) {
     BUFFER *buffer = (BUFFER *)queue->hdr.next;
     size_t same;
@@ -1207,8 +1207,8 @@ if (detail) {
         if ((i == 0) || 
             (0 != memcmp(((char *)buffer)+sizeof(QH), ((char *)(buffer->hdr.prev))+sizeof(QH), sizeof(*buffer)-sizeof(QH)))) {
             if (same > 0)
-                fprintf (st, "%s.queue[%d] thru %s.queue[%d] same as above\n", queue->name, i-same, queue->name, i-1);
-            fprintf (st, "%s.queue[%d] at %p\n", queue->name, i, buffer);
+                fprintf (st, "%s.queue[%d] thru %s.queue[%d] same as above\n", queue->name, (int)(i-same), queue->name, (int)(i-1));
+            fprintf (st, "%s.queue[%d] at %p\n", queue->name, (int)i, buffer);
             fprintf (st, "   address:                  0x%08X\n", buffer->address);
             fprintf (st, "   count:                    0x%04X\n", buffer->count);
             fprintf (st, "   actual_bytes_transferred: 0x%04X\n", buffer->actual_bytes_transferred);
@@ -1221,7 +1221,7 @@ if (detail) {
         buffer = (BUFFER *)buffer->hdr.next;
         }
     if (same > 0)
-        fprintf (st, "%s.queue[%d] thru %s.queue[%d] same as above\n", queue->name, i-same, queue->name, i-1);
+        fprintf (st, "%s.queue[%d] thru %s.queue[%d] same as above\n", queue->name, (int)(i-same), queue->name, (int)(i-1));
     }
 }
 
