@@ -834,7 +834,7 @@ static t_stat prt_detach (UNIT *uptr)
 }
 
 static t_stat set_prt_type (UNIT *uptr, int32 val, char *cptr, void *desc) {
-    size_t ncol;
+    int ncol;
     char tbuf[sizeof ("columns=999")];
 
     if (val == 0) {

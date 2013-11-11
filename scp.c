@@ -7269,7 +7269,7 @@ static TOPIC *buildHelp (TOPIC *topic, struct sim_device *dptr,
                             if (dptr) {
                                 char buf[129];
                                 n = uptr? uptr - dptr->units: 0;
-                                sprintf (buf, "%s%u", dptr->name, n);
+                                sprintf (buf, "%s%u", dptr->name, (int)n);
                                 appendText (topic, buf, strlen (buf));
                             }
                             break;
@@ -7654,7 +7654,7 @@ t_stat scp_vhelp (FILE *st, struct sim_device *dptr,
         fprintf (stderr, "\nHelp was unable to process the help for this device.\n"
                          "Error in block %u line %u: %s\n"
                          "Please contact the device maintainer.\n", 
-                 help_where.block, help_where.line, help_where.error);
+                 (int)help_where.block, (int)help_where.line, help_where.error);
         cleanHelp (&top);
         return failed;
     }
