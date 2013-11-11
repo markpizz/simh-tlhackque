@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
 
 #define	ERROR	00404
 #include "pdp11_cr_dat.h"
@@ -7,7 +6,7 @@
 static int	colStart = 1;		/* starting column */
 static int	colEnd = 80;		/* ending column */
 
-void main ()
+int main ()
 {
 	int	col, c;
 
@@ -46,5 +45,5 @@ void main ()
 		if (c == EOF)
 			break;
 	}
-	exit (1);
+	return 0;
 }

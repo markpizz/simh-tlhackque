@@ -1054,7 +1054,7 @@ static void do_file (PDF_HANDLE pdf, FILE *fh, const char *filename) {
 #if 0
     pdf_checkpoint (pdf);
 #endif
-    fprintf (stderr, "End of %s, at page %u line %u\n", filename, page, line);
+    fprintf (stderr, "End of %s, at page %u line %u\n", filename, (int)page, (int)line);
     return;
 }
 
