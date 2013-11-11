@@ -536,12 +536,12 @@ if (LPT_WIDTH != 132) {
     sprintf (tbuf + strlen (tbuf), " columns=%u", LPT_WIDTH);
     }
 if (tof != 0) {
-    sprintf (tbuf + strlen (tbuf), " tof-offset=%u", tof);
+    sprintf (tbuf + strlen (tbuf), " tof-offset=%d", (int)tof);
     }
 
 i = vfu_length? vfu_length : last_vfu_length;
 if (i) {
-    sprintf (tbuf + strlen (tbuf), " lpp=%u", i);
+    sprintf (tbuf + strlen (tbuf), " lpp=%d", (int)i);
     
     }
 pdflpt_set_defaults (uptr, tbuf);
@@ -552,7 +552,7 @@ if (pdflpt_getmode (uptr) == PDFLPT_IS_PDF) {
         last_vfu_length = vfu_length;
         sprintf (tbuf, "lpp=%u", vfu_length);
         if (tof != 0) {
-            sprintf (tbuf + strlen (tbuf), " tof-offset=%u", tof);
+            sprintf (tbuf + strlen (tbuf), " tof-offset=%d", (int)tof);
             }
         }
     if ((lpi & LPI_SET) && lpi != last_lpi) {
@@ -633,7 +633,7 @@ sum = 0;
 for (l = 0; l < vfu_length; l++) {
     if (l && !(l % 5))
         fputc ('\n', st);
-    fprintf (st, "%4u", l);
+    fprintf (st, "%4d", (int)l);
     for (c = VFU_MAX; c >= 0; c--)
         fprintf (st, " %c", (vfu[l] & (1 << c))? ((c >= 9)? 'X': '1'+c) : ' ');
     fputc ('\n', st);

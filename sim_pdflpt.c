@@ -147,8 +147,8 @@ static t_stat lpt_idle_svc (UNIT *uptr);
 static t_stat lpt_idle_reset (DEVICE *dptr);
 
 UNIT lpt_idle_unit = {UDATA (&lpt_idle_svc, UNIT_DIS, 0)};
-#define lpt_count ((uint32)lpt_idle_unit.u3)
-#define lpt_units ((UNIT **)lpt_idle_unit.up7)
+#define lpt_count (*((uint32 *)&lpt_idle_unit.u3))
+#define lpt_units (*((UNIT ***)&lpt_idle_unit.up7))
 DEVICE sim_lpt_idle = {
     "LPT-IDLE", &lpt_idle_unit, NULL, NULL, 1, 0, 0, 0, 0, 0, 
     NULL, NULL, lpt_idle_reset};
@@ -681,21 +681,21 @@ t_stat pdflpt_attach (UNIT *uptr, char *cptr) {
 
     if (!sim_quiet) {
         if (dptr->numunits > 1) {
-            printf ("%s%u Ready at page %u line %u of %s\n",
-                    dptr->name, uptr - dptr->units, page, line,
+            printf ("%s%d Ready at page %d line %d of %s\n",
+                    dptr->name, (int)(uptr - dptr->units), (int)page, (int)line,
                     uptr->filename);
             if (sim_log) {
-                fprintf (sim_log, "%s%u Ready at page %u line %u of %s\n",
-                         dptr->name, uptr - dptr->units, page, line,
+                fprintf (sim_log, "%s%d Ready at page %d line %d of %s\n",
+                         dptr->name, (int)(uptr - dptr->units), (int)page, (int)line,
                          uptr->filename);
             }
         } else {
-            printf ("%s Ready at page %u line %u of %s\n",
-                    dptr->name, page, line,
+            printf ("%s Ready at page %d line %d of %s\n",
+                    dptr->name, (int)page, (int)line,
                     uptr->filename);
             if (sim_log) {
-                fprintf (sim_log, "%s Ready at page %u line %u of %s\n",
-                         dptr->name, page, line,
+                fprintf (sim_log, "%s Ready at page %d line %d of %s\n",
+                         dptr->name, (int)page, (int)line,
                          uptr->filename);
             }
         }
@@ -860,9 +860,9 @@ t_stat pdflpt_detach (UNIT *uptr) {
         }
         r = SCPE_NOATT;
     } else if (!sim_quiet) {
-        printf ( "Closed %s, on page %u\n", uptr->filename, page );
+        printf ( "Closed %s, on page %d\n", uptr->filename, (int)page );
         if (sim_log) {
-            fprintf (sim_log, "Closed %s, on page %u\n", uptr->filename, page );
+            fprintf (sim_log, "Closed %s, on page %d\n", uptr->filename, (int)page );
         }
     }
 
@@ -920,7 +920,7 @@ static t_stat spool_file (UNIT *uptr) {
         return SCPE_ARG;
 
     if (dptr->numunits > 1) {
-        sprintf (devname, "%s%u ", dptr->name, uptr - dptr->units);
+        sprintf (devname, "%s%d ", dptr->name, (int)(uptr - dptr->units));
     } else {
         sprintf (devname, "%s ", dptr->name);
     }
@@ -1027,11 +1027,11 @@ static t_stat spool_file (UNIT *uptr) {
         }
         r = SCPE_OPENERR;
     } else if (!sim_quiet) {
-        printf ("%sClosed %s, on page %u\n", devname, 
-                uptr->filename, page );
+        printf ("%sClosed %s, on page %d\n", devname, 
+                uptr->filename, (int)page );
         if (sim_log) {
-            fprintf (sim_log, "%sClosed %s, on page %u\n", devname, 
-                     uptr->filename, page );
+            fprintf (sim_log, "%sClosed %s, on page %d\n", devname, 
+                     uptr->filename, (int)page );
         }
     }
 
@@ -1039,11 +1039,11 @@ static t_stat spool_file (UNIT *uptr) {
     strcpy (uptr->filename, newname);
 
     if (!sim_quiet) {
-        printf ("%sReady at page %u line %u of %s\n",
-                devname, page, line, uptr->filename);
+        printf ("%sReady at page %d line %d of %s\n",
+                devname, (int)page, (int)line, uptr->filename);
         if (sim_log) {
-            fprintf (sim_log, "%sReady at page %u line %u of %s\n",
-                     devname, page, line, uptr->filename);
+            fprintf (sim_log, "%sReady at page %d line %d of %s\n",
+                     devname, (int)page, (int)line, uptr->filename);
         }
     }
 

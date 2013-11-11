@@ -2672,7 +2672,7 @@ static void wrhdr (PDF *pdf) {
     pdf->flags |= PDF_WRITTEN;
 
     fseek (pdf->pdf, pdf->anchorp, SEEK_SET);
-    fprintf (pdf->pdf, "%u 0 obj\n%.*s /Parent ", pdf->aobj, q - trail, trail);
+    fprintf (pdf->pdf, "%u 0 obj\n%.*s /Parent ", pdf->aobj, (int)(q - trail), trail);
 
     /* From here on, the file has been written and is corrupt.
      * Hopefully, a temporary condition, but errors will be permanent.
@@ -2842,14 +2842,14 @@ static void wrpage (PDF *pdf) {
      */
     if ((pdf->flags & PDF_UNCOMPRESSED) || encstm (pdf, pdf->pagebuf, pdf->pbused)) {
         fprintf (pdf->pdf, "%u 0 obj\n"
-                 "<< /Length %u >>\n"
-                 "stream\n", obj, pdf->pbused);
+                 "<< /Length %d >>\n"
+                 "stream\n", obj, (int)pdf->pbused);
         fwrite (pdf->pagebuf, pdf->pbused, 1, pdf->pdf);
     } else {
         fprintf (pdf->pdf, "%u 0 obj\n"
-                 "  << /Length %u /DL %u /Filter /LZWDecode"
+                 "  << /Length %d /DL %d /Filter /LZWDecode"
                  " /DecodeParms << /EarlyChange 0 >> >>\n"
-                 "stream\n", obj, pdf->lzwused, pdf->pbused);
+                 "stream\n", obj, (int)pdf->lzwused, (int)pdf->pbused);
         fwrite (pdf->lzwbuf, pdf->lzwused, 1, pdf->pdf);
     }
     fputs ("\nendstream\n"
@@ -3082,16 +3082,16 @@ static void imageform (PDF *pdf) {
      */
 
     if ((pdf->flags & PDF_UNCOMPRESSED) || encstm (pdf, img.imgbuf, img.ibused)) {
-        fprintf (pdf->pdf, " /Length %u /Filter %s", img.ibused, img.filter);
+        fprintf (pdf->pdf, " /Length %d /Filter %s", (int)img.ibused, img.filter);
         if (img.filterpars) {
             fprintf (pdf->pdf, " /DecodeParms %s", img.filterpars);
         }
         fprintf (pdf->pdf, " >>\nstream\n");
         fwrite (img.imgbuf, img.ibused, 1, pdf->pdf);
     } else {
-        fprintf (pdf->pdf, " /Length %u /DL %u /Filter [ /LZWDecode %s ]\n"
+        fprintf (pdf->pdf, " /Length %d /DL %d /Filter [ /LZWDecode %s ]\n"
                  " /DecodeParms [ << /EarlyChange 0 >> %s ]",
-                 pdf->lzwused, img.ibused, img.filter,
+                 (int)pdf->lzwused, (int)img.ibused, img.filter,
                  (img.filterpars? img.filterpars: "null"));
         fprintf (pdf->pdf, " >>\nstream\n");
         fwrite (pdf->lzwbuf, pdf->lzwused, 1, pdf->pdf);
