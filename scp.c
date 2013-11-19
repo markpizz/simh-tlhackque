@@ -345,6 +345,7 @@ void (*sim_vm_post) (t_bool from_scp) = NULL;
 CTAB *sim_vm_cmd = NULL;
 void (*sim_vm_fprint_addr) (FILE *st, DEVICE *dptr, t_addr addr) = NULL;
 t_addr (*sim_vm_parse_addr) (DEVICE *dptr, char *cptr, char **tptr) = NULL;
+t_value (*sim_vm_pc_value) (void) = NULL;
 
 /* Prototypes */
 
@@ -1482,6 +1483,8 @@ t_stat echo_cmd (int32 flag, char *cptr)
 puts (cptr);
 if (sim_log)
     fprintf (sim_log, "%s\n", cptr);
+if (sim_deb)
+    fprintf (sim_deb, "\n%s\n", cptr);
 return SCPE_OK;
 }
 
@@ -3129,6 +3132,7 @@ return SCPE_OK;
 t_stat show_all_mods (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, int32 *toks)
 {
 MTAB *mptr;
+t_stat r = SCPE_OK;
 
 if (dptr->modifiers == NULL)
     return SCPE_OK;
@@ -3141,8 +3145,9 @@ for (mptr = dptr->modifiers; mptr->mask != 0; mptr++) {
             fprintf (st, "\n");
             *toks = 0;
             }
-        fprint_sep (st, toks);
-        show_one_mod (st, dptr, uptr, mptr, NULL, 0);
+        if (r == SCPE_OK)
+            fprint_sep (st, toks);
+        r = show_one_mod (st, dptr, uptr, mptr, NULL, 0);
         }
     }
 return SCPE_OK;
@@ -3151,10 +3156,11 @@ return SCPE_OK;
 t_stat show_one_mod (FILE *st, DEVICE *dptr, UNIT *uptr, MTAB *mptr,
     char *cptr, int32 flag)
 {
+t_stat r = SCPE_OK;
 //t_value val;
 
 if (mptr->disp)
-    mptr->disp (st, uptr, mptr->match, cptr? cptr: mptr->desc);
+    r = mptr->disp (st, uptr, mptr->match, cptr? cptr: mptr->desc);
 //else if ((mptr->mask & MTAB_XTD) && (mptr->mask & MTAB_VAL)) {
 //    REG *rptr = (REG *) mptr->desc;
 //    fprintf (st, "%s=", mptr->pstring);
@@ -3163,9 +3169,9 @@ if (mptr->disp)
 //        rptr->flags & REG_FMT);
 //    }
 else fputs (mptr->pstring, st);
-if (flag && !((mptr->mask & MTAB_XTD) && MODMASK(mptr,MTAB_NMO)))
+if ((r == SCPE_OK) && (flag && !((mptr->mask & MTAB_XTD) && MODMASK(mptr,MTAB_NMO))))
     fputc ('\n', st);
-return SCPE_OK;
+return r;
 }
 
 /* Show show commands */
@@ -6962,7 +6968,12 @@ if (sim_deb_switches & SWMASK ('A')) {
     sprintf(tim_t, "%" LL_FMT "d.%03d ", (long long)(time_now.tv_sec), (int)(time_now.tv_nsec/1000000));
     }
 if (sim_deb_switches & SWMASK ('P')) {
-    t_value val = get_rval (sim_deb_PC, 0);
+    t_value val;
+    
+    if (sim_vm_pc_value)
+        val = (*sim_vm_pc_value)();
+    else
+        val = get_rval (sim_deb_PC, 0);
     sprintf(pc_s, "-%s:", sim_deb_PC->name);
     sprint_val (&pc_s[strlen(pc_s)], val, sim_deb_PC->radix, sim_deb_PC->width, sim_deb_PC->flags & REG_FMT);
     }
