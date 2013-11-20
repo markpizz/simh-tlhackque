@@ -906,6 +906,8 @@ if (sim_switches & SWMASK ('C')) {                      /* create vhd disk & cop
         for (lba = 0; (lba < total_sectors) && (r == SCPE_OK); lba += sects) {
             if (!sim_quiet) {
                 printf ("%s%d: Copied %dMB.  %d%% complete.\r", sim_dname (dptr), (int)(uptr-dptr->units), (int)((((float)lba)*sector_size)/1000000), (int)((((float)lba)*100)/total_sectors));
+                if (sim_log)
+                    fprintf (sim_log, "%s%d: Copied %dMB.  %d%% complete.\r", sim_dname (dptr), (int)(uptr-dptr->units), (int)((((float)lba)*sector_size)/1000000), (int)((((float)lba)*100)/total_sectors));
                 }
             sects = sectors_per_buffer;
             if (lba + sects > total_sectors)
@@ -923,14 +925,14 @@ if (sim_switches & SWMASK ('C')) {                      /* create vhd disk & cop
                 }
             }
         if (!sim_quiet) {
-            if (r == SCPE_OK)
+            if (r == SCPE_OK) {
                 printf ("\n%s%d: Copied %dMB. Done.\n", sim_dname (dptr), (int)(uptr-dptr->units), (int)(((t_offset)lba*sector_size)/1000000));
-            else
-                printf ("\n%s%d: Error copying: %s.\n", sim_dname (dptr), (int)(uptr-dptr->units), sim_error_text (r));
-            if (sim_log) {
-                if (r == SCPE_OK)
+                if (sim_log)
                     fprintf (sim_log, "\n%s%d: Copied %dMB. Done.\n", sim_dname (dptr), (int)(uptr-dptr->units), (int)(((t_offset)lba*sector_size)/1000000));
-                else
+                }
+            else {
+                printf ("\n%s%d: Error copying: %s.\n", sim_dname (dptr), (int)(uptr-dptr->units), sim_error_text (r));
+                if (sim_log)
                     fprintf (sim_log, "\n%s%d: Error copying: %s.\n", sim_dname (dptr), (int)(uptr-dptr->units), sim_error_text (r));
                 }
             }
@@ -1126,7 +1128,7 @@ if (storage_function)
 
 if ((created) && (!copied)) {
     t_stat r = SCPE_OK;
-    uint8 *secbuf = calloc (1, ctx->sector_size);       /* alloc temp sector buf */
+    uint8 *secbuf = (uint8 *)calloc (1, ctx->sector_size);       /* alloc temp sector buf */
 
     /*
        On a newly created disk, we write a zero sector to the last and the

@@ -448,7 +448,7 @@ t_stat set_prompt (int32 flag, char *cptr);
 /* Global data */
 
 DEVICE *sim_dflt_dev = NULL;
-UNIT *sim_clock_queue = (UNIT *)QUEUE_LIST_END;
+UNIT *sim_clock_queue = QUEUE_LIST_END;
 int32 sim_interval = 0;
 int32 sim_switches = 0;
 FILE *sim_ofile = NULL;
@@ -804,7 +804,7 @@ static CTAB cmd_table[] = {
 static
 int setenv(const char *envname, const char *envval, int overwrite)
 {
-char *envstr = (char *) malloc(strlen(envname)+strlen(envval)+2);
+char *envstr = (char *)malloc(strlen(envname)+strlen(envval)+2);
 int r;
 
 sprintf(envstr, "%s=%s", envname, envval);
@@ -872,7 +872,7 @@ stop_cpu = 0;
 sim_interval = 0;
 sim_time = sim_rtime = 0;
 noqueue_time = 0;
-sim_clock_queue = (UNIT *) QUEUE_LIST_END;
+sim_clock_queue = QUEUE_LIST_END;
 sim_is_running = 0;
 sim_log = NULL;
 if (sim_emax <= 0)
@@ -1000,7 +1000,7 @@ if (gbuf[0] == '\0') {                                  /* Token started with qu
     if (cptr)
         *cptr = '\0';
     }
-sim_prompt = (char *) realloc (sim_prompt, strlen (gbuf) + 2);   /* nul terminator and trailing blank */
+sim_prompt = (char *)realloc (sim_prompt, strlen (gbuf) + 2);   /* nul terminator and trailing blank */
 sprintf (sim_prompt, "%s ", gbuf);
 return SCPE_OK;
 }
@@ -1080,7 +1080,7 @@ if (!found) {
         fprintf (st, "No register help is available for the %s device\n", dptr->name);
     }
 else {
-    namebuf = (char *) calloc (max_namelen + 1, sizeof (*namebuf));
+    namebuf = (char *)calloc (max_namelen + 1, sizeof (*namebuf));
     fprintf (st, "\nThe %s device implements these registers:\n\n", dptr->name);
     for (rptr = dptr->registers; rptr->name != NULL; rptr++) {
         if (rptr->flags & REG_HIDDEN)
@@ -1585,7 +1585,7 @@ if (flag >= 0) {                                        /* Only bump nesting fro
         sim_on_check[sim_do_depth] = sim_on_check[sim_do_depth-1]; /* inherit On mode */
         for (i=0; i<SCPE_MAX_ERR; i++) {                /* replicate any on commands */
             if (sim_on_actions[sim_do_depth-1][i]) {
-                sim_on_actions[sim_do_depth][i] = (char *) malloc(1+strlen(sim_on_actions[sim_do_depth-1][i]));
+                sim_on_actions[sim_do_depth][i] = (char *)malloc(1+strlen(sim_on_actions[sim_do_depth-1][i]));
                 if (NULL == sim_on_actions[sim_do_depth][i]) {
                     while (--i >= 0) {
                         free(sim_on_actions[sim_do_depth][i]);
@@ -1790,7 +1790,7 @@ char *ip = instr, *op, *ap, *oend, *istart, *tmpbuf;
 char rbuf[CBUFSIZE];
 int i;
 
-tmpbuf = (char *) malloc(instr_size);
+tmpbuf = (char *)malloc(instr_size);
 op = tmpbuf;
 oend = tmpbuf + instr_size - 2;
 while (isspace (*ip))                                   /* skip leading spaces */
@@ -2080,7 +2080,7 @@ if ((NULL == cptr) || ('\0' == *cptr)) {                /* Empty Action */
     sim_on_actions[sim_do_depth][cond] = NULL; }
 else {
     sim_on_actions[sim_do_depth][cond] = 
-        (char *) realloc(sim_on_actions[sim_do_depth][cond], 1+strlen(cptr));
+        (char *)realloc(sim_on_actions[sim_do_depth][cond], 1+strlen(cptr));
     strcpy(sim_on_actions[sim_do_depth][cond], cptr);
     }
 return SCPE_OK;
@@ -2120,13 +2120,13 @@ sim_on_check[sim_do_depth] = flag;
 if ((sim_do_depth != 0) && 
     (NULL == sim_on_actions[sim_do_depth][0])) {        /* default handler set? */
     sim_on_actions[sim_do_depth][0] =                   /* No, so make "RETURN" */
-        (char *) malloc(1+strlen("RETURN"));                     /* be the default action */
+        (char *)malloc(1+strlen("RETURN"));             /* be the default action */
     strcpy(sim_on_actions[sim_do_depth][0], "RETURN");
     }
 if ((sim_do_depth != 0) && 
     (NULL == sim_on_actions[sim_do_depth][SCPE_AFAIL])) {/* handler set for AFAIL? */
     sim_on_actions[sim_do_depth][SCPE_AFAIL] =          /* No, so make "RETURN" */
-        (char *) malloc(1+strlen("RETURN"));                     /* be the action */
+        (char *)malloc(1+strlen("RETURN"));             /* be the action */
     strcpy(sim_on_actions[sim_do_depth][SCPE_AFAIL], "RETURN");
     }
 return SCPE_OK;
@@ -4315,12 +4315,12 @@ for ( ;; ) {                                            /* device loop */
             if (flg & UNIT_RO)                          /* [V2.10+] saved flgs & RO? */
                 sim_switches |= SWMASK ('R');           /* RO attach */
             /* add unit to list of units to attach after registers are read */
-            attunits = (UNIT **) realloc (attunits, sizeof (*attunits)*(attcnt+1));
+            attunits = (UNIT **)realloc (attunits, sizeof (*attunits)*(attcnt+1));
             attunits[attcnt] = uptr;
-            attnames = (char **) realloc (attnames, sizeof (*attnames)*(attcnt+1));
-            attnames[attcnt] = (char *) malloc(1+strlen(buf));
+            attnames = (char **)realloc (attnames, sizeof (*attnames)*(attcnt+1));
+            attnames[attcnt] = (char *)malloc(1+strlen(buf));
             strcpy (attnames[attcnt], buf);
-            attswitches = (int32 *) realloc (attswitches, sizeof (*attswitches)*(attcnt+1));
+            attswitches = (int32 *)realloc (attswitches, sizeof (*attswitches)*(attcnt+1));
             attswitches[attcnt] = sim_switches;
             ++attcnt;
             }
@@ -4424,6 +4424,7 @@ for ( ;; ) {                                            /* device loop */
 for (j=0, r = SCPE_OK; j<attcnt; j++) {
     if (r == SCPE_OK) {
         struct stat fstat;
+        t_addr saved_pos;
 
         dptr = find_dev_from_unit (attunits[j]);
         if ((!force_restore) && 
@@ -4438,8 +4439,10 @@ for (j=0, r = SCPE_OK; j<attcnt; j++) {
                     }
                 continue;
                 }
+        saved_pos = attunits[j]->pos;
         sim_switches = attswitches[j];
         r = scp_attach_unit (dptr, attunits[j], attnames[j]);/* reattach unit */
+        attunits[j]->pos = saved_pos;
         if (r != SCPE_OK) {
             printf ("Error Attaching %s to %s\n", sim_dname (dptr), attnames[j]);
             if (sim_log)
@@ -5734,7 +5737,7 @@ for (i = 0; i < sim_internal_device_count; i++)
     if (sim_internal_devices[i] == dptr)
         return SCPE_OK;
 ++sim_internal_device_count;
-sim_internal_devices = (DEVICE **) realloc(sim_internal_devices, (sim_internal_device_count+1)*sizeof(*sim_internal_devices));
+sim_internal_devices = (DEVICE **)realloc(sim_internal_devices, (sim_internal_device_count+1)*sizeof(*sim_internal_devices));
 sim_internal_devices[sim_internal_device_count-1] = dptr;
 sim_internal_devices[sim_internal_device_count] = NULL;
 return SCPE_OK;
@@ -6454,7 +6457,7 @@ sim_debug (SIM_DBG_EVENT, sim_dflt_dev, "Canceling Event for %s\n", sim_uname(up
 UPDATE_SIM_TIME;                                        /* update sim time */
 if (!sim_is_active (uptr))
     return SCPE_OK;
-nptr = (UNIT *) QUEUE_LIST_END;
+nptr = QUEUE_LIST_END;
 
 if (sim_clock_queue == uptr) {
     nptr = sim_clock_queue = uptr->next;
@@ -7126,7 +7129,7 @@ if (sim_deb && (dptr->dctrl & dbits)) {
 
 /* Set unterminated flag for next time */
 
-    debug_unterm = (len && (buf[len-1]=='\n')) ? 0 : 1;
+    debug_unterm = len ? (((buf[len-1]=='\n')) ? 0 : 1) : debug_unterm;
     if (buf != stackbuf)
         free (buf);
     }
