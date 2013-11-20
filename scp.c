@@ -5689,6 +5689,7 @@ DEVICE *dptr;
 
 if (uptr == NULL)                                       /* arg error? */
     return NULL;
+*uptr = NULL;
 if ((dptr = find_dev (cptr))) {                         /* exact match? */
     if (qdisable (dptr)) {                              /* disabled? */
         *uptr = NULL;
@@ -5798,6 +5799,7 @@ int32 i;
 DEVICE *dptr;
 REG *rptr, *srptr = NULL;
 
+*gdptr = NULL;
 for (i = 0; (dptr = sim_devices[i]) != 0; i++) {        /* all dev */
     if (dptr->flags & DEV_DIS)                          /* skip disabled */
         continue;
@@ -6020,7 +6022,7 @@ const char logstr[] = "|&^", cmpstr[] = "=!><";
 logval = cmpval = 0;
 if (*cptr == 0)                                         /* check for clause */
     return NULL;
-for (logop = cmpop = -1; (c = *cptr++); ) {               /* loop thru clauses */
+for (logop = cmpop = -1; (c = *cptr++); ) {             /* loop thru clauses */
     if ((sptr = strchr (logstr, c))) {                  /* check for mask */
         logop = (int32)(sptr - logstr);
         logval = strtotv (cptr, &tptr, radix);
