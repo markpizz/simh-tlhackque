@@ -155,21 +155,19 @@ int32 i;
 for (i=0; (sock_errors[i].text) && (sock_errors[i].value != err); i++)
     ;
 
-if (sock_errors[i].value == err)
+if (sock_errors[i].value == err) {
     printf ("Sockets: %s error %d - %s\n", emsg, err, sock_errors[i].text);
-else
+    if (sim_log)
+        fprintf (sim_log, "Sockets: %s error %d - %s\n", emsg, err, sock_errors[i].text);
+    }
+else {
 #if defined(_WIN32)
     printf ("Sockets: %s error %d\n", emsg, err);
-#else
-    printf ("Sockets: %s error %d - %s\n", emsg, err, strerror(err));
-#endif
-if (sim_log) {
-    if (sock_errors[i].value == err)
-        fprintf (sim_log, "Sockets: %s error %d - %s\n", emsg, err, sock_errors[i].text);
-    else
-#if defined(_WIN32)
+    if (sim_log)
         fprintf (sim_log, "Sockets: %s error %d\n", emsg, err);
 #else
+    printf ("Sockets: %s error %d - %s\n", emsg, err, strerror(err));
+    if (sim_log)
         fprintf (sim_log, "Sockets: %s error %d - %s\n", emsg, err, strerror(err));
 #endif
     }
@@ -330,7 +328,7 @@ else {
     ips = fixed;
     }
 for (ip=ips; *ip != NULL; ++ip) {
-    ai = calloc(1, sizeof(*ai));
+    ai = (struct addrinfo *)calloc(1, sizeof(*ai));
     if (NULL == ai) {
         s_freeaddrinfo(result);
         return EAI_MEMORY;
@@ -342,7 +340,7 @@ for (ip=ips; *ip != NULL; ++ip) {
     ai->ai_addrlen = sizeof(struct sockaddr_in);
     ai->ai_canonname = NULL;
     ai->ai_next = NULL;
-    ai->ai_addr = calloc(1, sizeof(struct sockaddr_in));
+    ai->ai_addr = (struct sockaddr *)calloc(1, sizeof(struct sockaddr_in));
     if (NULL == ai->ai_addr) {
         free(ai);
         s_freeaddrinfo(result);
@@ -359,7 +357,7 @@ for (ip=ips; *ip != NULL; ++ip) {
     lai = ai;
     }
 if (cname) {
-    result->ai_canonname = calloc(1, strlen(cname)+1);
+    result->ai_canonname = (char *)calloc(1, strlen(cname)+1);
     if (NULL == result->ai_canonname) {
         s_freeaddrinfo(result);
         return EAI_MEMORY;
@@ -893,7 +891,7 @@ if (newsock == INVALID_SOCKET) {                        /* error? */
     return INVALID_SOCKET;
     }
 if (connectaddr != NULL) {
-    *connectaddr = calloc(1, NI_MAXHOST+1);
+    *connectaddr = (char *)calloc(1, NI_MAXHOST+1);
 #ifdef AF_INET6
     p_getnameinfo((struct sockaddr *)&clientname, size, *connectaddr, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
     if (0 == memcmp("::ffff:", *connectaddr, 7))        /* is this a IPv4-mapped IPv6 address? */
@@ -1001,9 +999,9 @@ char hostbuf[NI_MAXHOST+1];
 char portbuf[NI_MAXSERV+1];
 
 if (socknamebuf)
-    *socknamebuf = calloc(1, NI_MAXHOST+NI_MAXSERV+4);
+    *socknamebuf = (char *)calloc(1, NI_MAXHOST+NI_MAXSERV+4);
 if (peernamebuf)
-    *peernamebuf = calloc(1, NI_MAXHOST+NI_MAXSERV+4);
+    *peernamebuf = (char *)calloc(1, NI_MAXHOST+NI_MAXSERV+4);
 getsockname (sock, (struct sockaddr *)&sockname, &socknamesize);
 getpeername (sock, (struct sockaddr *)&peername, &peernamesize);
 if (socknamebuf != NULL) {

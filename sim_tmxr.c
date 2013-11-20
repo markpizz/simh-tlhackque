@@ -2563,9 +2563,9 @@ pthread_setschedparam (pthread_self(), sched_policy, &sched_priority);
 
 sim_debug (TMXR_DBG_ASY, dptr, "_tmxr_poll() - starting\n");
 
-units = calloc(FD_SETSIZE, sizeof(*units));
-activated = calloc(FD_SETSIZE, sizeof(*activated));
-sockets = calloc(FD_SETSIZE, sizeof(*sockets));
+units = (UNIT **)calloc(FD_SETSIZE, sizeof(*units));
+activated = (UNIT **)calloc(FD_SETSIZE, sizeof(*activated));
+sockets = (SOCKET *)calloc(FD_SETSIZE, sizeof(*sockets));
 timeout_usec = 1000000;
 pthread_mutex_lock (&sim_tmxr_poll_lock);
 pthread_cond_signal (&sim_tmxr_startup_cond);   /* Signal we're ready to go */
@@ -2782,9 +2782,9 @@ pthread_setschedparam (pthread_self(), sched_policy, &sched_priority);
 
 sim_debug (TMXR_DBG_ASY, dptr, "_tmxr_serial_poll() - starting\n");
 
-units = calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*units));
-activated = calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*activated));
-serports = calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*serports));
+units = (UNIT **)calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*units));
+activated = (UNIT **)calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*activated));
+serports = (SERHANDLE *)calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*serports));
 timeout_usec = 1000000;
 pthread_mutex_lock (&sim_tmxr_poll_lock);
 pthread_cond_signal (&sim_tmxr_serial_startup_cond);   /* Signal we're ready to go */
@@ -2998,8 +2998,8 @@ pthread_setschedparam (pthread_self(), sched_policy, &sched_priority);
 
 sim_debug (TMXR_DBG_ASY, dptr, "_tmxr_serial_poll() - starting\n");
 
-lines = calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*lines));
-threads = calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*threads));
+lines = (TMLN **)calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*lines));
+threads = (pthread_t *)calloc(MAXIMUM_WAIT_OBJECTS, sizeof(*threads));
 pthread_mutex_lock (&sim_tmxr_poll_lock);
 pthread_cond_signal (&sim_tmxr_serial_startup_cond);   /* Signal we're ready to go */
 pthread_cond_init (&sim_serial_line_startup_cond, NULL);
