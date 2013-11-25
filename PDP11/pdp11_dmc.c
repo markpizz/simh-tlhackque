@@ -1561,8 +1561,9 @@ void dmc_setinint(CTLR *controller)
 {
 if (!dmc_is_iei_set(controller))
     return;
-if (!controller->in_int)
+if (!controller->in_int) {
     sim_debug(DBG_INT, controller->device, "SET_INT(RX:%d)\n", controller->index);
+    }
 controller->in_int = 1;
 dmc_ini_summary |= (1u << controller->index);
 SET_INT(DMCRX);
@@ -1571,8 +1572,9 @@ SET_INT(DMCRX);
 void dmc_clrinint(CTLR *controller)
 {
 controller->in_int = 0;
-if (dmc_ini_summary & (1u << controller->index))
+if (dmc_ini_summary & (1u << controller->index)) {
     sim_debug(DBG_INT, controller->device, "CLR_INT(RX:%d)\n", controller->index);
+    }
 dmc_ini_summary &= ~(1u << controller->index);
 if (!dmc_ini_summary)
     CLR_INT(DMCRX);
@@ -1584,8 +1586,9 @@ void dmc_setoutint(CTLR *controller)
 {
 if (!dmc_is_ieo_set(controller))
     return;
-if (!controller->out_int)
+if (!controller->out_int) {
     sim_debug(DBG_INT, controller->device, "SET_INT(TX:%d)\n", controller->index);
+    }
 controller->out_int = 1;
 dmc_outi_summary |= (1u << controller->index);
 SET_INT(DMCTX);
@@ -1594,8 +1597,9 @@ SET_INT(DMCTX);
 void dmc_clroutint(CTLR *controller)
 {
 controller->out_int = 0;
-if (dmc_outi_summary & (1u << controller->index))
+if (dmc_outi_summary & (1u << controller->index)) {
     sim_debug(DBG_INT, controller->device, "CLR_INT(TX:%d)\n", controller->index);
+    }
 dmc_outi_summary &= ~(1u << controller->index);
 if (!dmc_outi_summary)
     CLR_INT(DMCTX);
@@ -2376,6 +2380,8 @@ switch (head->type) {
     case TransmitData:
         sim_debug(DBG_INF, controller->device, "Starting data output transfer for transmit, address=0x%08x, count=%d\n", head->address, count);
         dmc_set_type_output(controller, DMC_C_TYPE_XBACC);
+        break;
+    default:
         break;
     }
 dmc_set_addr(controller, head->address);

@@ -1882,9 +1882,10 @@ static void kmc_ctrlIn (int32 k, dupstate *d, int line) {
             sim_debug (DF_CMD, &kmc_dev, "enabled for %s in %s duplex", 
                       (sel6 & SEL6_CI_DDCMP)? "DDCMP":"Bit-stuffing",
                       (sel6 & SEL6_CI_HDX)? "half" : "full");
-            if (sel6 & SEL6_CI_ENASS)
+            if (sel6 & SEL6_CI_ENASS) {
                 sim_debug (DF_CMD, &kmc_dev, " SS:%u",
                           (sel6 & SEL6_CI_SADDR), line);
+            }
             sim_debug (DF_CMD, &kmc_dev, "\n");
         }
     }
@@ -2654,14 +2655,18 @@ static t_bool kmc_printBDL(int32 k, uint32 dbits, DEVICE *dev, uint8 line, int32
         sim_debug (dbits, dev, "  bd[0] = %06o 0x%04X Adr=%06o\n", bd[0], bd[0], dp);
         sim_debug (dbits, dev, "  bd[1] = %06o 0x%04X Len=%u.\n", bd[1], bd[1], bd[1]);
         sim_debug (dbits, dev, "  bd[2] = %06o 0x%04X", bd[2], bd[2]);
-        if (bd[2] & BDL_LDS)
+        if (bd[2] & BDL_LDS) {
             sim_debug (dbits, dev, " Last");
-        if (bd[2] & BDL_RSY)
+        }
+        if (bd[2] & BDL_RSY) {
             sim_debug (dbits, dev, " Rsync");
-        if (bd[2] & BDL_EOM)
+        }
+        if (bd[2] & BDL_EOM) {
             sim_debug (dbits, dev, " XEOM");
-        if (bd[2] & BDL_SOM)
+        }
+        if (bd[2] & BDL_SOM) {
             sim_debug (dbits, dev, " XSOM");
+        }
         sim_debug (dbits, dev, "\n");
 
         if (prbuf) {

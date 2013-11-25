@@ -1002,8 +1002,9 @@ if ((tmxr_tpbusyln (lp) || dup_xmtpkbytes[dup]) && (lp->xmte || (!lp->conn))) {
         }
     else {
         if (!lp->conn) {
-            if (dup_xmtpkoffset[dup])
+            if (dup_xmtpkoffset[dup]) {
                 sim_debug(DBG_PKT, DUPDPTR, "dup_svc(dup=%d) - %d byte packet transmission with link down (dropped)\n", dup, dup_xmtpkoffset[dup]);
+                }
             dup_get_modem (dup);
             }
         else {
