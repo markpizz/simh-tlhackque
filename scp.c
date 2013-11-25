@@ -1055,7 +1055,7 @@ REG *rptr, *trptr;
 t_bool found = FALSE;
 t_bool all_unique = TRUE;
 size_t max_namelen = 0;
-DEVICE *tdptr = NULL;
+DEVICE *tdptr;
 char *tptr;
 char *namebuf;
 char rangebuf[32];
@@ -1327,13 +1327,15 @@ char gbuf[CBUFSIZE];
 CTAB *cmdp;
 
 GET_SWITCHES (cptr);
+if (sim_switches & SWMASK ('F'))
+    flag = flag | SCP_HELP_FLAT;
 if (*cptr) {
     cptr = get_glyph (cptr, gbuf, 0);
     if ((cmdp = find_cmd (gbuf))) {
         if (*cptr) {
             if ((cmdp->action == &set_cmd) || (cmdp->action == &show_cmd)) {
                 DEVICE *dptr;
-                UNIT *uptr = NULL;
+                UNIT *uptr;
                 t_stat r;
 
                 cptr = get_glyph (cptr, gbuf, 0);
@@ -1424,7 +1426,7 @@ if (*cptr) {
         }
     else { 
         DEVICE *dptr;
-        UNIT *uptr = NULL;
+        UNIT *uptr;
         t_stat r;
 
         dptr = find_unit (gbuf, &uptr);
@@ -1440,7 +1442,7 @@ if (*cptr) {
             }
         r = help_dev_help (stdout, dptr, uptr, flag, cptr);
         if (sim_log)
-            help_dev_help (sim_log, dptr, uptr, flag, cptr);
+            help_dev_help (sim_log, dptr, uptr, flag | SCP_HELP_FLAT, cptr);
         return r;
         }
     }
@@ -2252,7 +2254,7 @@ uint32 lvl = 0;
 t_stat r;
 char gbuf[CBUFSIZE], *cvptr, *svptr;
 DEVICE *dptr;
-UNIT *uptr = NULL;
+UNIT *uptr;
 MTAB *mptr;
 CTAB *gcmdp;
 C1TAB *ctbr = NULL, *glbr;
@@ -3676,7 +3678,7 @@ t_stat attach_cmd (int32 flag, char *cptr)
 {
 char gbuf[CBUFSIZE];
 DEVICE *dptr;
-UNIT *uptr = NULL;
+UNIT *uptr;
 t_stat r;
 
 GET_SWITCHES (cptr);                                    /* get switches */
@@ -3828,7 +3830,7 @@ t_stat detach_cmd (int32 flag, char *cptr)
 {
 char gbuf[CBUFSIZE];
 DEVICE *dptr;
-UNIT *uptr = NULL;
+UNIT *uptr;
 
 GET_SWITCHES (cptr);                                    /* get switches */
 if (*cptr == 0)                                         /* must be more */
@@ -5692,10 +5694,8 @@ if (uptr == NULL)                                       /* arg error? */
     return NULL;
 *uptr = NULL;
 if ((dptr = find_dev (cptr))) {                         /* exact match? */
-    if (qdisable (dptr)) {                              /* disabled? */
-        *uptr = NULL;
+    if (qdisable (dptr))                                /* disabled? */
         return NULL;
-        }
     *uptr = dptr->units;                                /* unit 0 */
     return dptr;
     }
