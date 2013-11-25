@@ -1442,6 +1442,7 @@ const char helpString[] =
     " A SET TYPE command should be entered before the device is attached to a\n"
     " listening port.\n"
 #endif
+     /****************************************************************************/
     "2 Attach\n"
     " The device must be attached to a receive port, use the ATTACH command\n"
     " specifying the receive port number.\n"
@@ -1449,6 +1450,12 @@ const char helpString[] =
     "+sim> ATTACH %U port\n"
     "\n"
     " The Peer host:port value must be specified before the attach command.\n"
+    " The default connection uses TCP transport between the local system and\n"
+    " the peer.  Alternatively, UDP can be used by specifying UDP on the\n"
+    " ATTACH command:\n"
+    "\n"
+    "+sim> ATTACH %U port,UDP\n"
+    "\n"
     "2 Examples\n"
     " To configure two simulators to talk to each other use the following\n"
     " example:\n"
@@ -1543,7 +1550,7 @@ const char helpString[] =
 " The communication line performs input and output through a TCP session\n"
 " connected to a user-specified port.  The ATTACH command specifies the\n"
 " listening port to be used when the incoming connection is established:\n\n"
-"+sim> ATTACH %U {interface:}port        set up listening port\n\n"
+"+sim> ATTACH %U {interface:}port{,UDP}     set up listening port\n\n"
 " where port is a decimal number between 1 and 65535 that is not being\n"
 " used for other TCP/IP activities.\n\n";
 return scp_help (st, dptr, uptr, flag, helpString, cptr);

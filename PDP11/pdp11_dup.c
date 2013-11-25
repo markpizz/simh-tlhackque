@@ -1442,13 +1442,14 @@ static t_stat dup_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, c
 fprintf (st, "The communication line performs input and output through a TCP session\n");
 fprintf (st, "connected to a user-specified port.  The ATTACH command specifies the\n");
 fprintf (st, "port to be used as well as the peer address:\n\n");
-fprintf (st, "   sim> ATTACH %sn {interface:}port,Connect=peerhost:port\n\n", dptr->name);
+fprintf (st, "   sim> ATTACH %sn {interface:}port{,UDP},Connect=peerhost:port\n\n", dptr->name);
 fprintf (st, "where port is a decimal number between 1 and 65535 that is not being used for\n");
 fprintf (st, "other TCP/IP activities.\n\n");
 fprintf (st, "Specifying symmetric attach configuration (with both a listen port and\n");
 fprintf (st, "a peer address) will cause the side receiving an incoming\n");
 fprintf (st, "connection to validate that the connection actually comes from the\n");
 fprintf (st, "connecction destination system.\n\n");
+fprintf (st, "A symmetric attach configuration is required when using UDP packet transport.\n\n");
 return SCPE_OK;
 }
 
