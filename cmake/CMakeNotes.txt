@@ -1,0 +1,142 @@
+When I first looked at your cmake stuff I wanted to run an end to end 
+build example so I could observe it before making comments about the 
+whole process.  That wasn't possible until you updated the 
+README-cmake.md to provide the Linux steps that I finally was able to 
+see building and look at the results.
+
+I was concerned about the scattering of file changes throughout the 
+simh source tree that your patch provided.  My preference would be 
+for cmake support to be contained in a dedicated cmake directory.  
+Looking through what you had, and the powerful capabilities of cmake, 
+it was actually easy enough to move each of the directory specific 
+CMakeLists.txt files into a set of related sub directories in the 
+cmake directory reflecting the simh source tree, and to move the 
+top level CMakeLists.txt file into the cmake directory.  Likewise, 
+I merely moved your dep-patches directory into the cmake directory.  
+
+That solved concern #1.  
+
+Concern #2 was the fact that the build component information for each 
+simulator was now logically replicated in multiple places and changes 
+now have to be made in more than one place as simulators are added 
+and/or evolve.  Multiple places being the primary makefile and any 
+related CMakeLists.txt files.  
+
+Clearly, you spent a good amount of time tediously going through the 
+makefile creating each simulator's CMakeLists.txt file.  
+These mostly worked (I7080 had the INT64 option when it shouldn't 
+have), and it seems that you only made CMakeFiles.txt for simulators 
+listed in the all makefile target.  These inconsistencies are just a 
+case in point about maintaining the same logical information in more 
+than one place.  To address this problem I wrote a program to digest 
+the existing makefile and emit the correct cmake add_simulator 
+configuration details for all of the simulators in the makefile.
+This removes the duplicate configuration management and removes all 
+of the per simulator manually generated CMakeLists.txt files.
+
+Since I was only concerned about simulator building and not anything 
+to do with your efforts to gather dependent libraries, I only tested 
+this on Linux (Ubuntu) and Windows Subsystem for Linux (Ubuntu) with 
+all of the dependent packages installed with "apt install ...".
+
+I also changed the README-cmake.md file slightly to suggest that 
+build directories be sub directories of the BIN directory so that all 
+generated content be sanely left in BIN and thus implicitly excluded 
+in the .gitignore and be consistent with where things land with the 
+other build activities.
+
+There are several issues currently not addressed by this cmake build
+environment:
+
+Annoyances:
+
+1) Missing network transport features:
+	a) TAP - This has different include dependencies on Linux vs OS/X 
+	         but no library dependencies.
+	b) VDE - This has external package support on Linux and OS/X.
+
+   Slirp support should not be an option.  Like basic UDP, it has no 
+   external dependencies.  If network capabilities are added, then 
+   slirp should always be there.  The only reason the makefile 
+   specifically tests for the existence of the slirp directory is 
+   due to the fact that one simulator developer didn't initially
+   carry that directory in their copied (not cloned) personal repo's.
+   Once they added network support to their simulators they realized
+   the need for the slirp pieces.  I fixed this already.
+
+   Since you're gathering all the dependencies (or leveraging what is 
+   already installed), PCAP should always be included in set of network 
+   transports provided.
+
+2) There is no current provision for dynamically loading shared 
+   libraries or dlls (HAVE_DLOPEN).  There should never be a need to 
+   build libpcap (or winpcap or npcap) from source since the only 
+   requirement to have pcap support available is to have pcap.h be 
+   included so the library APIs are defined, and thus can be dynamically 
+   loaded if the host system has the functionality (dll or shared object)
+   installed.  USE_SHARED controls dynamically loading of these network 
+   components.  This will thus leverage the latest package installed on 
+   the local system.  The pcap.h APIs used by simh have been stable for 
+   more than 10 years, so newer functionality which may be mentioned
+   in newer versions is not a factor for functionality needed by 
+   simulated network devices.
+   
+3) As a related issue (to HAVE_DLOPEN), command line editing is 
+   dynamically provided by loading readline on the fly.  Folks can 
+   live without this, but I'm sure they would prefer not.
+   
+4) Since you're gathering all the dependencies (or leveraging what is 
+   already installed), what value comes from making VIDEO and/or 
+   DISPLAY functionality not being available in all simulators that
+   may be able to leverage them.  Why are you specifically providing 
+   a way to disable them?
+
+5) Each of:
+
+     HAVE_SEMAPHORE 
+     HAVE_SYS_IOCTL 
+     HAVE_LINUX_CDROM
+     HAVE_UTIME
+     HAVE_SHM_OPEN
+     HAVE_GLOB or HAVE_FNMATCH 
+
+   should be set according to the capabilities available on non Windows 
+   hosts.
+
+You originally didn't provide a CMakeLists.txt (add_simulator) for the
+BESM6 simulator, probably due to it accidentally not being mentioned 
+in the 'all' target of the base makefile.  The BESM6 simulator is the 
+only simulator that uses SDL2_ttf functionality and it's related 
+dependencies.  This simulator currently builds without the ttf 
+functionality.  The SDL and TTF results are visible by entering 
+SET CPU PANEL at the sim> prompt.  A related complexity for this 
+simulator is the specific font selection which needs to be somehow 
+worked out in cmake.
+
+The simh makefile's provisions for building without ASYCH_IO is a 
+vestige of the very earliest days of Asynch I/O support in simh some
+9 years ago.  It was only provided to allow explicit disabling of any 
+asynch behaviors to avoid any blame that may be cast on the asynch 
+code.  Asynch I/O has proven to be very reliable and the need to 
+depend on an external build option to disable this was supplanted by 
+the addition of the SET NOASYNC and SET ASYNCH commands.
+
+The option to build simulators without network support really 
+shouldn't be there.  It was necessary 16 years ago when what we needed 
+from pcap was still evolving on many platforms, but that has long 
+stabilized.  
+All interesting host platforms have easy access to the required 
+functionality built into the kernels on Linux and OS/X, accessible via 
+the library, and on Windows via WinPcap or Npcap.  
+
+Sadly, the folks who packaged simh for Linux built simulators without 
+network support.  Since the vast majority of users use vax or pdp11 
+simulators, everyone had to pick up source and build for themselves to 
+get useful things working.  Maybe that was good for traffic to 
+github.com/simh/simh, but it was less than useful for the users.
+
+If you want to clean up the above mention issues and subsequently 
+finish and test the dependent library stuff that started you down this 
+road, we can add the results to the simh master branch.
+
+- Mark
