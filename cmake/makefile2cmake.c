@@ -533,6 +533,10 @@ main (int argc, char **argv)
         const char *cptr = get_buf_token (line, tok1, sizeof (tok1));
         if (0 == strcmp ("# Common Libraries", line))
             skipping = 0;
+        if (0 == memcmp ("#cmake-insert:", line, 14)) {
+            fprintf (fout, "%s\n", &line[14]);
+            continue;
+        }
         if (skipping)   /* Skip until we reach the interesting stuff */
             continue;
         if (*line == '\0')
@@ -621,6 +625,8 @@ main (int argc, char **argv)
                         MWriteSetSymbol (fs, names[i]);
                 emit_list (NULL, NULL, &names, &name_count);
                 if (0 == strcmp (tok1, "${CC}")) {
+                    int use_int64 = 0, use_addr64 = 0, use_sim_video = 0;
+
                     cc_processed = 1;
                     Dprintf ("Found Target: %s, Dependencies: %s\nBuild Step: %s\n", tok1, dptr, line);
                     Mprintf (fm, "\nadd_simulator(%s", simulator);
@@ -652,8 +658,17 @@ main (int argc, char **argv)
                         symbol = get_idname (tok1);
                         vptr = lookup_symbol (symbol);
                         free (symbol);
+                        if (0 == strcmp (tok1 + strlen (tok1) - 11, "_PANEL_OPT}")) {
+                            char *tmp = (char *)malloc (strlen (tok1) + strlen ("-DFONTFILE="));
+
+                            remove_string_from_list (&defines, &define_count, "FONTFILE=");
+                            sprintf (tmp, "FONTFILE=%*.*s_FONT}", (int)(strlen (tok1) - 11), (int)(strlen (tok1) - 11), tok1);
+                            add_string_to_list (&options, &option_count, "VIDEO");
+                            add_string_to_list (&defines, &define_count, tmp);
+                            free (tmp);
+                            continue;
+                        }
                         if (0 == strcmp (tok1 + strlen (tok1) - 5, "_OPT}")) {
-                            int use_int64, use_addr64, use_sim_video;
                             char *expanded_opt = expand_symbols (tok1, NULL, 0);
 
                             vptr = expanded_opt;
@@ -675,20 +690,34 @@ main (int argc, char **argv)
                                 }
                             }
                             free (expanded_opt);
-                            emit_list (fm, "INCLUDES", &includes, &include_count);
-                            use_int64 = remove_string_from_list (&defines, &define_count, "USE_INT64");
-                            use_addr64 = remove_string_from_list (&defines, &define_count, "USE_ADDR64");
-                            use_sim_video = remove_string_from_list (&defines, &define_count, "USE_SIM_VIDEO");
-
-                            if ((use_int64 == 1) && (use_addr64 == 1))
-                                add_string_to_list (&options, &option_count, "FULL64");
-                            if ((use_int64 == 1) && (use_addr64 == 0))
-                                add_string_to_list (&options, &option_count, "INT64");
-                            if (use_sim_video)
-                                add_string_to_list (&options, &option_count, "VIDEO");
-                            emit_list (fm, "DEFINES", &defines, &define_count);
+                            continue;
                         }
                     }
+                    emit_list (fm, "INCLUDES", &includes, &include_count);
+                    use_int64 = remove_string_from_list (&defines, &define_count, "USE_INT64");
+                    use_addr64 = remove_string_from_list (&defines, &define_count, "USE_ADDR64");
+                    use_sim_video = remove_string_from_list (&defines, &define_count, "USE_SIM_VIDEO");
+
+                    if ((use_int64 == 1) && (use_addr64 == 1))
+                        add_string_to_list (&options, &option_count, "FULL64");
+                    if ((use_int64 == 1) && (use_addr64 == 0))
+                        add_string_to_list (&options, &option_count, "INT64");
+                    if (use_sim_video)
+                        add_string_to_list (&options, &option_count, "VIDEO");
+                    emit_list (fm, "DEFINES", &defines, &define_count);
+                    continue;
+                }
+                if (0 == strcmp (tok1, "copy")) {
+                    cptr = get_buf_token (cptr, tok1, sizeof (tok1)); /* copy source */
+                    cptr = get_buf_token (cptr, tok1, sizeof (tok1)); /* copy destination */
+                    if ((0 != memcmp (tok1, "${@D}\\", 6)) ||
+                        (0 != strcmp (tok1 + strlen (tok1) - 6, "${EXE}"))) {
+                        Dprintf ("Line %d: Unexpected copy target: %s\n", line_number, tok1);
+                        continue;
+                    }
+                    tok1[strlen (tok1) - 6] = '\0';
+                    memcpy (tok1, "COPY  ", 6);
+                    add_string_to_list (&options, &option_count, tok1);
                     continue;
                 }
                 if (tok1[0] == '\0') { /* Empty line ends target rules */

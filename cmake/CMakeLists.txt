@@ -41,6 +41,8 @@ list(APPEND CMAKE_INCLUDE_PATH ${SIMH_INCLUDE_PATH_LIST})
 
 include(CheckCSourceCompiles)
 include(CheckCCompilerFlag)
+include(CheckIncludeFile)
+include(CheckSymbolExists)
 include (ExternalProject)
 
 ## pkg-config is our fallback when find_package() can't find a package.
@@ -141,10 +143,6 @@ elseif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     #
     # add_compile_options("-m32")
     # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -m32")
-    #
-    # These are good for linux, but don't address other *nix platforms
-    add_definitions(-DHAVE_DLOPEN=so)
-    link_libraries("dl")
 endif (WIN32)
 
 # Tweak GNU's flags
@@ -181,7 +179,7 @@ set(VIDEO_PKG_STATUS "unknown")
 set(NETWORK_PKG_STATUS "unknown")
 
 include(pthreads-dep)
-
+include(os-features)
 include(zlib-dep)
 include(pcre-dep)
 
@@ -200,6 +198,17 @@ else (WITH_NETWORK)
     set(NETWORK_PKG_STATUS "skipped")
     set(BUILD_WITH_NETWORK FALSE)
 endif (WITH_NETWORK)
+
+get_target_property(OS_FEATURE_DEFS os_features INTERFACE_COMPILE_DEFINITIONS)
+string(REPLACE ";" ", " OS_FEATURE_DEFS "${OS_FEATURE_DEFS}")
+if (NOT OS_FEATURE_DEFS)
+  set(OS_FEATURE_DEFS "no operating system-specific features")
+endif (NOT OS_FEATURE_DEFS)
+get_target_property(OS_FEATURE_LIBS os_features INTERFACE_LINK_LIBRARIES)
+string(REPLACE ";" ", " OS_FEATURE_LIBS "${OS_FEATURE_LIBS}")
+if (NOT OS_FEATURE_LIBS)
+  set(OS_FEATURE_LIBS "no operating system-specific libraries")
+endif (NOT OS_FEATURE_LIBS)
 
 set(CPPCHECK_STATUS "disabled.")
 
@@ -235,6 +244,8 @@ message(STATUS "  zlib ............................ ${ZLIB_PKG_STATUS}")
 message(STATUS "  Perl-Compatible RegExps.......... ${PCRE_PKG_STATUS}")
 message(STATUS "  PNG, Freetype, SDL2, SDL2_ttf ... ${VIDEO_PKG_STATUS}")
 message(STATUS "  Packet Capture (PCAP) ........... ${NETWORK_PKG_STATUS}")
+message(STATUS "  OS Feature definitions .......... ${OS_FEATURE_DEFS}")
+message(STATUS "  OS Feature libraries ............ ${OS_FEATURE_LIBS}")
 message(STATUS "")
 message(STATUS "Build options:")
 message(STATUS "  Video/graphics support ....... ${BUILD_WITH_VIDEO}")

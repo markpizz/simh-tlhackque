@@ -136,7 +136,7 @@ if ($tmp_path -ne ${env:PATH})
 }
 #
 ## Setup:
-$buildDir  = "BIN/cmake-vs"
+$buildDir  = [System.IO.Path]::GetFullPath($scriptPath + "\..\BIN\cmake-vs")
 $generator = "!!invalid!!"
 $archFlag  = @()
 
@@ -220,8 +220,7 @@ if ($flavor -eq "mingw")
   ## it'll overwhelm the machine.
   $buildSpecificArgs += @("-j",  "8")
 }
-
-Push-Location ${buildDir}
+Push-Location $buildDir
 try
 {
     "** ${scriptName}: Configuring and generating"
@@ -236,7 +235,7 @@ try
       ##
       ## Note: We're in the build directory already so normalize it.
       $currentPath = $env:PATH
-      $buildStageBin = [System.IO.Path]::GetFullPath("${scriptPath}\..\${buildDir}\build-stage\bin")
+      $buildStageBin = [System.IO.Path]::GetFullPath("${buildDir}\build-stage\bin")
       $env:PATH =  "${buildStageBin};${env:PATH}"
       & $ctestCmd @("-C", $config)
       $env:PATH = $currentPath

@@ -66,12 +66,6 @@ set(SIM_SOURCES
 
 include(CheckIncludeFiles)
 
-check_include_files (glob.h                     HAVE_GLOB)
-check_include_files (fnmatch.h                  HAVE_FNMATCH)
-check_include_files (utime.h                    HAVE_UTIME)
-check_include_files (linux/cdrom.h              HAVE_LINUX_CDROM)
-check_include_files (sys/ioctl.h                HAVE_SYS_IOCTL)
-
 function(build_simcore _targ)
     cmake_parse_arguments(SIMH "VIDEO;INT64;ADDR64" "" "" ${ARGN})
 
@@ -91,22 +85,6 @@ function(build_simcore _targ)
     endif (SIMH_ADDR64)
 
     target_link_libraries(${_targ} PUBLIC regexp_lib thread_lib)
-
-    if (HAVE_GLOB)
-        target_compile_definitions(${_targ} PRIVATE HAVE_GLOB)
-    endif (HAVE_GLOB)
-    if (HAVE_FNMATCH)
-        target_compile_definitions(${_targ} PRIVATE HAVE_FNMATCH)
-    endif (HAVE_FNMATCH)
-    if (HAVE_UTIME)
-        target_compile_definitions(${_targ} PRIVATE HAVE_UTIME)
-    endif (HAVE_UTIME)
-    if (HAVE_LINUX_CDROM)
-        target_compile_definitions(${_targ} PRIVATE HAVE_LINUX_CDROM)
-    endif (HAVE_LINUX_CDROM)
-    if (HAVE_SYS_IOCTL)
-        target_compile_definitions(${_targ} PRIVATE HAVE_SYS_IOCTL)
-    endif (HAVE_SYS_IOCTL)
 
     if (WITH_NETWORK)
         target_link_libraries(${_targ} PUBLIC slirp)
@@ -130,9 +108,11 @@ function(build_simcore _targ)
 
         target_link_libraries(${_targ} PUBLIC wsock32 winmm)
     elseif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-        target_compile_definitions(${_targ} PUBLIC _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64 HAVE_DLOPEN=so BPF_CONST_STRING)
+        target_compile_definitions(${_targ} PUBLIC _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64 BPF_CONST_STRING)
         target_link_libraries(${_targ} PUBLIC "m")
     endif ()
+
+    target_link_libraries(${_targ} PUBLIC os_features thread_lib)
 
     # Define SIM_BUILD_TOOL for the simulator'
     target_compile_definitions("${_targ}" PRIVATE
@@ -164,7 +144,7 @@ endfunction(build_simcore _targ)
 ## VIDEO: Add video support
 
 function (add_simulator _targ)
-    cmake_parse_arguments(SIMH "INT64;FULL64;BUILDROMS;VIDEO" "TEST" "DEFINES;INCLUDES;SOURCES" ${ARGN})
+    cmake_parse_arguments(SIMH "INT64;FULL64;BUILDROMS;VIDEO" "TEST;COPY" "DEFINES;INCLUDES;SOURCES" ${ARGN})
 
     if (NOT DEFINED SIMH_SOURCES)
         message(FATAL_ERROR "${_targ}: No source files?")
@@ -225,6 +205,12 @@ function (add_simulator _targ)
     if (NOT DONT_USE_ROMS AND SIMH_BUILDROMS)
         add_dependencies(${_targ} BuildROMs)
     endif (NOT DONT_USE_ROMS AND SIMH_BUILDROMS)
+    
+    if (DEFINED SIMH_COPY)
+        add_custom_command(TARGET "${_targ}"
+                           POST_BUILD
+                           COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${_targ}> $<TARGET_FILE_DIR:${_targ}>/${SIMH_COPY}${CMAKE_EXECUTABLE_SUFFIX})
+    endif (DEFINED SIMH_COPY)
 
     # Create target 'cppcheck' rule, if cppcheck detected:
     if (ENABLE_CPPCHECK AND cppcheck_cmd)
