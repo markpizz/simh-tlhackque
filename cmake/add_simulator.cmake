@@ -7,31 +7,9 @@ if (MSVC)
   set(SIMH_BINDIR "${SIMH_BINDIR}/Win32/$<CONFIG>")
 endif ()
 
-# Add the commit ID and time:
-execute_process(COMMAND "git" "log" "-1" "--pretty=%H"
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    RESULT_VARIABLE HAVE_GIT_COMMIT_HASH
-    OUTPUT_VARIABLE SIMH_GIT_COMMIT_HASH)
+include(CheckIncludeFiles)
 
-execute_process(COMMAND "git" "log" "-1" "--pretty=%aI"
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    RESULT_VARIABLE HAVE_GIT_COMMIT_TIME
-    OUTPUT_VARIABLE SIMH_GIT_COMMIT_TIME)
-
-if (NOT (HAVE_GIT_COMMIT_HASH OR HAVE_GIT_COMMIT_TIME))
-    string(STRIP ${SIMH_GIT_COMMIT_HASH} SIMH_GIT_COMMIT_HASH)
-    string(STRIP ${SIMH_GIT_COMMIT_TIME} SIMH_GIT_COMMIT_TIME)
-
-    message(STATUS "SIM_GIT_COMMIT_ID: ${SIMH_GIT_COMMIT_HASH}")
-    message(STATUS "SIM_GIT_COMMIT_TIME: ${SIMH_GIT_COMMIT_TIME}")
-
-    file(WRITE ${CMAKE_SOURCE_DIR}/.git-commit-id
-        "SIM_GIT_COMMIT_ID ${SIMH_GIT_COMMIT_HASH}\n"
-        "SIM_GIT_COMMIT_TIME ${SIMH_GIT_COMMIT_TIME}\n")
-else ()
-    message(STATUS "SIM_GIT_COMMIT_ID not set.")
-    message(STATUS "SIM_GIT_COMMIT_TIME not set.")
-endif()
+include(git-commit-id)
 
 ## INTERFACE libraries: Interface libraries let us refer to the libraries,
 ## set includes and defines, flags in a consistent way.
@@ -64,8 +42,6 @@ set(SIM_SOURCES
     ${CMAKE_SOURCE_DIR}/sim_tmxr.c
     ${CMAKE_SOURCE_DIR}/sim_video.c)
 
-include(CheckIncludeFiles)
-
 function(build_simcore _targ)
     cmake_parse_arguments(SIMH "VIDEO;INT64;ADDR64" "" "" ${ARGN})
 
@@ -75,6 +51,10 @@ function(build_simcore _targ)
     # don't export out to the dependencies (hence PRIVATE.)
     target_compile_definitions(${_targ} PRIVATE USE_SIM_CARD USE_SIM_IMD)
     target_compile_options(${_targ} PRIVATE ${EXTRA_CFLAGS})
+
+    if (DEFINED SIM_GIT_COMMIT_ID_DIRECTORY)
+        target_include_directories(${_targ} PUBLIC "${SIM_GIT_COMMIT_ID_DIRECTORY}")
+    endif (DEFINED SIM_GIT_COMMIT_ID_DIRECTORY)
 
     if (SIMH_INT64)
         target_compile_definitions(${_targ} PUBLIC USE_INT64)

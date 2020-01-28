@@ -132,9 +132,6 @@ if (WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_definitions(_WINSOCK_DEPRECATED_NO_WARNINGS)
 
-    if (MSVC_VERSION GREATER_EQUAL 1920)
-	    add_compile_definitions(USE_ISO_C99_NAMES)
-    endif ()
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     # For some reason, the MSVC solution builds as 32-bit, but none of the
     # *nix platforms do.
@@ -285,6 +282,7 @@ if (NOT DO_DEPENDENCY_BUILD)
         "${CMAKE_BINARY_DIR}" "${CMAKE_SOURCE_DIR}/cmake/makefile2cmake.c"
         COMPILE_DEFINITIONS "-DCMAKE_BINARY_DIR=${CMAKE_BINARY_DIR}"
         COMPILE_DEFINITIONS "-DCMAKE_SOURCE_DIR=${SIMHD}"
+        COMPILE_DEFINITIONS "-DBUILD_WITH_VIDEO=${BUILD_WITH_VIDEO}"
         COMPILE_OUTPUT_VARIABLE MAKEFILE2CMAKE_BROKEN_COMPILE
         RUN_OUTPUT_VARIABLE MAKEFILE2CMAKE_BROKEN_RUN)
     if (NOT DEFINED RUN_RESULT OR RUN_RESULT)
@@ -332,6 +330,9 @@ if (NOT DO_DEPENDENCY_BUILD)
 		  "${CMAKE_SOURCE_DIR}/slirp"
 		  "${CMAKE_SOURCE_DIR}/slirp_glue"
 		  "${CMAKE_SOURCE_DIR}/slirp_glue/qemu")
+    if (DEFINED SIM_GIT_COMMIT_ID_DIRECTORY)
+        target_include_directories(slirp PUBLIC "${SIM_GIT_COMMIT_ID_DIRECTORY}")
+    endif (DEFINED SIM_GIT_COMMIT_ID_DIRECTORY)
     if (WIN32)
 		target_include_directories(slirp PUBLIC "${CMAKE_SOURCE_DIR}/slirp_glue/qemu/win32/include")
 		target_link_libraries(slirp Iphlpapi)
