@@ -34,6 +34,11 @@
         CMAKE_SOURCE_DIR    Specifies the path where to find the simh makefile
         CMAKE_BINARY_DIR    Specifies where the simh_makefile.cmake result goes
 
+    One additional input may also be specified by a compile time define:
+        BUILD_WITH_VIDEO    Specifies that simh components that provide video 
+                            support will be generated included in the 
+                            generated cmake output.
+
     Debug output can optionally be produced if an environment variable
     named MAKEFILE2CMAKE_DEBUG is defined.
 
@@ -42,12 +47,19 @@
     can be adjusted to accomodate this program or provide clues about 
     desired behavior.  Examples of this are:
 
-       1) The requirement that the makefile use only ${} delimited variable 
-          insertions rather than a potential mix of ${} and $().  Changing 
-          the makefile to follow this, doesn't change its behavior.  
-       2) Some makefile build targets may not be appropriate for building 
+       1) Some makefile build targets may not be appropriate for building 
           via cmake.  If the first build step contains the string:
-          #cmake:ignore-target that target will be ignored.
+
+            #cmake:ignore-target that target will be ignored.
+
+       2) Some makefile logic may be unreasonably hard to directly translate
+          into equivalently functional CMake information.  A provision exists
+          such that if a makefile line is of the form:
+
+            #cmake-insert:some-cmake-logic
+
+          Then the remainder of the line starting with #cmake-insert: will
+          be emitted in the resulting CMake translated makefile.
 
  */
 
@@ -520,14 +532,19 @@ main (int argc, char **argv)
     fprintf (fout, "# Built with SIMHD = %s\n", S_xstr(CMAKE_SOURCE_DIR));
 #endif
 #if defined (CMAKE_BINARY_DIR)
-    fprintf (fout, "# Output Directory: %s\n", S_xstr(CMAKE_BINARY_DIR));
+    fprintf (fout, "# Output Directory = %s\n", S_xstr(CMAKE_BINARY_DIR));
 #endif
-    add_symbol_assignment (x_strdup ("DISPLAYD = ${SIMHD}/display"));
-    add_symbol_assignment (x_strdup ("DISPLAYL = ${DISPLAYD}/display.c ${DISPLAYD}/sim_ws.c"));
-    add_symbol_assignment (x_strdup ("DISPLAYVT = ${DISPLAYD}/vt11.c"));
-    add_symbol_assignment (x_strdup ("DISPLAY340 = ${DISPLAYD}/type340.c"));
-    add_symbol_assignment (x_strdup ("DISPLAYNG = ${DISPLAYD}/ng.c"));
-    add_symbol_assignment (x_strdup ("DISPLAY_OPT = -DUSE_DISPLAY -DUSE_SIM_VIDEO"));
+#if defined (BUILD_WITH_VIDEO)
+    fprintf (fout, "# With Video = %s\n", S_xstr(BUILD_WITH_VIDEO));
+    if (0 == strcmp (S_xstr(BUILD_WITH_VIDEO), "TRUE")) {
+        add_symbol_assignment (x_strdup ("DISPLAYD = ${SIMHD}/display"));
+        add_symbol_assignment (x_strdup ("DISPLAYL = ${DISPLAYD}/display.c ${DISPLAYD}/sim_ws.c"));
+        add_symbol_assignment (x_strdup ("DISPLAYVT = ${DISPLAYD}/vt11.c"));
+        add_symbol_assignment (x_strdup ("DISPLAY340 = ${DISPLAYD}/type340.c"));
+        add_symbol_assignment (x_strdup ("DISPLAYNG = ${DISPLAYD}/ng.c"));
+        add_symbol_assignment (x_strdup ("DISPLAY_OPT = -DUSE_DISPLAY -DUSE_SIM_VIDEO"));
+    }
+#endif
 
     while (line = get_makefile_line (fin)) {
         const char *cptr = get_buf_token (line, tok1, sizeof (tok1));
