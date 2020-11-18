@@ -165,16 +165,19 @@ struct mouse_event {
     t_bool b1_state;                                      /* state of button 1 */
     t_bool b2_state;                                      /* state of button 2 */
     t_bool b3_state;                                      /* state of button 3 */
+    DEVICE *dev;                                          /* which device */
     };
 
 struct key_event {
     uint32 key;                                           /* key sym */
     uint32 state;                                         /* key state change */
+    DEVICE *dev;                                          /* which device */
     };
 
 typedef struct mouse_event SIM_MOUSE_EVENT;
 typedef struct key_event SIM_KEY_EVENT;
 
+t_stat vid_set_current (int window);
 t_stat vid_open (DEVICE *dptr, const char *title, uint32 width, uint32 height, int flags);
 #define SIM_VID_INPUTCAPTURED       1                       /* Mouse and Keyboard input captured (calling */
                                                             /* code responsible for cursor display in video) */
@@ -184,6 +187,7 @@ typedef void (*VID_GAMEPAD_CALLBACK)(int, int, int);
 t_stat vid_register_gamepad_motion_callback (VID_GAMEPAD_CALLBACK);
 t_stat vid_register_gamepad_button_callback (VID_GAMEPAD_CALLBACK);
 t_stat vid_close (void);
+t_stat vid_close_all (void);
 t_stat vid_poll_kb (SIM_KEY_EVENT *ev);
 t_stat vid_poll_mouse (SIM_MOUSE_EVENT *ev);
 uint32 vid_map_rgb (uint8 r, uint8 g, uint8 b);
@@ -201,7 +205,7 @@ t_stat vid_screenshot (const char *filename);
 t_bool vid_is_fullscreen (void);
 t_stat vid_set_fullscreen (t_bool flag);
 
-extern t_bool vid_active;
+extern int vid_active;
 void vid_set_cursor_position (int32 x, int32 y);        /* cursor position (set by calling code) */
 
 /* A device simulator can optionally set the vid_display_kb_event_process

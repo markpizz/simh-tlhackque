@@ -2911,7 +2911,7 @@ detach_all (0, TRUE);                                   /* close files */
 sim_set_deboff (0, NULL);                               /* close debug */
 sim_set_logoff (0, NULL);                               /* close log */
 sim_set_notelnet (0, NULL);                             /* close Telnet */
-vid_close ();                                           /* close video */
+vid_close_all ();                                       /* close video */
 sim_ttclose ();                                         /* close console */
 AIO_CLEANUP;                                            /* Asynch I/O */
 sim_cleanup_sock ();                                    /* cleanup sockets */
