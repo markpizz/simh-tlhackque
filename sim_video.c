@@ -2494,7 +2494,7 @@ return SCPE_OK;
 
 t_stat vid_show_video (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
-fprintf (st, "video support unavailable");
+fprintf (st, "video support unavailable\n");
 return SCPE_OK;
 }
 
@@ -2515,4 +2515,5 @@ t_stat vid_set_fullscreen (t_bool flag)
 sim_printf ("video support unavailable\n");
 return SCPE_OK;
 }
+
 #endif /* defined(USE_SIM_VIDEO) */
