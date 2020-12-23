@@ -1726,8 +1726,9 @@ ID32_OPT = -I ${ID32D}
 
 
 S3D = ${SIMHD}/S3
-S3 = ${S3D}/s3_cd.c ${S3D}/s3_cpu.c ${S3D}/s3_disk.c ${S3D}/s3_lp.c \
-	${S3D}/s3_pkb.c ${S3D}/s3_sys.c
+S3 = ${S3D}/s3_cpu.c ${S3D}/s3_disk.c ${S3D}/s3_lpt.c ${S3D}/s3_lda.c \
+	${S3D}/s3_pkb.c ${S3D}/s3_sys.c ${S3D}/s3_3741.c ${S3D}/s3_bsca.c \
+	${S3D}/s3_mfcu.c ${S3D}/s3_cd.c  ${S3D}/s3_tape.c
 S3_OPT = -I ${S3D}
 
 

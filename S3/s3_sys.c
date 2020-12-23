@@ -26,11 +26,18 @@
    19-Mar-12    RMS     Fixed declaration of conversion tables (Mark Pizzolato)
 */
 
-#include <ctype.h>
+
 #include "s3_defs.h"
+
 
 extern DEVICE cpu_dev;
 extern DEVICE pkb_dev;
+extern DEVICE pchop_dev;
+extern DEVICE schop_dev;
+extern DEVICE stack1_dev;
+extern DEVICE stack2_dev;
+extern DEVICE stack3_dev;
+extern DEVICE stack4_dev;
 extern DEVICE cdr_dev;
 extern DEVICE cdp_dev;
 extern DEVICE stack_dev;
@@ -39,24 +46,24 @@ extern DEVICE r1_dev;
 extern DEVICE f1_dev;
 extern DEVICE r2_dev;
 extern DEVICE f2_dev;
-extern UNIT cpu_unit;
+extern DEVICE t0_dev;
+extern DEVICE t1_dev;
+extern DEVICE t2_dev;
+extern DEVICE t3_dev;
+extern DEVICE lda_dev;
+extern DEVICE dkt_dev;
 extern REG cpu_reg[];
-extern unsigned char M[];
-extern int32 saved_PC, IAR[];
-extern unsigned char ebcdic_to_ascii[];
-CONST char *parse_addr(CONST char *cptr,  char *gbuf, t_addr *addr, int32 *addrtype);
 
-int32 printf_sym (FILE *of, char *strg, t_addr addr, uint32 *val,
-    UNIT *uptr, int32 sw);
+CONST char *parse_addr(CONST char *cptr,  char *gbuf, t_addr *addr, int32 *addrtype);
 
 /* SCP data structures
 
-   sim_name             simulator name string
-   sim_PC               pointer to saved PC register descriptor
-   sim_emax             number of words needed for examine
-   sim_devices          array of pointers to simulated devices
+   sim_name         simulator name string
+   sim_PC           pointer to saved PC register descriptor
+   sim_emax         number of words needed for examine
+   sim_devices      array of pointers to simulated devices
    sim_stop_messages    array of pointers to stop messages
-   sim_load             binary loader
+   sim_load         binary loader
 */
 
 char sim_name[] = "System/3";
@@ -65,19 +72,29 @@ REG *sim_PC = &cpu_reg[0];
 
 int32 sim_emax = 6;
 
-DEVICE *sim_devices[] = {
-    &cpu_dev, 
-    &pkb_dev,
-    &cdr_dev,
-    &cdp_dev,
-    &stack_dev,
-    &lpt_dev,
-    &r1_dev,
-    &f1_dev,
-    &r2_dev,
-    &f2_dev,
-    NULL
-};
+DEVICE *sim_devices[] = {   &cpu_dev, 
+            &pkb_dev,
+            &pchop_dev,
+            &schop_dev,
+            &stack1_dev,
+            &stack2_dev,
+            &stack3_dev,
+            &stack4_dev,
+            &cdr_dev,
+            &cdp_dev,
+            &stack_dev,
+            &lpt_dev,
+            &r1_dev,
+            &f1_dev,
+            &r2_dev,
+            &f2_dev,
+            &t0_dev,
+            &t1_dev,
+            &t2_dev,
+            &t3_dev,
+            &lda_dev,             
+            &dkt_dev,   
+            NULL };
 
 const char *sim_stop_messages[SCPE_BASE] = {
     "Unknown error",
@@ -98,26 +115,26 @@ const char *sim_stop_messages[SCPE_BASE] = {
    Second field is the hex of the right nybble of the binary opcode
    Third field is the Q code for those with implicit Q codes
    Fourth field is the symbolic format of the operands:
-        0 - (Q-byte),(R-byte)
-        1 - (Q-byte),(Address)
-        2 - (Address),(Address),(Qbyte)
-        3 - (Address),(Qbyte)
-        4 - (device),(modifier),(function) -- these 3 make up qbyte
+    0 - (Q-byte),(R-byte)
+    1 - (Q-byte),(Address)
+    2 - (Address),(Address),(Qbyte)
+    3 - (Address),(Qbyte)
+    4 - (device),(modifier),(function) -- these 3 make up qbyte
         5 - (device),(modifier),(function),(control)
         6 - (device),(modifier),(function),(Address)
         7 - (displacement) -- Q byte is implicit in opcode
         8 - (address) -- Qbyte is implicit in opcode
         9 - (Address),(Address) -- Qbyte is implicit in opcode
    Fifth Field is the group number:
-        0 - Command Group (left op nybble is F)
-        1 - One Address Operations A (Left Nybble C, D, or E)
-        2 - Two Address Operations (Left Nybble 0,1,2,4,5,6,8,9, or A)
-        3 - One Address Operations B (left Nybble 3, 7, or B)
+    0 - Command Group (left op nybble is F)
+    1 - One Address Operations A (Left Nybble C, D, or E)
+    2 - Two Address Operations (Left Nybble 0,1,2,4,5,6,8,9, or A)
+    3 - One Address Operations B (left Nybble 3, 7, or B)
 
-        There is duplication in this table -- IBM defines different opcodes
-        that resolve to the same binary machine instruction -- e.g. JE and
-        JZ.  On input this is no problem, on output, define the one you
-        want to appear first, the second will never appear on output.
+    There is duplication in this table -- IBM defines different opcodes
+    that resolve to the same binary machine instruction -- e.g. JE and
+    JZ.  On input this is no problem, on output, define the one you
+    want to appear first, the second will never appear on output.
 */   
 
 int32 nopcode = 75;
@@ -200,24 +217,24 @@ struct opdef opcode[75] = {
 };
 
 int32 regcode[15] = {   0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
-            0x80, 0xC0, 0xA0, 0x90, 0x88, 0x84, 0x82, 0x81
-};
+                   0x80, 0xC0, 0xA0, 0x90, 0x88, 0x84, 0x82, 0x81 };
             
-const char regname[15][8] =  {    "(P2IAR)",
-                "(P1IAR)",
-                "(IAR)",
-                "(ARR)",
-                "(PSR)",
-                "(XR2)",
-                "(XR1)",
-                "(IAR0)",
-                "(IAR1)",
-                "(IAR2)",
-                "(IAR3)",
-                "(IAR4)",
-                "(IAR5)",
-                "(IAR6)",
-                "(IAR7)"
+const char regname[15][8] =  {
+            "(P1IAR)",
+            "(P2IAR)",
+            "(IAR)",
+            "(ARR)",
+            "(PSR)",
+            "(XR2)",
+            "(XR1)",
+            "(IAR0)",
+            "(IAR1)",
+            "(IAR2)",
+            "(IAR3)",
+            "(IAR4)",
+            "(IAR5)",
+            "(IAR6)",
+            "(IAR7)"
 };             
 
 /* This is the binary loader.  The input file is considered to be
@@ -232,52 +249,35 @@ int32 i, addr = 0, cnt = 0;
 if ((*cptr != 0) || (flag != 0)) return SCPE_ARG;
 addr = IAR[8];
 while ((i = getc (fileref)) != EOF) {
-    M[addr] = i & 0xff;
-    addr++;
-    cnt++;
-}   /* end while */
-printf ("%d Bytes loaded.\n", cnt);
+        M[addr] = i & 0xff;
+        addr++;
+      cnt++;
+    }                       /* end while */
+sim_printf ("%d Bytes loaded.\n", cnt);
 return (SCPE_OK);
 }
 
 /* Symbolic output
 
    Inputs:
-        *of   = output stream
-        addr    =       current PC
-        *val    =       pointer to values
-        *uptr   =       pointer to unit
-        sw      =       switches
+    *of   = output stream
+    addr    =   current PC
+    *val    =   pointer to values
+    *uptr   =   pointer to unit
+    sw  =   switches
    Outputs:
-        status  =       error code
+    status  =   error code
 */
 
-t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw)
-{
-    int32 r;
-    char strg[256];
-    
-    strcpy(strg, "");
-    r = printf_sym(of, strg, addr, val, uptr, sw);
-    if (sw & SWMASK ('A'))
-        strcpy(strg, "");
-        else
-        fprintf(of, "%s", strg);
-    return (r);
-}
-
-int32 printf_sym (FILE *of, char *strg, t_addr addr, uint32 *val,
+t_stat printf_sym (FILE *of, char *strg, t_addr addr, t_value *val,
     UNIT *uptr, int32 sw)
 {
 int32 c1, c2, group, len1, len2, inst, aaddr, baddr;
 int32 oplen, groupno, i, j, vpos, qbyte, da, m, n;
-char bld[128], bldaddr[96], boperand[32], aoperand[32];
+char bld[128], bldaddr[80], boperand[32], aoperand[32];
 int32 blk[16], blt[16];
 int32 blkadd;
 
-memset (bld, 0, sizeof (bld));
-memset (bldaddr, 0, sizeof (bldaddr));
 c1 = val[0] & 0xff;
 if (sw & SWMASK ('A')) {
     for (i = 0; i < 16; i++) {
@@ -311,7 +311,7 @@ if (sw & SWMASK ('C')) {
     if (c2 < 040 || c2 > 0177) {
         sprintf(strg, "<%02X>", c1 & 0xff);
     } else {    
-        sprintf (strg, "%c", c2 & 0xff);
+        sprintf(strg, "%c", c2 & 0xff);
     }
     return SCPE_OK;  }
 if (!(sw & SWMASK ('M'))) return SCPE_ARG;
@@ -343,25 +343,25 @@ switch (group) {
     case 0x0c:
     case 0x0d:
     case 0x0e:
-        groupno = 1;
-        break;
+            groupno = 1;
+            break;
     case 0x03:
     case 0x07:
     case 0x0b:
-        groupno = 3;
-        break;
+            groupno = 3;
+            break;
     default:
-        groupno = 2;
-        break;
+            groupno = 2;
+            break;
 }                   
 
 /* find the table entry */
 
 for (i = 0; i < nopcode; i++) {
-    if (opcode[i].form < 7) {                           /* Explicit Q */
+    if (opcode[i].form < 7) {   /* Explicit Q */
         if (opcode[i].group == groupno &&
-            opcode[i].opmask == inst) break;
-        } else {                                        /* Implicit Q */
+                opcode[i].opmask == inst) break;
+        } else {            /* Implicit Q */
         if (opcode[i].group == groupno &&
             opcode[i].opmask == inst &&
             opcode[i].q == qbyte) break;
@@ -378,24 +378,24 @@ if (i >= nopcode) {
 
     /* Extract the addresses into aaddr and baddr */
 
-    strlcpy(aoperand, "ERROR", sizeof (aoperand));
-    strlcpy(boperand, "ERROR", sizeof (boperand));
+    strcpy(aoperand, "ERROR");
+    strcpy(boperand, "ERROR");
     vpos = 2;
     aaddr = baddr = 0;
     switch (len1) {
         case 0:
             baddr = ((val[vpos] << 8) & 0xff00) | (val[vpos + 1] & 0x00ff);
-            snprintf(boperand, sizeof (boperand) - 1, "%04X", baddr);
+            sprintf(boperand, "%04X", baddr);
             vpos = 4;
             break;
         case 1:
             baddr = val[vpos] & 255;
-            snprintf(boperand, sizeof (boperand) - 1, "(%02X,XR1)", baddr);
+            sprintf(boperand, "(%02X,XR1)", baddr);
             vpos = 3;
             break;
         case 2:
             baddr = val[vpos] & 255;
-            snprintf(boperand, sizeof (boperand) - 1, "(%02X,XR2)", baddr);
+            sprintf(boperand, "(%02X,XR2)", baddr);
             vpos = 3;
             break;
         default:
@@ -406,23 +406,23 @@ if (i >= nopcode) {
         case 0:
             aaddr = ((val[vpos] << 8) & 0xff00) | (val[vpos + 1] & 0x00ff);
             if (group == 0x0C || group == 0x0D || group == 0x0E)
-                    snprintf(boperand, sizeof (boperand) - 1, "%04X", aaddr);
+                sprintf(boperand, "%04X", aaddr);
                 else
-                    snprintf(aoperand, sizeof (aoperand) - 1, "%04X", aaddr);
+                sprintf(aoperand, "%04X", aaddr);
             break;  
         case 1:
             aaddr = val[vpos] & 255;
             if (group == 0x0C || group == 0x0D || group == 0x0E)
-                    snprintf(boperand, sizeof (boperand) - 1, "(%02X,XR1)", aaddr);
+                sprintf(boperand, "(%02X,XR1)", aaddr);
                 else
-                    snprintf(aoperand, sizeof (aoperand) - 1, "(%02X,XR1)", aaddr);
+                sprintf(aoperand, "(%02X,XR1)", aaddr);
             break;
         case 2:
             aaddr = val[vpos] & 255;
             if (group == 0x0C || group == 0x0D || group == 0x0E)
-                    snprintf(boperand, sizeof (boperand) - 1, "(%02X,XR2)", aaddr);
+                sprintf(boperand, "(%02X,XR2)", aaddr);
                 else
-                    snprintf(aoperand, sizeof (aoperand) - 1, "(%02X,XR2)", aaddr);
+                sprintf(aoperand, "(%02X,XR2)", aaddr);
             break;
         default:
             aaddr = 0;
@@ -437,7 +437,7 @@ if (i >= nopcode) {
 
     switch (opcode[i].form) {
         case 0:
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%02X,%02X", qbyte, val[2]);
+            snprintf(bldaddr, sizeof(bldaddr), "%02X,%02X", qbyte, val[2]);
             break;
         case 1:
             if (inst == 2 || inst == 4 || inst == 5 || inst == 6) {
@@ -446,43 +446,43 @@ if (i >= nopcode) {
                         break;
                 }
                 if (i < 16) {
-                    snprintf(bldaddr, sizeof (bldaddr) - 1, "%s,%s", regname[i], boperand);
+                    snprintf(bldaddr, sizeof(bldaddr), "%s,%s", regname[i], boperand);
                 } else {
-                    snprintf(bldaddr, sizeof (bldaddr) - 1, "%02X,%s", qbyte, boperand);
+                    snprintf(bldaddr, sizeof(bldaddr), "%02X,%s", qbyte, boperand);
                 }           
             } else {
-                snprintf(bldaddr, sizeof (bldaddr) - 1, "%02X,%s", qbyte, boperand);
+                snprintf(bldaddr, sizeof(bldaddr), "%02X,%s", qbyte, boperand);
             }
             break;
         case 2:
             if (inst > 9 || inst == 4 || inst == 6 || inst == 7)
-                 qbyte++;                               /* special +1 for length display */
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%s,%s,%d", boperand, aoperand, qbyte);
+                 qbyte++;   /* special +1 for length display */
+            snprintf(bldaddr, sizeof(bldaddr), "%s,%s,%d", boperand, aoperand, qbyte);
             break;
         case 3:
             if (strcmp(opcode[i].op, "JC") == 0) {
-                snprintf(bldaddr, sizeof (bldaddr) - 1, "%04X,%02X", addr+oplen+val[2], qbyte);
+                snprintf(bldaddr, sizeof(bldaddr), "%04X,%02X", addr+oplen+val[2], qbyte);
             } else {    
-                snprintf(bldaddr, sizeof (bldaddr) - 1, "%s,%02X", boperand, qbyte);
+                snprintf(bldaddr, sizeof(bldaddr), "%s,%02X", boperand, qbyte);
             }   
             break;
         case 4: 
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%d,%d,%d", da, m, n);
+            snprintf(bldaddr, sizeof(bldaddr), "%d,%d,%d", da, m, n);
             break;
         case 5:
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%d,%d,%d,%02X", da, m, n, val[2]);
+            snprintf(bldaddr, sizeof(bldaddr), "%d,%d,%d,%02X", da, m, n, val[2]);
             break;
         case 6:
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%d,%d,%d,%s", da, m, n, boperand);
+            snprintf(bldaddr, sizeof(bldaddr), "%d,%d,%d,%s", da, m, n, boperand);
             break;
         case 7:
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%04X", addr+oplen+val[2]);
+            snprintf(bldaddr, sizeof(bldaddr), "%04X", addr+oplen+val[2]);
             break;
         case 8:
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%s", boperand);   
+            snprintf(bldaddr, sizeof(bldaddr), "%s", boperand);   
             break;
         default:
-            snprintf(bldaddr, sizeof (bldaddr) - 1, "%s,%s", boperand, aoperand);
+            snprintf(bldaddr, sizeof(bldaddr), "%s,%s", boperand, aoperand);
             break;
     }                                               
     sprintf(strg, "%s%s", bld, bldaddr);
@@ -491,32 +491,46 @@ if (i >= nopcode) {
 return -(oplen - 1);
 }
 
+t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
+    UNIT *uptr, int32 sw)
+{
+    int32 r;
+    char strg[256];
+    
+    strcpy(strg, "");
+    r = printf_sym(of, strg, addr, val, uptr, sw);
+    if (sw & SWMASK ('A'))
+        strcpy(strg, "");
+    else
+        fprintf(of, "%s", strg);
+    return (r);
+}
+
 /* Symbolic input
 
    Inputs:
-        *cptr   =       pointer to input string
-        addr    =       current PC
-        *uptr   =       pointer to unit
-        *val    =       pointer to output values
-        sw      =       switches
+    *cptr   =   pointer to input string
+    addr    =   current PC
+    *uptr   =   pointer to unit
+    *val    =   pointer to output values
+    sw  =   switches
    Outputs:
-        status  =       error status
+    status  =   error status
 */
 
 t_stat parse_sym (CONST char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
 {
-int32 cflag, i = 0, j, r, oplen, addtyp, saveaddr, vptr;
+int32 i = 0, j, r, oplen, addtyp, saveaddr, vptr;
 char gbuf[CBUFSIZE];
 
-cflag = (uptr == NULL) || (uptr == &cpu_unit);
-while (isspace (*cptr)) cptr++;                         /* absorb spaces */
+while (isspace (*cptr)) cptr++;             /* absorb spaces */
 if ((sw & SWMASK ('A')) || ((*cptr == '\'') && cptr++)) { /* ASCII char? */
-    if (cptr[0] == 0) return SCPE_ARG;                  /* must have 1 char */
+    if (cptr[0] == 0) return SCPE_ARG;      /* must have 1 char */
     val[0] = (unsigned int) cptr[0];
     return SCPE_OK;
 }
 if ((sw & SWMASK ('C')) || ((*cptr == '"') && cptr++)) { /* ASCII string? */
-    if (cptr[0] == 0) return SCPE_ARG;                  /* must have 1 char */
+    if (cptr[0] == 0) return SCPE_ARG;      /* must have 1 char */
     val[0] = ((unsigned int) cptr[0] << 8) + (unsigned int) cptr[1];
     return SCPE_OK;
 }
@@ -530,8 +544,8 @@ while (1) {
          isdigit(*cptr))
             break;
     gbuf[i] = toupper(*cptr);
-    cptr++;
-    i++;
+   cptr++;
+   i++;
 }
 
 /* kill trailing spaces if any */
@@ -545,21 +559,21 @@ for (j = 0; j < nopcode; j++) {
     if (strcmp(gbuf, opcode[j].op) == 0)
         break;
 }
-if (j >= nopcode)                                       /* not found */
+if (j >= nopcode)        /* not found */
     return SCPE_ARG;
 
-oplen = 2;                                              /* start with op & q */
+oplen = 2;  /* start with op & q */
 
-val[0] = opcode[j].opmask;                              /* store opcode right nybble */
+val[0] = opcode[j].opmask;      /* store opcode right nybble */
 
-switch (opcode[j].form) {                               /* Get operands based on operand format */
-    case 0:                                             /* Single Byte Operand */
+switch (opcode[j].form) {   /* Get operands based on operand format */
+    case 0:         /* Single Byte Operand */
         if (*cptr == ',') cptr++;
-        cptr = get_glyph(cptr, gbuf, ',');              /* Get Q Byte */
+        cptr = get_glyph(cptr, gbuf, ',');  /* Get Q Byte */
         sscanf(gbuf, "%x", &r);
         val[1] = r;
         if (*cptr == ',') cptr++;
-        cptr = get_glyph(cptr, gbuf, 0);                /* Get R Byte */
+        cptr = get_glyph(cptr, gbuf, 0);    /* Get R Byte */
         sscanf(gbuf, "%x", &r);
         val[2] = r;
         oplen = 3;
@@ -678,7 +692,7 @@ switch (opcode[j].form) {                               /* Get operands based on
         if (opcode[j].opmask > 9 ||
             opcode[j].opmask == 4 ||
             opcode[j].opmask == 6 ||
-            opcode[j].opmask == 7) r--;                 /* special: length -1 */
+            opcode[j].opmask == 7) r--; /* special: length -1 */
         val[1] = r;
         if (*cptr == ',') cptr++;
         break;
@@ -688,7 +702,7 @@ switch (opcode[j].form) {                               /* Get operands based on
         cptr = parse_addr(cptr, gbuf, &addr, &addtyp);
         switch(addtyp) {
             case 0:
-                if (opcode[j].group == 0) {             /* Group 0 form 3 is JC with explicit Q */
+                if (opcode[j].group == 0) {     /* Group 0 form 3 is JC with explicit Q */
                     if (*cptr == ',') cptr++;
                     cptr = get_glyph(cptr, gbuf, 0);
                     sscanf(gbuf, "%x", &r);
@@ -928,11 +942,11 @@ return (-(oplen-1));
 CONST char *parse_addr(CONST char *cptr,  char *gbuf, t_addr *addr, int32 *addrtype)
 {
 int32 nybble = 0;
-char temp[CBUFSIZE];
+char temp[32];
 
 cptr = get_glyph(cptr, gbuf, ',');
-if (gbuf[0] == '(') {                                   /* XR relative */
-    strlcpy(temp, gbuf+1, sizeof(temp));
+if (gbuf[0] == '(') {           /* XR relative */
+    strcpy(temp, gbuf+1);
     sscanf(temp, "%x", addr);
     if (*cptr == ',') cptr++;
     cptr = get_glyph(cptr, gbuf, ',');
@@ -941,7 +955,7 @@ if (gbuf[0] == '(') {                                   /* XR relative */
         nybble = 1;
     if (strcmp(gbuf, "XR2)") == 0)
         nybble = 2;
-} else {                                                /* Direct */
+} else {                /* Direct */
     sscanf(gbuf, "%x", addr);
     nybble = 0; 
 }

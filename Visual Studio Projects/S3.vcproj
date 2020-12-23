@@ -192,6 +192,14 @@
 			Filter="cpp;c;cxx;def;odl;idl;hpj;bat;asm"
 			>
 			<File
+				RelativePath="..\S3\s3_3741.c"
+				>
+			</File>
+			<File
+				RelativePath="..\S3\s3_bsca.c"
+				>
+			</File>
+			<File
 				RelativePath="..\S3\s3_cd.c"
 				>
 			</File>
@@ -204,7 +212,15 @@
 				>
 			</File>
 			<File
-				RelativePath="..\S3\s3_lp.c"
+				RelativePath="..\S3\s3_lda.c"
+				>
+			</File>
+			<File
+				RelativePath="..\S3\s3_lpt.c"
+				>
+			</File>
+			<File
+				RelativePath="..\S3\s3_mfcu.c"
 				>
 			</File>
 			<File
@@ -213,6 +229,10 @@
 			</File>
 			<File
 				RelativePath="..\S3\s3_sys.c"
+				>
+			</File>
+			<File
+				RelativePath="..\S3\s3_tape.c"
 				>
 			</File>
 			<File

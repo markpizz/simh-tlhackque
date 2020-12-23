@@ -1,0 +1,1077 @@
+        
+                            "OCL for Dummies"
+
+
+                     Operating the IBM System/3 Model 10
+                     ===================================
+
+
+	This document will give you the basics for operating the System/3 on the
+simulator in a historically accurate way.  SCP (System Control Program) and
+its command language OCL (Operator Control Language) can only be described
+as user-friendly in relation to its contemporary big brothers OS/360 and
+JCL: do not expect a joyously easy interaction with this system.  As
+batch-oriented systems of the 1960s go, this is probably the easiest and
+most understandable, however.  It is far less awkward (to use Fred Brooks'
+term) than the much more famous JCL.
+
+	When contemplating the limitations of the SCP, it's worthwhile to
+remember that the functionality it does have runs entirely in a 12K address
+space, with enough left over to run small user programs.  At the time of the
+System/3 introduction, magnetic core memory cost over 70 cents per byte.
+
+	This document just covers the basics, and is not a reference manual
+for the SCP.
+
+
+
+Contents:
+
+Part 1 - Background
+	1.0	Introduction
+	1.1	The Filesystem
+	1.2	The Halt Display
+	1.3	System Boot (IPL)
+	1.4	Using the Console
+Part 2 - OCL Language
+	2.1	The Basics
+	2.2	Syntax	
+	2.3 	Additional Statements
+	2.4	Utility Programs
+	2.4.1	$INIT Disk Initializer
+	2.4.2	$LABEL VTOC display
+	2.4.3	$DELET File Deletion
+	2.4.4	$COPY File/Pack Copy
+	2.4.5	$MAINT Library Maintenance
+	2.5	OCL Procedures
+	2.6	Using RPG/COBOL
+	2.7	Tutorial: Sysgen
+Appendix - Common Halts	
+
+
+
+
+                         +------------------------+
+                         |  Part 1 - Background   |
+                         +------------------------+
+
+
+
+1.0	Introduction
+	------------
+
+     The System/3 was a popular small-business system introduced by IBM in
+1969.  Although its hardware specifications make it seem like a classic
+minicomputer, it is not; but rather a business computer designed primarily
+for batch, not interactive operation.  A typical configuration included
+a 96-column or 80-column card reader, printer, up to 4 disks (2.5MB each),
+and an optional operators console.
+
+     The simulator supports such a configuration: 5410 CPU with up to
+64KB of memory, 5471 console, 1442 card reader, 1403 printer, and a full
+set of disks.
+
+     The disks come in two drives of 2 disks each.  The four disks are 
+called by these names:
+
+	R1 - Top drive, removable disk pack
+	F1 - Top drive, fixed disk
+	R2 - Bottom drive, removable disk pack
+	F2 - Bottom drive, fixed disk.
+
+	Each disk is arranged in 400 user tracks of 24 256-byte sectors
+each for a total of about 2.5MB per disk.  Data allocations are made
+in number of tracks, which is why track size is important to you.
+
+
+1.1	Filesystem
+	----------
+
+	Each disk contains data files, and a directory called a VTOC (for
+Volume Table Of Contents).  Data files are allocated in tracks, and are
+stored contiguously on disk.  Files can be of three types: sequential,
+random, or indexed (ISAM).  There is no directory structure beyond this
+single-level VTOC. Files are only used to store data: source and object
+programs are kept in structures called libraries.
+
+    Each disk (commonly called a disk pack or pack) has a 6-character
+volume ID assigned when it is initialized, and this ID must frequently
+be given in OCL which refers to files on the pack, to verify the operator
+has mounted the correct pack on the removeable drive.
+
+    Each disk can optionally contain one or two libraries, called the Source
+library and the Object library.  There can only one set of libraries per
+disk, and if allocated they always occupy the lowest numbered tracks on
+the disk, starting at track 4.  Track 1 is reserved for the IPL boot code,
+and the VTOC.  Tracks 1 thru 3 are reserved for alternate tracks (alternate
+track assignment is not supported in the simulator however).
+
+    The source library is used to hold two types of data:  source programs
+and procedures. (Procedures are macros used by OCL, described later). The
+object library holds two types of data: executable programs and Routines,
+which are relocatable pieces of code suitable for linking into programs.
+
+    Sometimes I (and IBM documentation) will refer to the "procedure
+library" for example, what we really mean is the procedure entries 
+contained in the source library.  The same holds true for the routine
+entries in the object library.
+ 
+    Data filenames can be 1 to 8 characters in length, and must start
+with an alphabetic character.  Programs in libraries can have 1 to 6
+character names, and also must start with an alphabetic character.
+
+1.2	The Halt Display
+	----------------
+
+    The SCP rarely communicates with the user with error messages.  
+Instead it uses the halt facility of the processor.  This is far less
+than user-friendly, and every System/3 console had nearby a well-thumbed
+copy of the Halt Guide listing the halt messages and what they meant.
+
+    On the front panel of the System/3 is a black halt display, consisting
+of 2 seven-segment displays.  When the System/3 processor executes an HPL
+instruction, the processor halts and displays a value.  The user typically
+responds by placing a value on the switches and pressing the Halt/Reset key. 
+Values are usually:
+
+	0 - proceed 
+	1 - retry the operation
+	2 - controlled cancel (added records are kept)
+	3 - immediate cancel (added records are lost)
+
+     Normally, SCP halts will be accompanied by a short cryptic message on
+the console or printer, for example, a 76 halt means an OCL statement is not
+recognized (usually because it doesn't start with //).  This will type on
+the console (or print on the printer if that is your log device):
+
+ 	CR76   0  3
+
+     The CR is the module that issued the message (no, it doesn't stand
+for CRyptic), 76 is the halt (this displays in the halt lights or in
+the simulator as a big segmented number), and the  0 3  are the two
+possible replies.  Deposit the value in the switches to continue, for
+example:
+
+	sim> D SR 0
+	sim> C
+
+     Would instruct the SCP to proceed and read the next statement. 
+A 3 by contrast would be an immediate cancel, which would end all job
+processing and display an EJ halt.
+
+     Each halt (of the hundreds possible) has it's own meaning and
+possible replies, always from this set 0 thru 3.  0 and 1 will always
+attempt to continue, 2 and 3 will always cancel the job.
+
+
+
+1.3	Starting the System/3 - IPL
+	---------------------------
+
+    The process of bootstrapping the SCP is called Initial Program Load or
+IPL in IBMese.  There is a blue button on the front panel of the System/3
+marked IPL, and a rotary switch that allows the device to be selected.  This
+is simulated by the boot command. A feature of the IPL is that the initial
+reader can be selected by the value in the data switches.  5471 in the
+switches means the 5471 console will be used to read OCL statements, 1442
+means the card reader.
+
+    A typical IPL sequence example:
+
+	sim> at f1 f1f1f1.dsk
+	sim> at r1 r1r1r1.dsk
+	sim> d sr 5471
+	sim> boot f1
+
+		[SCP takes control and types a couple of CRs on the 
+		 console, user types OCL statements:]
+
+	 // DATE 01/01/77
+	 // NOHALT
+	 ...... more statements, etc ........
+ 
+
+
+     (We note here that the boot command allows the 1442 card reader to
+be booted, which is not historically accurate -- the 1442 could only be
+IPLed on a model 15; and it allows drives R2 or F2 to be booted, which
+was also not supported on the hardware of the real machine.)
+
+
+
+1.4	Using the Console
+	-----------------
+
+    Although usually jobs were read from the card reader, an option is to
+use the 5471 (a modified selectric typewriter) as the input and the logging
+device.  When this is done, the system can be used interactively.  But the
+command language is the same OCL, so it's quite verbose and awkward compared
+to a command interpreter.
+
+    The system prompts with a carriage return (or two after IPL) and a
+single blank.  Type commands to SCP and press the enter key after each one. 
+The enter key is by default mapped to the 5471 END key, when means end of
+line.
+
+    To correct typing errors, use the CANCEL key, which is typically by
+default ESCape on the keyboard.  The carriage will return and a double-quote
+will be typed in place of the normal space.  Then use the RETURN key (mapped
+by default to Control-R) to retype each correct character until the error,
+then type the correction and the rest of the statement.
+
+    To run jobs from the card reader after IPLing with the console as
+reader, use the OCL statement:
+
+	 // READER 1442
+
+    And be sure to have your card deck (typed in ASCII) attached to the
+cdr input device.
+
+
+
+                      +-------------------------------+
+                      | Part 2 - OCL Command Language |
+                      +-------------------------------+
+
+
+
+2.1	The Basics
+    	----------
+
+    The operating system for the S/3 is called simply SCP for System Control
+Programming.  It is not an interactive system, but is designed as a
+single-job stacked batch monitor.  The intent was for users to prepare batch
+jobs on cards and run them though the card reader, hence, the command
+language is verbose and not designed to be typed in through the console.
+
+    The unit of work that SCP manages is called a job.  A job consists
+of a set of statements in Operator Control Language (OCL).  (For anyone
+knowing JCL but not OCL, there is no JOB statement, do not bother
+to look for it.  Jobs begin with the // LOAD statement only).
+
+    The principle task of SCP is to load and execute programs.  For this
+purpose there are two basic OCL statements used:
+
+	// LOAD XXXXXX,YY
+	// RUN
+
+	Where XXXXXX is the one-to-six character name of the program to execute,
+and YY is the disk containing the object library where the program lives.
+The // RUN statement signals that all OCL for a job is completed, and the
+program is to be run.
+
+    There are other OCL statements that can come between the LOAD and the RUN
+statements.  The main one is the FILE statement, which is required for every
+disk data file accessed by the program.  The typical syntax for the FILE
+statement is:
+
+	// FILE NAME-XXXXXX,UNIT-YY,PACK-ZZZZZZ,LABEL-AAAAAA,TRACKS-NNN
+
+	XXXXXX	is the name of the file used in the program.
+	YY	is the disk unit where the file resides
+	ZZZZZZ	is the volume ID of the disk
+	AAAAAA	is the name of the file on the disk.  If this is the same
+		as the program file name, LABEL can be omitted.
+	NNN	is only used for new files that do not exist.  It gives the
+		size of the file in tracks.  
+
+	Other FILE statement parameters are:
+
+	RECORDS	Instead of tracks, you can specify the number of data
+		records the file is to hold.  This will be rounded up to
+		the next track boundary, however, as files are always
+		allocate in tracks.
+
+	RETAIN	The default is -T which means Temporary.  Other options
+		are -S which is scratch, the file is deleted after the
+		program ends; and -P Permanent the file cannot be deleted
+		unless it's status is changed to temporary.
+
+	LOCATION You can give the track number the file is to start on,
+		but it is not required and the system will allocate it
+		automatically when omitted.
+
+	A typical job's OCL:
+
+	// LOAD MYPROG,R1
+	// FILE NAME-MYFILE,UNIT-R1,PACK-MYPACK
+	// FILE NAME-WORKFILE,UNIT-R1,PACK-MYPACK,TRACKS-15,RETAIN-S
+	// FILE NAME-NEWFILE,UNIT-F1,PACK-F1F1F1,LABEL-BRANDNEW,TRACKS-50,RETAIN-P
+	// RUN
+
+	MYPROG is located on disk R1 in the object library, and it uses
+	three disk files: MYFILE which already exists on disk R1, WORKFILE
+	which does not exist and is deleted when the program ends, and
+	NEWFILE, a new file which is 50 tracks long, is permanent, and is
+	called BRANDNEW in the VTOC on disk F1.  The RUN statement signals
+	the end of the OCL statements for this job. 
+	
+
+2.2	Syntax
+	------
+
+     The pattern of the FILE statement is the pattern of all OCL statements
+except for a few.  The identifier //, one or more spaces, a command keyword,
+one or more spaces, and one or more keyword parameters in the general form
+KEYWORD-VALUE.  Each parameter is separated by a single comma, and no spaces
+can be between parameters. The first space after a parameter signals the end
+of the parameters and anything thereafter is treated as comments.
+
+     The OCL statements LOAD, READER, PUNCH, DATE, SWITCH, and LOG all use
+positional parameters, all others use keyword parameters.  When keyword
+parameters are used, the order of the parameters makes no difference.
+
+	This is the pattern:
+
+	// KEYWORD PARAMETER1-VALUE1,PARAMETER2-VALUE2   COMMENTS
+
+     Commands can also be included anywhere in OCL by placing a * in
+column 1.
+
+
+2.3	Additional statements
+	---------------------
+
+     The LOAD, FILE, and RUN statements are the basic building blocks of
+OCL.  There are several other statemetns that are used for various control
+functions, and they are:
+
+     // DATE MM/DD/YY
+
+	The DATE statement must be entered after every IPL (boot) before any
+	program can be loaded.  It supplies the system date. There is no
+	system clock or time of day.  The // DATE statement can be entered
+	between jobs to change the system date, or between the LOAD and RUN
+	statements to change the date for that job only.  It is possible
+	for SCP to be generated to allowed the DD/MM/YY format.  The slashes
+	in the date can be omitted, for example: // DATE 010178.
+
+
+     // NOHALT
+     // HALT
+
+	By default, SCP will halt the processor at the end of every job
+	run with an EJ halt.  Entering the NOHALT statement tells SCP that
+	for every subsequent job after the NOHALT is entered, do not halt
+	but read the next job.  A HALT statement cancels the effect of the
+	NOHALT.
+
+
+     // PAUSE
+
+	This statement causes the SCP to issue a halt 90.  To proceed from
+	this halt, deposit 0 into the switches and continue.
+
+
+     // LOG
+
+	There are two common parameters: PRINTER or CONSOLE.  This will
+	select where the OCL statements and halts are printed.
+
+
+     // READER
+
+	This will select the device the next and subsequent OCL statements
+	will be read from.  Values are: CONSOLE, 1442, MFCU (MFCU is not
+	implemented in this simulator).  
+
+
+     // PUNCH
+
+	This selects the system punch device.  Only reasonable value for
+	the simulator is 1442.
+
+
+     // SWITCH 00000000
+
+	The SCP has a concept of UPSI switches, which affect the bits of
+	a single option byte.  Programs can test the values of these
+	8 bit switches, which are set by the command.  0 in one of the
+	8 positions turns off that bit, 1 turns it on, and X leaves it
+	unchanged.  In practice this is only used by user-written programs,
+	no IBM utility uses this facility.
+
+     
+     // FORMS DEVICE-5203,LENGTH-66
+
+	This statement sets the forms length of the forms mounted on the
+	printer, which is used by RPG programs primarily to detect end
+	of forms condition.  66 is the length of standard 11 inch paper
+	at 6 lines per inch.
+
+
+     /& 
+
+	This can optionally precede a job, it insures that the job is not
+	used as data to a previous job with an OCL error.
+
+
+     /*
+
+	The slash-asterisk is used to mark the end of file for a set
+	of data cards in the reader.  This cannot be used to end utility
+	control statements, however.
+
+
+
+
+2.4	Utility Programs
+	----------------
+
+        There are no DELETE or COPY or RENAME commands, these 
+        functions are all supplied by utility programs.  
+        Utility programs are run via standard OCL, with the // RUN 
+        statement followed by a set of utility control statments
+        (formated according to the OCL syntax rules), and a // END 
+        statement after all control statements. Here is a list of the 
+        commonly used programs, presented by example:
+
+
+2.4.1	$INIT - Disk Initializer
+	------------------------
+
+	// LOAD $INIT,F1
+	// RUN
+	// UIN TYPE-PRIMARY,UNIT-R1
+	// VOL PACK-PACK42
+	// END
+
+	This will load the $INIT utility from F1, run it, specify that
+	a primary initialize is being done on unit R1, and the new
+	pack is called PACK42.  The only other common type of init is
+	CLEAR, used for existing packs you want to wipe out (PRIMARY
+	will give a halt of the pack is not empty).
+
+
+2.4.2	$LABEL - VTOC/file display
+	--------------------------
+
+	// LOAD $LABEL,F1
+	// RUN
+	// DISPLAY UNIT-R1,LABEL-VTOC
+	// END
+
+	This will print out the VTOC on unit R1.  It does not display
+	it on the console, that kind of this was not done.  The LABEL
+	parameter can be a filename, and you will then get details of 
+	the file's VTOC entry.
+
+
+2.4.3	$DELET - file deletion program
+	------------------------------
+
+	// LOAD $DELET,F1
+	// RUN
+	// SCRATCH NAME-ABADFILE,UNIT-R1
+	// END
+
+	This effectively removes ABADFILE from the VTOC on unit R1. 
+	You can use the REMOVE rather than the SCRATCH keyword to 
+	actually erase the file rather than mark it for deletion in
+	the VTOC.
+
+
+2.4.4	$COPY - File and Diskpack copier
+	--------------------------------
+
+	// LOAD $COPY,F1
+	// RUN
+	// COPYPACK FROM-F2,TO-R1
+	// END
+
+	This copies the whole pack from unit F2 to unit R1.  This
+	is an image copy, the files are not reorganized.
+
+
+	// LOAD $COPY,F1
+	// FILE NAME-COPYIN,UNIT-R1,PACK-PACK42,LABEL-FEELGOOD
+	// FILE NAME-COPYO,UNIT-F2,PACK-F2PACK,LABEL-FEELBAD,TRACKS-30
+	// RUN
+	// COPYFILE OUTPUT-DISK
+	// END
+
+	This copies a single file named FEELGOOD from the removeable
+	pack named PACK42 on unit R1, to the fixed disk named F2PACK
+	in unit F2, calling the resultant file FEELBAD and allocating
+	30 tracks to it.
+
+
+	// LOAD $COPY,F1
+	// FILE NAME-COPYIN,UNIT-R2,PACK-NELLIE,LABEL-NELFILE
+	// RUN
+	// COPYFILE OUTPUT-PRINT
+	// END
+
+	This prints the file called NELFILE and pack named NELLIE on
+	removable drive R2.  The keyword OUTPTX can be used in place of
+	OUTPUT to print the hex representation of the file as well as
+	the EBCDIC characters.
+
+
+	// LOAD $COPY,F1
+	// FILE NAME-COPYIN,UNIT-R1,PACK-PACK42,LABEL-OLDFILE
+	// FILE NAME-COPYO,UNIT-F2,PACK-F2PACK,LABEL-NEWFILE,TRACKS-30
+	// RUN
+	// COPYFILE OUTPUT-DISK,OMIT-'44,D',REORG-YES
+	// END
+
+	This copies a single file named OLDFILE from the removeable
+	pack named PACK42 on unit R1, to the fixed disk named F2PACK
+	in unit F2, calling the resultant file NEWFILE and allocating
+	50 tracks to it.  During the copy, the OUTPUT statement has
+	options to omit any record with a D in position 44, and to 
+	reorganize the file (that is, for an ISAM file, to rebuild
+	the index during the copy).
+
+
+	// LOAD $COPY,F1
+	// FILE NAME-COPYO,UNIT-F2,LABEL-WHOZIT,TRACKS-10,PACK-F2F2F2
+	// RUN
+	// COPYFILE OUTPUT-DISK,INPUT-1442,LENGTH-80
+	// END
+	00010 JOE BLOW
+	00020 CARL SMITH
+	00030 ANNA PEABODY
+	00040 GAIL MERIWEATHER
+	00050 PAUL STARK
+	/*
+
+	If run from the card reader, this job will load some cards
+	into a disk file named WHOZIT on unit F2, allocating 10
+	tracks to the new file.  The file will be sequential with
+	80 bytes per record.
+
+
+	// LOAD $COPY,F1
+	// FILE NAME-COPYIN,UNIT-F2,PACK-F2F2F2,LABEL-WHOZIT
+	// FILE NAME-COPYO,UNIT-F2,PACK-F2F2F2,LABEL-WHOISAM,TRACKS-10
+	// RUN
+	// COPYFILE OUTPUT-DISK
+	// KEY LENGTH-5,LOCATION-1
+	// END
+
+	This will copy a sequential file named WHOZIT from F2 to a
+	new 10-track ISAM file named WHOISAM, with the key defined
+	as 5 bytes in location 1.	
+
+	
+	
+
+2.4.5	$MAINT - Library Maintenance Utility.
+	------------------------------------
+
+	$MAINT maintains programs in libraries, and the libraries
+	themselves.  It is the most sophisticated of the utilities and
+	probably one of the most commonly used.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// ALLOCATE TO-R1,SOURCE-30,OBJECT-40,SYSTEM-YES
+	// END
+
+	This will create a source library 30 tracks long on unit R1, and
+	an object library on that same pack 40 tracks long. The SYSTEM-YES
+	means that system data spaces and an IPL boot record will be written
+	to the disk pack.  Without this, the pack will not be IPLable.  The
+	system data spaces take up two extra tracks.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// COPY FROM-F1,LIBRARY-S,NAME-MYPROG,TO-PRINT
+	// END
+
+	Prints out the source program MYPROG from the source library on
+	unit F1.  Using the target PUNCH instead of PRINT will punch the
+	module out on the card punch.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// COPY FROM-R1,LIBRARY-P,NAME-DIR,TO-PRINT
+	// COPY FROM-F1,LIBRARY-O,NAME-NEWPRG,TO-R2
+	// END
+
+	This performs two separate functions in one run.  The first COPY
+	prints a directory of the procedure library on R1.  The second
+	COPY copies an object program from the object library on F1 to the
+	object library on R2.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// COPY FROM-READER,TO-F2,LIBRARY-S,NAME-NEWSRC
+	SOME SOURCE PROGRAM STATEMENTS
+	SOME MORE STATEMENTS
+	LAST STATEMENT
+	// CEND
+	// END
+
+	This loads asource program from the input reader into the source
+	library on unit F2.  The three example statements become the source
+	member NEWSRC, the // CEND indicates the end of the statements to
+	load.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// COPY FROM-R1,LIBRARY-O,NAME-PGP.ALL,TO-R2
+	// COPY FROM-R1,LIBRARY-S,NAME-ALL,TO-R2
+	// END
+
+	A limited form of wildcards can be used.  These two statements
+	copy all object members from R1 to R2 that start with the letters		
+	PGP, and all source members period.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// DELETE FROM-R1,LIBRARY-S,NAME-OLDPRG
+	// RENAME FROM-F1,LIBRARY-P,NAME-OLD1,NEWNAME-NEW1
+	// END
+
+	This run deletes OLDPRG from the source library on R1, and renames
+	OLD1 to NEW1 in the procedure library on F1.
+
+
+	// LOAD $MAINT,F1
+	// FILE NAME-SRCINPUT,UNIT-R1,PACK-SRCPCK
+	// RUN
+	// COPY FROM-DISK,FILE-SRCINPUT,TO-R1,LIBRARY-S
+	// END
+
+	This job uses a disk file as input to load a program.  The data
+	in the file is the source program, preceded by a valid $MAINT
+	// COPY statement, and ended by a // CEND statement.  There may
+	be multiple source members in the input file.
+
+
+	// LOAD $MAINT,F1
+	// RUN
+	// MODIFY NAME-TEST,FROM-F1,LIBRARY-S,RESER-ONLY,SEQFLD-0106,INCR-10,WORK-R1
+	// END
+
+	This will re-assign sequence numbers to a source member named TEST
+	in the source library on unit F1.  The sequence field is columns 1
+	thru 6, and the increment for the assignment is 10.  Unit R1 will
+	be used for a work file during the operation.
+
+	
+	// LOAD $MAINT,F1
+	// RUN
+	// MODIFY NAME-TESTCB,FROM-F1,LIBRARY-S,SEQFLD-0106,WORK-R1
+	// REPLACE FROM-000010,TO-000010
+ 	0000010 PROGRAM-ID. HELLO1.
+	// REMOVE FROM-000070,TO-000070
+	// INSERT AFTER-000100
+ 	000105 77  DATA-ITEM PIC X(04) VALUE SPACES.
+	// CEND
+	// END
+
+	This illustrates a run making modifications to a source module.
+	The target module must have valid, ascending sequence numbers in
+	the SEQFLD before the run is made.  Modifications must be made
+	in sequence.  The full length of the sequence field must be used
+	in each sequence reference.  Inserts are ended with the // CEND
+	statement.  Replacements specify the beginning and ending numbers
+	and this determines the number of statements replaced.
+
+	
+2.5	OCL Procedures -- the CALL statement.
+	------------------------------------
+
+        OCL statements can be stored in the procedure section of the source
+        library, and called from there.  To do this, use the // CALL statement:
+
+	// CALL XXXXXX,YY
+	// RUN
+
+	Where XXXXXX is the procedure name to call, and YY is the unit 
+	where the procedure library is located.  The statements in the
+	procedure will be processed is if entered via the reader.
+
+	Statements within a procedure can be overridden by statements
+	given to the procedure call.  The statement to override is 
+	found by it's filename in the case of a FILE statement, and
+	by it's keyword in the case of any other.
+
+	An example:
+
+	Assume the following is stored as FILECP in the procedure 
+	library on F1:
+
+	// LOAD $COPY,F1
+	// FILE NAME-COPYIN,UNIT-R1,PACK-R1R1R1,LABEL-XXXXXX
+	// FILE NAME-COPYO,UNIT-R1,PACK-R1R1R1,LABEL-YYYYYY,TRACKS-1
+	// RUN
+	// COPYFILE OUTPUT-DISK
+	// END
+
+	To run this and give real names to the input and output
+	files, do this:
+
+	// CALL FILECP,F1
+	// FILE NAME-COPYIN,LABEL-MYFILE
+	// FILE NAME-COPYO,LABEL-NEWFILE,TRACKS-20
+	// RUN
+
+	The XXXXXX will be overridden to MYFILE, the YYYYYY to NEWFILE,
+	and the TRACKS-1 to TRACKS-20.
+
+	Any keyword parameter can be overridden by it's keyword, and 
+	obviously any parameter not overridden stays the same.
+
+	If a statement cannot be matched to one in the procedure, it
+	is added as a new statement.
+
+
+
+2.6	Program Development: RPG II and COBOL.
+	-------------------------------------
+
+
+	To compile an RPGII program stored on disk, call the RPG
+	procedure and use the // COMPILE statement:
+
+	// CALL RPG,F1
+	// COMPILE SOURCE-MYPROG,UNIT-R1,OBJECT-F2
+	// RUN
+
+	This will compile the source module MYPROG and place the 
+	object program (if the compile is successful) in the object
+	library on unit F2.
+
+	COBOL works the same:
+
+	// CALL COBOL,F1
+	// COMPILE SOURCE-COBPRG,UNIT-R1,OBJECT-R1
+	// RUN
+
+	(Note that these will only work if the RPG and COBOL compilers
+	are installed.  They are copyrighted IBM products (unlike SCP)
+	and therefore cannot be distributed with the simulator until
+	permission is received from IBM).
+
+
+
+2.7	A Tutorial: System Generation.
+	-----------------------------	
+
+	As a final example of the use of OCL on the simulator, we will 
+        guide you through the Sysgen Generation procedures for the 
+        Model 10 SCP.
+
+	We assume that the SCP distribution disk (called the DTR pack)
+        is mounted on unit R1, and a blank empty disk is assigned to F1.  
+        R2 and F2 are never used by the Sysgen, as some customers did not 
+        have them on their system.
+
+	These commands start the simulator, attach the packs and a print 
+        file and card file.  The deposit of 5471 in the switches causes
+        the SCP to read from the console rather than the card reader to 
+        start.
+	
+	sim> at r1 m10scp.dsk
+	sim> at f1 test.dsk
+	sim> at lpt print.txt	
+	sim> d sr 5471
+	sim> at cdp2 sysgen.ocl
+	sim> b r1
+	
+	There will be no banner or text, just two blank lines and the
+        cursor positioned in column 2.  This means the SCP is reading OCL 
+        from the console (on a real 5471, a green "PROCEED" light would 
+        be lit).
+
+	Enter these commands:
+
+	// DATE 01/01/77		(chose your own date, 01 is a valid year)
+	// PUNCH 1442
+	// CALL $SGPCH,R1
+	// RUN
+
+	After you enter the // RUN, a number of lines will print on your
+	console screen, and the system will issue an Halt 91 ... indicated
+	by the big segmented 91 display and a return to the sim> command
+	line.
+
+	Reply to the halt with a 0 and press HALT/RESET:
+
+	sim> d sr 0
+	sim> c
+
+	The system will now print the contents of it's default sysgen card
+	deck on the printer, and punch it on the 1442, placing the output
+	in stacker 2.  Since we did not specify // NOHALT, at the end of
+	the job we get an EJ halt.
+
+	We will quit from the simulator now to edit our sysgen deck. (If
+	you have another session available, you don't need to shut down
+	the simulator at this point to edit the output file.  You should
+	detach it from the cdp2 device first however.)
+
+	sim> quit
+
+	This is the contents of our punched card deck:
+
+
+// COPY FROM-READER,LIBRARY-S,RETAIN-P,NAME-$SGPCH,TO-
+// NOHALT
+// CALL $SGINT,R1                 INITIALIZE F1
+// RUN
+*     BE SURE THE SYSTEM CONFIGURATION STATEMENTS HAVE BEEN MODIFIED BEFORE
+*     CONTINUING.
+*
+***   SET RIGHTMOST ADDRESS/DATA SWITCH TO 0,
+*     PRESS CONSOLE START --HALT/RESET IF YOU HAVE DPF SYSTEM-- TO CONTINUE.
+// PAUSE
+// CALL $SGEN,R1	           PROCESS THE SYSTEM CONFIGURATION STATEMENTS
+// RUN
+       $DCOR CORE-12K             --16K OR 24K OR 32K OR 48K OR 64K--
+       $DDPF DPF-NO               --YES--
+       $DISK DISKS-'R1,F1'        --'R1,F1,R2' OR 'R1,F1,R2,F2'--
+       $DDSK D5445-NO             --D1 OR 'D1,D2'--
+       $DD48 D5448-NO             --YES--
+       $DTUN TAPES-NO             --T1 OR 'T1,T2' OR 'T1,T2,T3' OR 'T1,T2,T3,T4'
+       $DTDN DUALDN-NO            --T1 OR T2 OR T3 OR T4 OR  ..... 'T1,T2,T3,T4'
+       $DTRK TRACK7-NO            --T1 OR T2 OR T3 OR T4 OR  ..... 'T1,T2,T3,T4'
+       $DATE DATE-MDY             --DMY--
+       $DPRN PRINT-5203           --1403--
+       $DWID WIDTH-96             --120 OR 132, 132 IF PRINT-1403 --
+       $DUAL DUAL-NO              --YES--
+       $DLIN LINE-66              --ANY TWO DIGIT NUMBER EXCEPT 00 --
+       $DCRD CARD-MFCU            --MFCU OR 1442 OR 'MFCU,1442' OR NO--
+       $DDKT DSKET-NO             --3741--
+       $DOUT DEV-MFCU2            --NO OR MFCU1 OR 1442 OR 3741 --
+       $DKBD KEYBD-NO             --5471 OR 5475--
+       $DAUX AUX-NO               --MFCU2 OR CONSOLE OR 1442 OR 3741 --
+       $DCON CON-NO               --MFCU2 OR CONSOLE OR 1442 OR 3741 --
+       $DINQ INQURY-NO            --YES   VALID ONLY IF KEYBD-5471--
+       $DBSC LINE-NO              --L1 OR 'L1,L2' OR ICA OR DA OR 'L1,..'
+       $DMLP MLMP-NO              --YES, ONLY IF BSCA WAS SPECIFIED--
+       $DRJE RJE-NO               --YES, ONLY IF BSCA WAS SPECIFIED--
+       $DMCR MICR-NO              --1255 OR 1419--
+       $DCPR CKRS-NO              --YES--
+       $DLKE OVLNK-NO             --YES--
+       $DSAM SIAM-NO              --YES--
+       $DSPV ADD-0                --256 OR 512 OR 768 OR 1024--
+//     END
+*
+***   THE SYSTEM CONFIGURATION STATEMENTS HAVE BEEN PROCESSED.
+*
+*
+// CALL $SGEN1,R1       PROCESS THE SYSTEM CONFIGURATION STATEMENT OUTPUT FILE.
+// RUN
+*
+***  THE SYSTEM CONFIGURATION STATEMENT OUTPUT FILE HAS BEEN PROCESSED.
+*
+*
+// CALL $SGLNK,R1                 BUILD THE NEW SUPERVISOR FOR THIS INSTALLATION
+// RUN
+**
+// LOAD $MAINT,R1
+*
+*
+***   THE ALLOCATION FOR OBJECT LIBRARY IS 170 TRACKS, FOR SOURCE LIBRARY
+***   5 TRACKS,AND FOR OBJECT DIRECTORY 4 TRACKS.  YOU SHOULD DETERMINE
+***   THE ADEQUACY OF THESE ALLOCATIONS AND, IF NECESSARY, ALTER THE ALLOCATE
+***   CONTROL STATEMENT WHICH FOLLOWS.
+*
+***   TO CONTINUE, SET RIGHTMOST ADDRESS/DATA SWITCH TO 0
+***   PRESS CONSOLE START --HALT/RESET IF YOU HAVE DPF SYSTEM--.
+// PAUSE
+// RUN
+// ALLOCATE TO-F1,OBJECT-170,SOURCE-5,SYSTEM-YES,DIRSIZE-4
+// END
+// CALL $SGCOM,R1                 BUILD REQUIRED SCP SYSTEM ON F1
+// RUN
+// CALL $SGOPT,R1                 BUILD OPTIONAL SCP SYSTEM FUNCTIONS ONTO F1
+// RUN
+*
+***   THE SYSTEM CONTROL PROGRAMS HAVE BEEN GENERATED
+*
+***   NORMAL END OF SCP GENERATION
+*
+***   ADDITIONAL SCP MAY NOW BE GENERATED.
+***   TO GENERATE THE MACRO PROCESSOR CALL THE PROCEDURE $SGMAC FROM R1.
+*
+***   TO GENERATE THE MULTI LINE TERMINAL ADAPTOR PROGRAM CALL THE PROCEDURE
+***   $SGMLT FROM R1.
+*
+***   TO GENERATE THE SUPPORT FOR THE 3881 OPTICAL MARK READER CALL THE
+***   PROCEDURE $SGOMR FROM R1.
+*
+// PAUSE
+// CEND
+
+
+
+	We will basically follow the printed instructions.  Bring up the
+	sysgen.ocl file in your favorite editor, and delete the first line
+	and the last line (// COPY and // CEND).  Then, modify the sysgen
+	statements like this:
+
+	-->    $DCOR CORE-64K             --16K OR 24K OR 32K OR 48K OR 64K--
+	       $DDPF DPF-NO               --YES--
+	-->    $DISK DISKS-'R1,F1,R2,F2'  --'R1,F1,R2' OR 'R1,F1,R2,F2'--
+	       $DDSK D5445-NO             --D1 OR 'D1,D2'--
+	       $DD48 D5448-NO             --YES--
+	       $DTUN TAPES-NO             --T1 OR 'T1,T2' OR 'T1,T2,T3' OR 'T1,T2,T3,T4'
+	       $DTDN DUALDN-NO            --T1 OR T2 OR T3 OR T4 OR  ..... 'T1,T2,T3,T4'
+	       $DTRK TRACK7-NO            --T1 OR T2 OR T3 OR T4 OR  ..... 'T1,T2,T3,T4'
+	       $DATE DATE-MDY             --DMY--
+	-->    $DPRN PRINT-1403           --1403--
+	-->    $DWID WIDTH-132            --120 OR 132, 132 IF PRINT-1403 --
+	       $DUAL DUAL-NO              --YES--
+	       $DLIN LINE-66              --ANY TWO DIGIT NUMBER EXCEPT 00 --
+	-->    $DCRD CARD-1442            --MFCU OR 1442 OR 'MFCU,1442' OR NO--
+	       $DDKT DSKET-NO             --3741--
+	-->    $DOUT DEV-1442             --NO OR MFCU1 OR 1442 OR 3741 --
+	-->    $DKBD KEYBD-5471           --5471 OR 5475--
+	       $DAUX AUX-NO               --MFCU2 OR CONSOLE OR 1442 OR 3741 --
+	       $DCON CON-NO               --MFCU2 OR CONSOLE OR 1442 OR 3741 --
+	       $DINQ INQURY-NO            --YES   VALID ONLY IF KEYBD-5471--
+	       $DBSC LINE-NO              --L1 OR 'L1,L2' OR ICA OR DA OR 'L1,..'
+	       $DMLP MLMP-NO              --YES, ONLY IF BSCA WAS SPECIFIED--
+	       $DRJE RJE-NO               --YES, ONLY IF BSCA WAS SPECIFIED--
+	       $DMCR MICR-NO              --1255 OR 1419--
+	       $DCPR CKRS-NO              --YES--
+	-->    $DLKE OVLNK-YES            --YES--
+	       $DSAM SIAM-NO              --YES--
+	       $DSPV ADD-0                --256 OR 512 OR 768 OR 1024--
+
+
+	Now, save the file, and bring back up the simulator like this:
+
+	sim> at r1 m10scp.dsk
+	sim> at f1 f1f1f1.dsk
+	sim> at lpt print.txt	
+	sim> d sr 5471
+	sim> at cdr sysgen.ocl
+	sim> b r1
+
+	(if you did not bring down the sim, detach the cdp2 device and
+	attach sysgen.ocl to the cdr device).
+
+	Enter these commands:
+
+	// DATE 01/01/77
+	// READER 1442
+
+	A job will run to initialize the F1 drive, and then a few instructions
+	will type out and the system will issue a Halt 90.  We will continue:
+
+	sim> d sr 0
+	sim> c
+
+	Several Sysgen jobs will run, and then the system will stop with a
+	Halt 91, and the typed instuctions will tell us to change library
+	allocations if we need to.  We won't, so can proceed:
+
+	sim> c
+
+	(no need to 'd sr 0' since zero is already in the switches).  Several	
+	more Sysgen jobs will run, and the system will issue it's final Halt 90.
+	At this point, the sysgen is complete.  Now time to IPL the new system:
+
+	sim> quit
+
+	Now restart the sim with these commands:
+
+	sim> at r1 r1r1r1.dsk
+	sim> at f1 f1f1f1.dsk
+	sim> at r2 r2r2r2.dsk
+	sim> at f2 f2f2f2.dsk
+	sim> at lpt print.txt	
+	sim> b f1
+
+	And enter these commands:
+
+	// DATE 01/01/77
+	// NOHALT
+	// LOAD $INIT,F1
+	// RUN
+	// UIN TYPE-PRIMARY,UNIT-R1
+	// VOL PACK-R1R1R1
+	// END
+
+	The system should respond "INITIALIZATION ON R1 COMPLETE".  We have
+	initialized a new empty pack on R1.  You can likewise do the same
+	for the R2 and F2 units. 
+
+	This will print the VTOC for R1 (which is empty right now):
+
+	// LOAD $LABEL,F1
+	// RUN
+	// DISPLAY UNIT-R1,LABEL-VTOC
+	// END
+
+	This will display the library allocations on the system pack:
+
+	// LOAD $MAINT,F1
+	// RUN
+	// COPY FROM-F1,LIBRARY-ALL,NAME-DIR,TO-PRINT
+	// END
+
+
+	The new SCP system on F1 is customized to our installation and is
+	available for your use....
+
+	Enjoy.
+
+
+
+
+Appendix - Common SCP Halts
+---------------------------
+
+Unless otherwise stated, a response of 0 means to continue and accept
+the error, 1 means to retry the operation or re-read the statement in
+error, 2 means to cancel the job and retain added records (if any) and
+3 means to end the job and discard any added records in files.
+
+This is not even close to complete.  There are hundreds of possible
+halts.  We will add to this as time permits.
+
+
+Halt	SCP Message	Description
+----	-----------	-----------
+
+34	UI34    1 3	Keyword in a utility control statement is invalid.
+
+6A	LM6Axx  1 3	$MAINT has detected a syntax error on a control
+			statement.  xx gives a hint of what might be wrong.
+
+71	CR71   0  3	OCL Syntax Error.
+
+76	CR76   0  3 	// Missing from OCL statement.
+
+78	CR78   0  3	Unknown OCL keyword.
+
+80	CR80   0	// DATE card has not been entered.
+
+89	CR89   01       // DATE has already been given.
+				0 - accept the new date as the date.
+				1 - leave the old date as the current date.
+
+HC	CIHC      3	Program given on // LOAD statement not found.
+
+UL	CIUL      3	File on // FILE statement not found, and no size
+			in TRACKS or RECORDS was given.
+
+UE	CIUExx  1 3	PACK parameter does not match pack name on unit.
+				xx = Unit referenced.
+				1 = Mount another pack and continue.
+
+AP	CRMN   0  3	Syntax or other errors in job, job cannot be run.
+				0 = proceed with next job.
+				
+YH	CRYH   0  3	Cards are being punching, but card reader from
+			reader was not blank.
+
+
+
+
+----------------------- End of ocl.txt ------------------------ 
+
